@@ -257,7 +257,7 @@ git diff --check
 
 Phase 1 把 promptfoo 引擎能力接入 MaClaw 发现-确认-执行主链路：
 
-- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 内置 6 插件（harmful/pii/prompt-injection/jailbreak/bias/security-exploit）+ 4 攻击策略（direct/role-play/encoding/multi-turn）；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。
+- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 现为 **119 插件 + 30 攻击策略**（2026-10-09 实测校正，覆盖 harmful 家族、industry 行业合规、dataset 基准等分类，含 `harmful:cybercrime` 等子项）；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。前端 `engineEval.ts` 由后端目录生成、当前与之一致，但同步依赖 `gen_frontend_options_test.go`（手工 dump、无断言），漂移防护待 CI 补齐。
 - **三个 MCP 工具**（`redteam_tool_bridge.go` 注册，见 `redteam_mcp.go`）：`search_redteam_plugin_catalog`（目录检索）、`run_promptfoo_redteam_evaluation`（grant 保护，发起引擎评测）、`get_promptfoo_evaluation_result`（安全结果查询）。
 - **BFF confirm fast path**：MaClaw agent loop 的 LLM tool-calling 在当前模型下不可靠（confirm 后可能把工具参数当文本输出），因此当计划卡只选择 promptfoo 引擎能力时，BFF `engine_confirm.go` 直接编排引擎（Prepare+Wait 拆分 + 平台内存 job store `engine_job_store.go`，job id 前缀 `pfj-`）。发现与规划仍归 MaClaw，执行平台受控。注意：`EvaluationJobFromPlatformEngine` 不回填 `progress.run_id`（pfj- 不是 maclaw runtime run id），前端对引擎 job 用轮询直接刷新进度卡，不开 `/evaluation/runs/pfj-…/events` SSE（2026-10-08 修复：该 SSE 被运行时秒断，触发重连+会话快照循环，卡片闪烁）。
 - **报告 engine 维度**：引擎 run 落库 `maclaw_redteam_reports` 时 `metadata.engine=promptfoo`，findings 带插件维度；结果映射器 `promptfoo_engine_bridge.go`（`EngineSafeResultCounts`/`EngineSafeResultFindings`）不再二次翻转极性（引擎已内部翻转）。

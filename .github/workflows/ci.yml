@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (go vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evaluating_platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: evaluating_platform/go.mod
+          cache-dependency-path: evaluating_platform/go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  frontend:
+    name: frontend (build + lint + scripts)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evaluating_platform/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: evaluating_platform/frontend/package-lock.json
+      - name: install
+        run: npm ci
+      - name: build (tsc -b && vite build)
+        run: npm run build
+      - name: lint
+        run: npm run lint
+        continue-on-error: true
+      - name: adapter scripts
+        run: npm run test:adapters
+
+  engine:
+    name: promptfoo-engine (typecheck + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evaluating_platform/promptfoo_engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: evaluating_platform/promptfoo_engine/package-lock.json
+      - name: install
+        run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      - name: test (includes env.test.ts fail-closed switch assertions)
+        run: npm test
+
+  compose:
+    name: compose config
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evaluating_platform
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate compose topology
+        run: docker compose config --services
+
+  guards:
+    name: guards (sensitive files)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no sensitive files tracked
+        run: |
+          if git ls-files | grep -iE '(^|/)\.env$|\.env\.before|pg_dump|deploy-backups|deploy-demo|deploy-skill-sync|\.db$|\.patch$|\.before$|_data_export_|(^|/)\.workbuddy/'; then
+            echo "::error::Sensitive files are tracked in git. Remove them and add to .gitignore."
+            exit 1
+          fi
+          echo "OK: no sensitive files tracked"
+
+# NOTE (product/architecture plan, see audit-2026-10-09/):
+#   - DD-7 (pending impl, task T1.2): add a blocking catalog-consistency assertion so the
+#     plugin/strategy lists in backend promptfoo_plugin_catalog.go, frontend engineEval.ts and
+#     engine redteamRun.ts can never drift. Replace gen_frontend_options_test.go (always-passes
+#     dump) with a real assert, or add a generated-file check here.
+#   - F-02 (pending): wire the frontend *.test.ts files into a real runner (vitest) and make
+#     "npm test" blocking; today only test:adapters runs.
+#   - frontend lint is non-blocking until pre-existing lint findings are cleaned up.
