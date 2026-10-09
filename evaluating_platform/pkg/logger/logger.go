@@ -61,11 +61,6 @@ func (l *Logger) log(level Level, msg string, fields map[string]interface{}) {
 	l.logger.Println(entry)
 }
 
-func (l *Logger) Debug(msg string, fields ...map[string]interface{}) {
-	f := mergeFields(fields...)
-	l.log(DEBUG, msg, f)
-}
-
 func (l *Logger) Info(msg string, fields ...map[string]interface{}) {
 	f := mergeFields(fields...)
 	l.log(INFO, msg, f)
@@ -82,7 +77,6 @@ func (l *Logger) Error(msg string, fields ...map[string]interface{}) {
 }
 
 // 包级别便捷函数（使用全局 logger）
-func Debug(msg string, fields ...map[string]interface{}) { std.Debug(msg, fields...) }
 func Info(msg string, fields ...map[string]interface{})  { std.Info(msg, fields...) }
 func Warn(msg string, fields ...map[string]interface{})  { std.Warn(msg, fields...) }
 func Error(msg string, fields ...map[string]interface{}) { std.Error(msg, fields...) }

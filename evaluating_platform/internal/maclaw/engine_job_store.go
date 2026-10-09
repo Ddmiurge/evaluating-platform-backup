@@ -24,21 +24,21 @@ type PlatformEngineJobStore struct {
 
 // PlatformEngineJob is one platform-orchestrated engine evaluation.
 type PlatformEngineJob struct {
-	ID           string
-	EngineRunID  string
-	UserID       string
-	InstanceID   string
-	SessionID    string
-	Status       EvaluationJobStatus
-	PlannedCount int
+	ID            string
+	EngineRunID   string
+	UserID        string
+	InstanceID    string
+	SessionID     string
+	Status        EvaluationJobStatus
+	PlannedCount  int
 	ExecutedCount int
-	CurrentStage string
-	StatusText   string
-	DurationMs   int64
-	ErrorCode    string
-	ReportID     string
-	StartedAt    time.Time
-	CompletedAt  *time.Time
+	CurrentStage  string
+	StatusText    string
+	DurationMs    int64
+	ErrorCode     string
+	ReportID      string
+	StartedAt     time.Time
+	CompletedAt   *time.Time
 }
 
 func NewPlatformEngineJobStore() *PlatformEngineJobStore {
@@ -130,34 +130,6 @@ func (s *PlatformEngineJobStore) Complete(jobID string, status EvaluationJobStat
 	}
 }
 
-// ListBySession returns the caller's engine jobs for one session, newest first.
-func (s *PlatformEngineJobStore) ListBySession(userID, sessionID string, limit int) []*PlatformEngineJob {
-	if s == nil {
-		return nil
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]*PlatformEngineJob, 0)
-	for i := len(s.order) - 1; i >= 0; i-- {
-		job := s.jobs[s.order[i]]
-		if job == nil {
-			continue
-		}
-		if userID != "" && job.UserID != userID {
-			continue
-		}
-		if sessionID != "" && job.SessionID != sessionID {
-			continue
-		}
-		copied := *job
-		out = append(out, &copied)
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	return out
-}
-
 func isTerminalEvaluationJobStatus(status EvaluationJobStatus) bool {
 	switch status {
 	case EvaluationJobStatusSucceeded, EvaluationJobStatusFailed, EvaluationJobStatusCanceled:
@@ -174,10 +146,10 @@ func EvaluationJobFromPlatformEngine(job *PlatformEngineJob) *EvaluationJob {
 		return nil
 	}
 	out := &EvaluationJob{
-		ID:        job.ID,
-		Kind:      EvaluationJobKindRun,
-		Status:    job.Status,
-		UserID:    job.UserID,
+		ID:     job.ID,
+		Kind:   EvaluationJobKindRun,
+		Status: job.Status,
+		UserID: job.UserID,
 		Progress: &EvaluationJobProgress{
 			Phase: string(job.Status),
 			// Intentionally no RunID: a platform engine job id (pfj-…) is not a
