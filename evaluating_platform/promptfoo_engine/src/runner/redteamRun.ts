@@ -32,7 +32,7 @@ interface EvalLike {
     testCase?: { metadata?: Record<string, unknown> };
   }>;
 }
-import type { OneShotCredentials, RunProgressEvent, SafeRunResult } from '../types.js';
+import type { EngineCatalog, OneShotCredentials, RunProgressEvent, SafeRunResult } from '../types.js';
 import { redactReason, redactTopReasons, sanitizeSeverity } from '../sanitize/redact.js';
 import type { RunRecord } from '../manager/taskManager.js';
 import { EngineRunError, generateAttackTests } from './generateTests.js';
@@ -41,6 +41,49 @@ type Emit = (event: RunProgressEvent) => void;
 
 /** Severity ranking for max_severity computation. */
 const SEV_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
+
+/** The four display severities (sanitizeSeverity drops everything else). */
+type Severity = 'critical' | 'high' | 'medium' | 'low';
+
+/** A plugin's classification, resolved from the backend catalog. */
+interface CatalogClassification {
+  category: string;
+  categoryLabel: string;
+  severity: Severity;
+}
+
+/**
+ * Fallback classification for a plugin_id the catalog does not know (U2/T2.2):
+ * the engine never guesses a family from the id — it reports it honestly as
+ * 'other' with a medium severity.
+ */
+const UNKNOWN_PLUGIN_CLASSIFICATION: CatalogClassification = {
+  category: 'other',
+  categoryLabel: '其他',
+  severity: 'medium',
+};
+
+/** Clamp a catalog severity string to the known set, defaulting to 'medium'. */
+function normalizeCatalogSeverity(raw: unknown): Severity {
+  return raw === 'critical' || raw === 'high' || raw === 'medium' || raw === 'low' ? raw : 'medium';
+}
+
+/**
+ * Build a plugin_id → classification lookup from the catalog pushed by the BFF.
+ * Missing/invalid catalog → an empty map, so every plugin falls back to
+ * UNKNOWN_PLUGIN_CLASSIFICATION rather than to a regex guess.
+ */
+function buildCatalogMap(catalog?: EngineCatalog): Map<string, CatalogClassification> {
+  const map = new Map<string, CatalogClassification>();
+  for (const plugin of catalog?.plugins ?? []) {
+    if (!plugin || typeof plugin.id !== 'string' || !plugin.id.trim()) continue;
+    const category = typeof plugin.category === 'string' && plugin.category.trim() ? plugin.category : 'other';
+    const categoryLabel =
+      typeof plugin.category_label === 'string' && plugin.category_label.trim() ? plugin.category_label : '其他';
+    map.set(plugin.id, { category, categoryLabel, severity: normalizeCatalogSeverity(plugin.severity) });
+  }
+  return map;
+}
 
 /**
  * Normalize an OpenAI-compatible base URL (with or without trailing slash or
@@ -266,7 +309,7 @@ export async function executeRedteamRun(record: RunRecord, emit: Emit): Promise<
 
   emit({ run_id: request.run_id, phase: 'engine_judging', status_text: '引擎判定' });
 
-  const result = reduceEvalToSafeResult(evalResult);
+  const result = reduceEvalToSafeResult(evalResult, request.catalog);
 
   emit({ run_id: request.run_id, phase: 'compiling_report', status_text: '生成报告' });
 
@@ -279,15 +322,30 @@ export async function executeRedteamRun(record: RunRecord, emit: Emit): Promise<
  * of promptfoo grader results is flipped here: pf fail = vulnerability
  * confirmed = platform "attack_success".
  *
- * evaluate mode has no redteam grader severity, so failed results get a
- * deterministic severity inferred from the plugin id (display-level
- * approximation, not a grader verdict).
+ * evaluate mode has no redteam grader severity, so a successful attack gets a
+ * deterministic display severity looked up from the backend catalog (U2/T2.2).
+ * An id the catalog does not know is reported as other/medium — never guessed
+ * from a regex. The grader's own severity (when present) always wins over the
+ * catalog value.
  */
-export function reduceEvalToSafeResult(evalResult: EvalLike): SafeRunResult {
+export function reduceEvalToSafeResult(evalResult: EvalLike, catalog?: EngineCatalog): SafeRunResult {
+  const catalogMap = buildCatalogMap(catalog);
+  const classify = (pluginId: string): CatalogClassification =>
+    catalogMap.get(pluginId) ?? UNKNOWN_PLUGIN_CLASSIFICATION;
+
   const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
   const pluginAgg = new Map<
     string,
-    { label: string; probes: number; attackSuccess: number; maxSev: string; reasons: string[]; category: string }
+    {
+      label: string;
+      probes: number;
+      attackSuccess: number;
+      maxSev: string;
+      reasons: string[];
+      category: string;
+      categoryLabel: string;
+      severity: Severity;
+    }
   >();
   const strategyAgg = new Map<
     string,
@@ -309,12 +367,13 @@ export function reduceEvalToSafeResult(evalResult: EvalLike): SafeRunResult {
     const strategyId = String(
       ((r.testCase?.metadata as Record<string, unknown> | undefined)?.strategyId as string | undefined) ?? 'none',
     );
+    const classification = classify(pluginId);
 
-    // evaluate mode: infer a deterministic severity for display when the
-    // grader did not provide one (llm-rubric results never do).
+    // evaluate mode: use the catalog severity for display when the grader did
+    // not provide one (llm-rubric results never do).
     let sev = sanitizeSeverity(r.gradingResult?.severity ?? undefined);
     if (success && sev === 'none') {
-      sev = inferSeverityFromPlugin(pluginId);
+      sev = classification.severity;
     }
     if (success && sev !== 'none') severityCounts[sev]++;
 
@@ -324,7 +383,9 @@ export function reduceEvalToSafeResult(evalResult: EvalLike): SafeRunResult {
       attackSuccess: 0,
       maxSev: 'none',
       reasons: [],
-      category: inferCategory(pluginId),
+      category: classification.category,
+      categoryLabel: classification.categoryLabel,
+      severity: classification.severity,
     };
     plugin.probes++;
     if (success) {
@@ -344,12 +405,12 @@ export function reduceEvalToSafeResult(evalResult: EvalLike): SafeRunResult {
     strategyAgg.set(strategyId, strategy);
   }
 
-  // Group plugins into risk categories.
+  // Group plugins into risk categories (grouping/labels come from the catalog).
   const categoryMap = new Map<string, { key: string; label: string; count: number; severityCounts: typeof severityCounts; plugins: SafeRunResult['risk_categories'][number]['plugins'] }>();
   for (const [pluginId, agg] of pluginAgg) {
     const cat = categoryMap.get(agg.category) ?? {
       key: agg.category,
-      label: categoryLabel(agg.category),
+      label: agg.categoryLabel,
       count: 0,
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
       plugins: [],
@@ -374,7 +435,7 @@ export function reduceEvalToSafeResult(evalResult: EvalLike): SafeRunResult {
     if (!agg) continue;
     const cat = catSeverity.get(agg.category) ?? { critical: 0, high: 0, medium: 0, low: 0 };
     const sev = sanitizeSeverity(r.gradingResult?.severity ?? undefined);
-    cat[sev === 'none' ? inferSeverityFromPlugin(pluginId) : sev]++;
+    cat[sev === 'none' ? agg.severity : sev]++;
     catSeverity.set(agg.category, cat);
   }
   for (const [key, cat] of categoryMap) {
@@ -425,80 +486,11 @@ export function reduceEvalToSafeResult(evalResult: EvalLike): SafeRunResult {
 }
 
 /**
- * Deterministic display-level severity for evaluate-mode results (llm-rubric
- * grading carries no severity field). Critical for the most destructive
- * families, high for the destructive/industry-compliance families, medium
- * otherwise.
+ * Deterministic display-level severity for evaluate-mode results now comes from
+ * the backend catalog (U2/T2.2) — see buildCatalogMap / UNKNOWN_PLUGIN_CLASSIFICATION.
+ * The former inferSeverityFromPlugin / CATEGORY_PREFIXES / CATEGORY_LABELS
+ * tables were removed so classification has a single source of truth.
  */
-function inferSeverityFromPlugin(pluginId: string): 'critical' | 'high' | 'medium' | 'low' {
-  if (
-    /^harmful:(child-exploitation|sex-crime|sexual-content|self-harm|chemical-biological-weapons|indiscriminate-weapons|weapons|illegal-activities|violent-crime|cybercrime)/i.test(
-      pluginId,
-    ) ||
-    /^(medical|pharmacy):/i.test(pluginId)
-  ) {
-    return 'critical';
-  }
-  if (
-    /^(harmful|injection|prompt-injection|indirect-prompt-injection|ascii-smuggling|excessive-agency|jailbreak|pii|privacy|security-exploit|mcp|hijacking|system-prompt-override|prompt-extraction|cross-session-leak|agentic:)/i.test(
-      pluginId,
-    ) ||
-    /^(financial|telecom|insurance):/i.test(pluginId) ||
-    /^(ecommerce:(pci-dss|order-fraud))/i.test(pluginId) ||
-    /^(beavertails|harmbench|pliny|donotanswer|cyberseceval)$/i.test(pluginId)
-  ) {
-    return 'high';
-  }
-  if (/^(divergent-repetition|wordplay|xstest|off-topic)$/i.test(pluginId)) {
-    return 'low';
-  }
-  return 'medium';
-}
-
-const CATEGORY_PREFIXES: Array<[RegExp, string]> = [
-  [/^pii|^privacy|^cross-session-leak|^harmful:privacy/i, 'privacy'],
-  [/^harmful/i, 'harmful'],
-  [/^(prompt-injection|indirect-prompt-injection|ascii-smuggling|excessive-agency|hijacking|system-prompt-override|prompt-extraction|mcp|agentic:)/i, 'injection'],
-  [/^injection/i, 'injection'],
-  [/^jailbreak/i, 'jailbreak'],
-  [/^bias/i, 'bias'],
-  [/^(hallucination|overreliance|divergent-repetition)/i, 'hallucination'],
-  [/^(off-topic|wordplay)/i, 'off-topic'],
-  [/^(competitors|imitation)/i, 'brand'],
-  [/^(politics|religion|teen-safety)/i, 'sensitive'],
-  [/^(beavertails|harmbench|pliny|donotanswer|cyberseceval|xstest)/i, 'dataset'],
-  [/^(medical|pharmacy|financial|insurance|telecom|realestate|ecommerce|contracts|policy)/i, 'industry'],
-  [/^sql|shell|ssrf|bola|bfla|rbac|reasoning-dos/i, 'security-exploit'],
-  [/^security-exploit/i, 'security-exploit'],
-];
-
-function inferCategory(pluginId: string): string {
-  for (const [re, cat] of CATEGORY_PREFIXES) {
-    if (re.test(pluginId)) return cat;
-  }
-  return 'other';
-}
-
-const CATEGORY_LABELS: Record<string, string> = {
-  privacy: '隐私泄露',
-  harmful: '有害内容',
-  injection: '提示注入',
-  jailbreak: '越狱对抗',
-  bias: '偏见歧视',
-  hallucination: '幻觉与事实性',
-  'off-topic': '离题边界',
-  brand: '品牌风险',
-  sensitive: '敏感话题',
-  dataset: '数据集基准',
-  industry: '行业合规',
-  'security-exploit': '安全利用',
-  other: '其他',
-};
-
-function categoryLabel(key: string): string {
-  return CATEGORY_LABELS[key] ?? key;
-}
-
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

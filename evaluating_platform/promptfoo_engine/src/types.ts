@@ -56,6 +56,34 @@ export interface RunRequest {
   strategies: Array<{ id: string; config?: Record<string, unknown> }>;
   judge_mode: JudgeMode;
   credentials: OneShotCredentials;
+  /**
+   * Plugin/strategy classification catalog pushed by the BFF (U2/T2.2). This is
+   * the single source of truth for a plugin's risk category, Chinese label, and
+   * default display severity; the engine never keeps its own regex/mapping
+   * tables. Optional for backward compatibility — when absent the engine falls
+   * back to its "unknown plugin" defaults (category=other / severity=medium).
+   */
+  catalog?: EngineCatalog;
+}
+
+/** One plugin family as classified by the backend catalog. */
+export interface EngineCatalogPlugin {
+  id: string;
+  category: string;
+  category_label: string;
+  severity: string;
+}
+
+/** One attack strategy as named by the backend catalog. */
+export interface EngineCatalogStrategy {
+  id: string;
+  name: string;
+}
+
+/** Plugin/strategy catalog shipped with a run request. */
+export interface EngineCatalog {
+  plugins: EngineCatalogPlugin[];
+  strategies: EngineCatalogStrategy[];
 }
 
 /** Safe progress event emitted over SSE. No prompts, no responses, no secrets. */
