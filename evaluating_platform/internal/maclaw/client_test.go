@@ -867,46 +867,6 @@ func TestClientSearchSkillsUsesMaclawSearchWithoutPlatformClassification(t *test
 	}
 }
 
-func TestClientImportSkillReturnsSafeSummaries(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
-		}
-		if r.URL.Path != "/api/v1/skills/import" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		var in SkillImportInput
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if in.ZipBase64 != "UEsDBAo=" || !in.Overwrite {
-			t.Fatalf("input = %#v", in)
-		}
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"items": []map[string]any{
-				{"name": "imported", "description": "Imported maclaw skill", "status": "active", "skill_dir": "C:/secret", "content": "SECRET"},
-			},
-		})
-	}))
-	defer upstream.Close()
-
-	client, err := NewClient(Config{BaseURL: upstream.URL, APIToken: "maclaw-token", TimeoutSeconds: 3})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	items, err := client.ImportSkill(context.Background(), SkillImportInput{ZipBase64: "UEsDBAo=", Overwrite: true})
-	if err != nil {
-		t.Fatalf("ImportSkill: %v", err)
-	}
-	if len(items) != 1 || items[0].Name != "imported" {
-		t.Fatalf("items = %#v", items)
-	}
-	if got := mustJSON(t, items[0]); strings.Contains(got, "SECRET") || strings.Contains(got, "skill_dir") {
-		t.Fatalf("import summary leaked runtime internals: %s", got)
-	}
-}
-
 func TestClientInstallSkillReturnsSafeSummaries(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -949,34 +909,6 @@ func TestClientInstallSkillReturnsSafeSummaries(t *testing.T) {
 	}
 	if got := mustJSON(t, items[0]); strings.Contains(got, "SECRET") || strings.Contains(got, "skill_dir") || strings.Contains(got, "content") || strings.Contains(got, "steps") {
 		t.Fatalf("install summary leaked runtime internals: %s", got)
-	}
-}
-
-func TestClientExportSkillUsesSafeArchiveDTO(t *testing.T) {
-	var gotPath string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		if r.Method != http.MethodGet {
-			t.Fatalf("method = %s", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"ccbos-classical-chinese-skill","file_name":"ccbos.zip","archive_base64":"UEsDBAo=","size_bytes":22}`))
-	}))
-	defer server.Close()
-
-	client, err := NewClient(Config{BaseURL: server.URL, APIToken: "maclaw-token", TimeoutSeconds: 3})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	out, err := client.ExportSkill(context.Background(), "ccbos-classical-chinese-skill")
-	if err != nil {
-		t.Fatalf("ExportSkill: %v", err)
-	}
-	if gotPath != "/api/v1/skills/ccbos-classical-chinese-skill/export" {
-		t.Fatalf("path = %q", gotPath)
-	}
-	if out.Name != "ccbos-classical-chinese-skill" || out.ArchiveBase64 != "UEsDBAo=" {
-		t.Fatalf("export = %#v", out)
 	}
 }
 

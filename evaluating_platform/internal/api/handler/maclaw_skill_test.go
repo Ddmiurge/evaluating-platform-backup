@@ -23,7 +23,6 @@ type fakeMaclawSkillGateway struct {
 	enabled       bool
 	lastLimit     int
 	lastSearch    maclaw.SkillSearchInput
-	lastImported  maclaw.SkillImportInput
 	lastInstalled maclaw.SkillInstallInput
 }
 
@@ -45,25 +44,12 @@ func (f *fakeMaclawSkillGateway) SearchSkills(ctx context.Context, in maclaw.Ski
 	}, nil
 }
 
-func (f *fakeMaclawSkillGateway) ImportSkill(ctx context.Context, in maclaw.SkillImportInput) ([]maclaw.SkillSummary, error) {
-	_ = ctx
-	f.lastImported = in
-	return []maclaw.SkillSummary{
-		{Name: "imported", Description: "Imported maclaw skill", Status: "active", Source: "zip_import"},
-	}, nil
-}
-
 func (f *fakeMaclawSkillGateway) InstallSkill(ctx context.Context, in maclaw.SkillInstallInput) ([]maclaw.SkillSummary, error) {
 	_ = ctx
 	f.lastInstalled = in
 	return []maclaw.SkillSummary{
 		{Name: "ccbos-classical-chinese-skill", Description: "Classical Chinese jailbreak", Status: "active", Source: "skillhub", Version: "1.0.0", HubSkillID: "ccbos-classical-chinese-skill"},
 	}, nil
-}
-
-func (f *fakeMaclawSkillGateway) ExportSkill(ctx context.Context, name string) (*maclaw.SkillExport, error) {
-	_ = ctx
-	return &maclaw.SkillExport{Name: name, FileName: name + ".zip", ArchiveBase64: "UEsDBAo="}, nil
 }
 
 func TestMaclawSkillHandlerListsSafeSummaries(t *testing.T) {
@@ -300,9 +286,6 @@ func TestMaclawSkillHandlerImportRequiresHubDistribution(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
 	}
-	if gateway.lastImported.ZipBase64 != "" {
-		t.Fatalf("direct runtime import was called: %#v", gateway.lastImported)
-	}
 }
 
 func TestMaclawSkillHandlerImportUsesHubAsOnlyDistributionPath(t *testing.T) {
@@ -373,9 +356,6 @@ func TestMaclawSkillHandlerImportUsesHubAsOnlyDistributionPath(t *testing.T) {
 	}
 	if !submitted {
 		t.Fatalf("expected import to submit package to Hub")
-	}
-	if gateway.lastImported.ZipBase64 != "" {
-		t.Fatalf("direct runtime import was called: %#v", gateway.lastImported)
 	}
 	if gateway.lastInstalled.Source != "skillhub" || gateway.lastInstalled.SkillHubURL != hub.URL || gateway.lastInstalled.SkillID != "hub-generated-ccbos-id" {
 		t.Fatalf("install input = %#v", gateway.lastInstalled)
@@ -487,16 +467,6 @@ func mustMaclawClientForSkillTest(t *testing.T, gateway *fakeMaclawSkillGateway)
 			items, err := gateway.SearchSkills(r.Context(), in)
 			if err != nil {
 				t.Fatalf("SearchSkills: %v", err)
-			}
-			_ = json.NewEncoder(w).Encode(gin.H{"items": items})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/skills/import":
-			var in maclaw.SkillImportInput
-			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-				t.Fatalf("decode import: %v", err)
-			}
-			items, err := gateway.ImportSkill(r.Context(), in)
-			if err != nil {
-				t.Fatalf("ImportSkill: %v", err)
 			}
 			_ = json.NewEncoder(w).Encode(gin.H{"items": items})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/skills/install":

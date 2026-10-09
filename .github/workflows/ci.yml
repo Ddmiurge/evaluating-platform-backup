@@ -97,10 +97,12 @@ jobs:
           echo "OK: no sensitive files tracked"
 
 # NOTE (product/architecture plan, see audit-2026-10-09/):
-#   - DD-7 (pending impl, task T1.2): add a blocking catalog-consistency assertion so the
-#     plugin/strategy lists in backend promptfoo_plugin_catalog.go, frontend engineEval.ts and
-#     engine redteamRun.ts can never drift. Replace gen_frontend_options_test.go (always-passes
-#     dump) with a real assert, or add a generated-file check here.
+#   - DD-7 (LANDED, U1): catalog-consistency assertion is in place. The backend
+#     job above runs `go test ./...`, which now executes
+#     internal/maclaw/gen_frontend_options_test.go::TestFrontendOptionsConsistency -
+#     it parses frontend/src/services/engineEval.ts and fails (CI red) whenever the
+#     plugin/strategy id sets drift from backend promptfoo_plugin_catalog.go, so the
+#     three copies can no longer silently diverge.
 #   - F-02 (pending): wire the frontend *.test.ts files into a real runner (vitest) and make
 #     "npm test" blocking; today only test:adapters runs.
 #   - frontend lint is non-blocking until pre-existing lint findings are cleaned up.

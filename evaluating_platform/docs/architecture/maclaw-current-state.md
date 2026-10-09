@@ -11,6 +11,13 @@
 - 旧 Agent、旧 Chat、旧 internal MCP、旧 Skill Runner、旧 external MCP/CCBOS 执行主体已经删除。
 - 旧 API 只保留 `410 Gone` tombstone，不再提供旧执行回退。
 
+## 代码结构定性（2026-10-09 U1 校正）
+
+- `internal/maclaw/client.go` **不是**"旧适配器残留/死代码"——它是**接口定义 + 共享 HTTP 传输层 + 旧 slim API 方法的混合体**，并被 `maclawsrv_client.go` 作为 `MaclawSrvClient` 的嵌入基类（`*Client`）复用，不能盲删。
+- 其中确有**零调用方法**：`ImportSkill` / `ExportSkill`（及 `SkillGateway` 接口声明与相关测试）已在 U1 起始批次删除；其余旧 slim 方法的去留须待 U2（接口↔路由契约测试）就位后，在 U3（`client.go` 物理分层）中统一评估（审计 A-03）。
+- 此前部分文档把 `client.go` 笼统定性为"旧适配器残留"，与实际"仍在用的混合体"不符，此处校正。
+
+
 ## BFF 安全边界
 
 浏览器不得收到：
@@ -232,6 +239,7 @@ promptfoo 的 `redteam.run` 模式必须自建用例且忽略外部 `tests`，�
 - full MaClawSrv 原生 resource/catalog grant 能力尚未完全替代平台资源兼容层。
 - retry/resume/checkpoint 仍是安全 `409/manual-review` 兼容行为。
 - 本地 developer Skill admission 依赖 `MACLAW_SECURITY_POLICY_MODE=developer`，生产前需要可信包策略。
+- **compose 默认口令无启动断言（`02 S-02`，已知待办）**：当前 compose 允许以默认口令/密钥启动，未在启动时校验是否仍在用不安全默认值。本批（U1）**不实现**，避免改动 `main.go` 启动逻辑；后续如需加固，应独立一批（启动期 fail-closed 断言）。
 - 浏览器 UI 自动化在当前 Windows Codex 环境中不稳定，主要依赖 API、build 和人工浏览器验收补齐。
 
 ## Frontend Deployment
@@ -257,7 +265,7 @@ git diff --check
 
 Phase 1 把 promptfoo 引擎能力接入 MaClaw 发现-确认-执行主链路：
 
-- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 现为 **119 插件 + 30 攻击策略**（2026-10-09 实测校正，覆盖 harmful 家族、industry 行业合规、dataset 基准等分类，含 `harmful:cybercrime` 等子项）；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。前端 `engineEval.ts` 由后端目录生成、当前与之一致，但同步依赖 `gen_frontend_options_test.go`（手工 dump、无断言），漂移防护待 CI 补齐。
+- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 现为 **119 插件 + 30 攻击策略**（2026-10-09 实测校正，覆盖 harmful 家族、industry 行业合规、dataset 基准等分类，含 `harmful:cybercrime` 等子项）；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。前端 `engineEval.ts` 由后端目录生成、当前与之一致；同步已由 `gen_frontend_options_test.go` 的 **`TestFrontendOptionsConsistency` 真实断言**取代原"手工 dump 测试"，并纳入 CI backend job（`go test ./...`）**阻断**（DD-7=A 已落地，2026-10-09）——插件/策略 id 集合前后端任一方向漂移即 CI 红灯。
 - **三个 MCP 工具**（`redteam_tool_bridge.go` 注册，见 `redteam_mcp.go`）：`search_redteam_plugin_catalog`（目录检索）、`run_promptfoo_redteam_evaluation`（grant 保护，发起引擎评测）、`get_promptfoo_evaluation_result`（安全结果查询）。
 - **BFF confirm fast path**：MaClaw agent loop 的 LLM tool-calling 在当前模型下不可靠（confirm 后可能把工具参数当文本输出），因此当计划卡只选择 promptfoo 引擎能力时，BFF `engine_confirm.go` 直接编排引擎（Prepare+Wait 拆分 + 平台内存 job store `engine_job_store.go`，job id 前缀 `pfj-`）。发现与规划仍归 MaClaw，执行平台受控。注意：`EvaluationJobFromPlatformEngine` 不回填 `progress.run_id`（pfj- 不是 maclaw runtime run id），前端对引擎 job 用轮询直接刷新进度卡，不开 `/evaluation/runs/pfj-…/events` SSE（2026-10-08 修复：该 SSE 被运行时秒断，触发重连+会话快照循环，卡片闪烁）。
 - **报告 engine 维度**：引擎 run 落库 `maclaw_redteam_reports` 时 `metadata.engine=promptfoo`，findings 带插件维度；结果映射器 `promptfoo_engine_bridge.go`（`EngineSafeResultCounts`/`EngineSafeResultFindings`）不再二次翻转极性（引擎已内部翻转）。

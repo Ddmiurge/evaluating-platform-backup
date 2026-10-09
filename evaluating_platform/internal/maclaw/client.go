@@ -670,9 +670,7 @@ type SkillGateway interface {
 	Enabled() bool
 	ListSkills(context.Context, int) ([]SkillSummary, error)
 	SearchSkills(context.Context, SkillSearchInput) ([]SkillSearchResult, error)
-	ImportSkill(context.Context, SkillImportInput) ([]SkillSummary, error)
 	InstallSkill(context.Context, SkillInstallInput) ([]SkillSummary, error)
-	ExportSkill(context.Context, string) (*SkillExport, error)
 }
 
 type RuntimeGateway interface {
@@ -1113,19 +1111,6 @@ func (c *Client) SearchSkills(ctx context.Context, in SkillSearchInput) ([]Skill
 	return out.Items, nil
 }
 
-func (c *Client) ImportSkill(ctx context.Context, in SkillImportInput) ([]SkillSummary, error) {
-	if !c.Enabled() {
-		return nil, ErrNotConfigured
-	}
-	var out struct {
-		Items []rawSkillEntry `json:"items"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/skills/import", in, &out); err != nil {
-		return nil, err
-	}
-	return summarizeSkills(out.Items), nil
-}
-
 func (c *Client) InstallSkill(ctx context.Context, in SkillInstallInput) ([]SkillSummary, error) {
 	if !c.Enabled() {
 		return nil, ErrNotConfigured
@@ -1137,21 +1122,6 @@ func (c *Client) InstallSkill(ctx context.Context, in SkillInstallInput) ([]Skil
 		return nil, err
 	}
 	return summarizeSkills(out.Items), nil
-}
-
-func (c *Client) ExportSkill(ctx context.Context, skillName string) (*SkillExport, error) {
-	if !c.Enabled() {
-		return nil, ErrNotConfigured
-	}
-	skillName = strings.TrimSpace(skillName)
-	if skillName == "" {
-		return nil, errors.New("skill name is required")
-	}
-	var out SkillExport
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/skills/"+url.PathEscape(skillName)+"/export", nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
 }
 
 func (c *Client) ListRuntimeSessions(ctx context.Context, instanceID string, q RuntimeSessionQuery) ([]RuntimeSession, error) {
