@@ -23,7 +23,6 @@ type fakeMaclawSkillGateway struct {
 	enabled       bool
 	lastLimit     int
 	lastSearch    maclaw.SkillSearchInput
-	lastImported  maclaw.SkillImportInput
 	lastInstalled maclaw.SkillInstallInput
 }
 
@@ -287,9 +286,6 @@ func TestMaclawSkillHandlerImportRequiresHubDistribution(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
 	}
-	if gateway.lastImported.ZipBase64 != "" {
-		t.Fatalf("direct runtime import was called: %#v", gateway.lastImported)
-	}
 }
 
 func TestMaclawSkillHandlerImportUsesHubAsOnlyDistributionPath(t *testing.T) {
@@ -360,9 +356,6 @@ func TestMaclawSkillHandlerImportUsesHubAsOnlyDistributionPath(t *testing.T) {
 	}
 	if !submitted {
 		t.Fatalf("expected import to submit package to Hub")
-	}
-	if gateway.lastImported.ZipBase64 != "" {
-		t.Fatalf("direct runtime import was called: %#v", gateway.lastImported)
 	}
 	if gateway.lastInstalled.Source != "skillhub" || gateway.lastInstalled.SkillHubURL != hub.URL || gateway.lastInstalled.SkillID != "hub-generated-ccbos-id" {
 		t.Fatalf("install input = %#v", gateway.lastInstalled)
