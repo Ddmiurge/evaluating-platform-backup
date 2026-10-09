@@ -51,7 +51,7 @@ func (h *RedteamMCPHandler) Handle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json-rpc request"})
 		return
 	}
-	c.Header("Mcp-Session-Id", firstNonEmptyMCP(c.GetHeader("Mcp-Session-Id"), "evaluating-platform-redteam"))
+	c.Header("Mcp-Session-Id", firstNonEmpty(c.GetHeader("Mcp-Session-Id"), "evaluating-platform-redteam"))
 	switch req.Method {
 	case "initialize":
 		h.writeResult(c, req.ID, gin.H{
@@ -107,6 +107,38 @@ func (h *RedteamMCPHandler) callTool(c *gin.Context, name string, raw json.RawMe
 			return nil, err
 		}
 		return h.bridge.SearchRedteamCapabilities(c.Request.Context(), in)
+	case "search_redteam_plugin_catalog":
+		if err := requireEnterpriseRedteamMCPRole(c); err != nil {
+			return nil, err
+		}
+		var in maclaw.SearchRedteamPluginCatalogInput
+		if err := decodeToolArgs(raw, &in); err != nil {
+			return nil, err
+		}
+		return h.bridge.SearchRedteamPluginCatalog(in)
+	case "run_promptfoo_redteam_evaluation":
+		var in maclaw.PromptfooEngineRunInput
+		if err := decodeToolArgs(raw, &in); err != nil {
+			return nil, err
+		}
+		in.ExecutionUserID = redteamMCPPlatformUserID(c)
+		in.ExecutionSessionID = redteamVerifiedExecutionSessionID(c, raw)
+		in.Metadata = metadataWithVerifiedSession(in.Metadata, in.ExecutionSessionID)
+		if confirmedTestCount := redteamVerifiedExecutionTestCount(c); confirmedTestCount > 0 && in.NumTests <= 0 {
+			in.NumTests = confirmedTestCount
+		}
+		return h.bridge.RunPromptfooRedteamEvaluation(c.Request.Context(), in.ExecutionUserID, redteamMCPInstanceID(c), in)
+	case "get_promptfoo_evaluation_result":
+		if err := requireEnterpriseRedteamMCPRole(c); err != nil {
+			return nil, err
+		}
+		var in struct {
+			EngineRunID string `json:"engine_run_id,omitempty"`
+		}
+		if err := decodeToolArgs(raw, &in); err != nil {
+			return nil, err
+		}
+		return h.bridge.GetPromptfooEvaluationResult(c.Request.Context(), redteamMCPPlatformUserID(c), in.EngineRunID)
 	case "get_capability_detail":
 		if err := requireEnterpriseRedteamMCPRole(c); err != nil {
 			return nil, err
@@ -122,7 +154,7 @@ func (h *RedteamMCPHandler) callTool(c *gin.Context, name string, raw json.RawMe
 			return nil, err
 		}
 		return &maclaw.PrepareRedteamCapabilityOutput{
-			PreparedRefs: normalizeMCPRefs(in.CapabilityRefs),
+			PreparedRefs: uniqueNonEmptyStrings(in.CapabilityRefs),
 			Mode:         "mcp_context_only",
 		}, nil
 	case "prepare_skill_input_data":
@@ -223,6 +255,7 @@ func redteamToolRequiresExecutionGrant(name string) bool {
 		"prepare_skill_input_data",
 		"register_skill_payload_dataset",
 		"execute_redteam_evaluation_batch",
+		"run_promptfoo_redteam_evaluation",
 		"call_evaluation_target",
 		"judge_attack_result",
 		"save_redteam_evidence",
@@ -382,7 +415,7 @@ func redteamExecutionGrantContextFromRawArgs(raw json.RawMessage) (token string,
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return "", ""
 	}
-	sessionID = firstNonEmptyMCP(body.SessionID, body.Metadata["session_id"], body.Metadata["evaluation_session_id"])
+	sessionID = firstNonEmpty(body.SessionID, body.Metadata["session_id"], body.Metadata["evaluation_session_id"])
 	return strings.TrimSpace(body.Metadata[redteamExecutionGrantMetadataKey]), strings.TrimSpace(sessionID)
 }
 
@@ -425,6 +458,23 @@ func redteamMCPToolDefinitions() []gin.H {
 			"target_types": stringArraySchema("Optional target filters such as llm."),
 			"languages":    stringArraySchema("Optional language filters such as zh or classical_chinese."),
 			"limit":        integerSchema("Maximum results. Default 5, maximum 8."),
+		}),
+		toolDef("search_redteam_plugin_catalog", "Search the built-in promptfoo-engine plugin and strategy catalog (harmful, pii, prompt-injection, jailbreak, bias, security-exploit and strategy wrappers). Returns safe cards with plugin ids for run_promptfoo_redteam_evaluation.", []string{"query"}, gin.H{
+			"query": stringSchema("Natural-language search query such as harmful content, privacy leak, prompt injection, jailbreak, or promptfoo."),
+			"limit": integerSchema("Maximum results. Default 5, maximum 8."),
+		}),
+		toolDef("run_promptfoo_redteam_evaluation", "Execute a confirmed promptfoo-engine security evaluation in one platform-controlled tool call. Generates attack cases with the platform generation LLM, runs them against the configured target, judges with llm-rubric, saves safe evidence, and compiles the fixed Chinese report. Requires an execution grant. Never returns raw payloads, raw target responses, credentials, tokens, or local paths.", []string{"run_id", "purpose"}, gin.H{
+			"run_id":     stringSchema("Runtime run id."),
+			"session_id": stringSchema("Runtime session id that received the execution confirmation grant."),
+			"purpose":    stringSchema("Chinese evaluation purpose describing the system under test."),
+			"num_tests":  gin.H{"type": "integer", "description": "Number of attack cases to generate. Default 5, maximum 50.", "minimum": 1, "maximum": 50},
+			"plugins":    stringArraySchema("Plugin ids from search_redteam_plugin_catalog, for example harmful, pii, prompt-injection, jailbreak."),
+			"strategies": stringArraySchema("Optional strategy ids such as direct, role-play, encoding, multi-turn."),
+			"judge_mode": stringSchema("Optional judge mode: auto, promptfoo_native, or platform_rejudge."),
+			"metadata":   metadataSchema(),
+		}),
+		toolDef("get_promptfoo_evaluation_result", "Get the safe status and sanitized result of one promptfoo-engine run owned by the caller. Returns counts, severity, and plugin statistics only.", []string{"engine_run_id"}, gin.H{
+			"engine_run_id": stringSchema("Engine run id returned by run_promptfoo_redteam_evaluation."),
 		}),
 		toolDef("get_capability_detail", "Get one safe security-evaluation capability card by ref.", []string{"capability_ref"}, gin.H{
 			"capability_ref": stringSchema("Capability source_ref returned by search_platform_redteam_capabilities."),
@@ -562,31 +612,8 @@ func errUnknownMCPTool(name string) error {
 	return mcpToolError("unknown redteam mcp tool: " + name)
 }
 
-func firstNonEmptyMCP(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func normalizeMCPRefs(items []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[item] {
-			continue
-		}
-		seen[item] = true
-		out = append(out, item)
-	}
-	return out
-}
-
 func selectedRedteamDataRefs(items []string) (sampleRefs []string, composedAttackRefs []string) {
-	for _, item := range normalizeMCPRefs(items) {
+	for _, item := range uniqueNonEmptyStrings(items) {
 		lower := strings.ToLower(strings.TrimSpace(item))
 		switch {
 		case strings.HasPrefix(lower, "sample:"):

@@ -146,6 +146,10 @@ func main() {
 	)
 	maclawEvaluationHandler := handler.NewMaclawEvaluationHandlerWithProviderAndProjection(maclawProvider, maclawProjection)
 	maclawEvaluationHandler.SetRuntimeMode(cfg.Maclaw.RuntimeMode)
+	engineRunRepo := repository.NewEngineRunRepository(pgPool)
+	engineRunService := maclawpkg.NewEngineRunService(engineRunRepo)
+	engineClient := maclawpkg.NewPromptfooEngineClient(cfg.Maclaw.EngineBaseURL, cfg.Maclaw.EngineBearerToken, cfg.Maclaw.EngineTimeoutSeconds)
+	engineRunHandler := handler.NewEngineRunHandler(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
 	maclawSkillHandler := handler.NewMaclawSkillHandlerWithProviderProjectionAndHub(maclawProvider, maclawSkillProjection, maclawHubConfigService)
 	maclawMCPHandler := handler.NewMaclawMCPHandler(maclawProvider)
 	maclawCapabilityCatalog.SetPlatformDataStores(sampleRepo, tplRepo, composedAttackRepo)
@@ -157,6 +161,12 @@ func main() {
 	redteamToolBridge.SetArtifactService(maclawRedteamArtifactService)
 	redteamToolBridge.SetLLMAttackJudge(maclawpkg.NewRuntimeConfigLLMAttackJudge(maclawRuntimeConfigService))
 	redteamToolBridge.SetTargetConcurrency(cfg.Maclaw.RedteamTargetConcurrency)
+		// Phase 1: expose the promptfoo engine to MaClaw through the bridge MCP tools.
+	redteamToolBridge.SetPromptfooEngine(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
+		// Phase 1 confirm fast path: shared platform engine job store.
+		platformEngineJobs := maclawpkg.NewPlatformEngineJobStore()
+		maclawRuntimeHandler.SetPromptfooEngine(redteamToolBridge, platformEngineJobs, engineRunService)
+		maclawEvaluationHandler.SetPromptfooEngineJobs(platformEngineJobs, engineRunService)
 	if sampleLoader != nil && composedAttackLoader != nil {
 		payloadProvider := maclawpkg.NewPlatformRedteamPayloadProvider(sampleLoader, tplRepo, composedAttackLoader)
 		payloadProvider.SetPublicationStores(sampleRepo, tplRepo, composedAttackRepo)
@@ -206,7 +216,11 @@ func main() {
 
 	auth := api.Group("/")
 	auth.Use(middleware.JWTAuth(cfg.Auth.JWTSecret))
-	auth.Use(middleware.RateLimit(100, time.Minute))
+	// The enterprise chat UI polls jobs/runs/sessions endpoints ~1/s each
+	// while an evaluation is active (≈240 req/min per user). 100/min throttled
+	// that polling and made the job tracker give up on healthy runs; keep a
+	// limit well above the polling load for abuse protection only.
+	auth.Use(middleware.RateLimit(600, time.Minute))
 	{
 		auth.GET("/auth/me", authHandler.Me)
 
@@ -277,6 +291,17 @@ func main() {
 			maclawEvaluation.POST("/maclaw/evaluation/sessions/:id/confirm", maclawRuntimeHandler.ConfirmPlan)
 			maclawEvaluation.GET("/maclaw/evaluation/runs/:id/events", maclawRuntimeHandler.StreamRunEvents)
 			maclawEvaluation.POST("/maclaw/evaluation/runs/:id/cancel", maclawRuntimeHandler.CancelRun)
+		}
+
+		maclawEngine := auth.Group("/")
+		maclawEngine.Use(middleware.RequireRole("enterprise", "admin"))
+		{
+			maclawEngine.GET("/maclaw/engine/health", engineRunHandler.Health)
+			maclawEngine.POST("/maclaw/engine/runs", engineRunHandler.CreateRun)
+			maclawEngine.GET("/maclaw/engine/runs", engineRunHandler.ListRuns)
+			maclawEngine.GET("/maclaw/engine/runs/:id", engineRunHandler.GetRun)
+			maclawEngine.POST("/maclaw/engine/runs/:id/cancel", engineRunHandler.CancelRun)
+			maclawEngine.GET("/maclaw/engine/runs/:id/events", engineRunHandler.StreamRunEvents)
 		}
 
 		enterprise := auth.Group("/")
@@ -416,6 +441,7 @@ func runMigrations(ctx context.Context, pgPool *pgxpool.Pool) {
 		"migrations/023_maclaw_resources.sql",
 		"migrations/024_template_custom_categories.sql",
 		"migrations/025_attack_sample_categories.sql",
+		"migrations/026_promptfoo_engine.sql",
 	}
 	for _, path := range paths {
 		if err := db.MigrateUp(ctx, pgPool, path); err != nil {

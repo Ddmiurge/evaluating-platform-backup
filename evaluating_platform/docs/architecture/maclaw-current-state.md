@@ -1,4 +1,4 @@
-# MaClaw Current State
+﻿# MaClaw Current State
 
 更新时间：2026-05-22
 
@@ -194,8 +194,39 @@ MaClawSrv 当前没有稳定的原生 retry/resume/checkpoint API：
 
 不得恢复 `maclaw.enabled=false`、`skill.legacy_apis_enabled` 或 `SKILL_LEGACY_APIS_ENABLED`。
 
+## promptfoo 引擎（Phase 0，2026-09-18 收尾）
+
+红队评测当前有两条执行链路，决策都在 MaClawSrv / BFF 侧：
+
+1. Skill 链路（既有）：MaClaw confirmed run -> 平台红队 MCP bridge -> `execute_redteam_evaluation_batch`。
+2. promptfoo 引擎链路（新）：BFF `POST /api/v1/maclaw/engine/runs` -> `promptfoo-engine` 容器（独立防腐层 `internal/maclaw/promptfoo_engine_client.go`）-> promptfoo 库 v0.123.0 执行，脱敏摘要回流。
+
+事实：
+
+- `promptfoo-engine` 是 compose 第九个服务，仅 compose 内网可达（`expose 8090`，不映射宿主机），Bearer Token 鉴权，非 root 运行。
+- 引擎安全开关 fail-closed：`PROMPTFOO_DISABLE_REMOTE_GENERATION` / `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION` / `PROMPTFOO_DISABLE_TELEMETRY` / `PROMPTFOO_DISABLE_SHARE` 任一未置位，容器拒绝启动（`src/env.ts` 断言）。
+- promptfoo 依赖已从 `file:../../promptfoo`（本地 link，镜像内不可解析）改为 registry 锁定版本 `0.123.0`；服务器构建不再依赖本地 checkout。
+- BFF 端点：`GET /maclaw/engine/health`、`POST|GET /maclaw/engine/runs`、`GET /maclaw/engine/runs/:id`、`POST /maclaw/engine/runs/:id/cancel`、`GET /maclaw/engine/runs/:id/events`（SSE）。角色限定 enterprise|admin。
+- 目标凭据由 `TargetConfigService.GetTargetWithSecret` 服务端解密，经 `MaterializeEngineCredentials` 映射为一次性凭据直接注入引擎请求内存；不落日志、不落 `engine_runs` 表、不回浏览器。
+- `engine_runs` 表（migration 026）只存安全进度元数据与脱敏聚合结果（counts/severity/plugin_stats/strategy_stats/≤200 字脱敏 reason）；prompt/response 原文只存在于引擎容器内存与临时工作目录，任务终态后清理。
+- 引擎判定极性已翻转：promptfoo `fail` = 漏洞证实 = 平台攻击 success（`reduceEvalToSafeResult`）。
+- Phase 1（capability catalog / MCP 三工具 / judge 双轨 / engine_reports）与 Phase 2（前端向导）尚未开始；当前引擎链路无前端入口，需用 API 直接调用。
+
+### 攻击用例生成：方案 A（evaluate 模式，2026-09-24 上线）
+
+promptfoo 的 `redteam.run` 模式必须自建用例且忽略外部 `tests`，在 fail-closed 开关下必然产生 0 条用例（三方案对比与源码证据见 `docs/architecture/promptfoo-generation-options.md`）。因此引擎链路改为**方案 A**：
+
+- 攻击用例由引擎侧 `src/runner/generateTests.ts` 直接调用平台默认 MaClaw 模型（BFF 经 `ResolveEngineGenerationCredential` 物化，同一来源 `maclaw_model_defaults`，加密存储）生成；promptfoo 只以 **evaluate 模式**消费预生成 `tests`（`promptfoo.evaluate`，不设 `writeLatestResults`/`redteam`，不触碰 promptfoo SQLite 与远程生成/远程分级路径）。
+- 判定用 `llm-rubric`：`defaultTest.options.provider` 指向同一生成 LLM（`openai:chat:<model>` + `apiBaseUrl`），极性翻转保持"pf fail = attack success"。
+- BFF 对缺失生成 LLM fail-fast：`503 generation_not_configured`；引擎侧错误码细分为 `generation_failed` / `generation_unavailable`（经 `EngineRunError` 透传）。
+- 生成与判定请求均禁用推理模式（`thinking:{type:'disabled'}` + `reasoning_effort:'none'`，判定经 openai provider `passthrough` 注入），判定 `max_tokens:4096` 防御 reasoning 耗尽预算导致空 content 误判。
+- 引擎侧 target base_url 规范化为完整 `/chat/completions` 端点（http provider 把 `config.url` 原样作 POST 端点）。
+- 当前平台默认生成 LLM：`mimo`（`https://api.xiaomimimo.com`，`mimo-v2.6-flash`，2026-09-24 替换失效的 DeepSeek key；更新经 `PUT /api/v1/admin/maclaw/model-default`，自动同步全部已映射 maclaw 租户）。
+- evaluate 模式无 redteam grader severity：失败结果按 pluginId 前缀推断展示级严重度（harmful/injection/jailbreak/pii → high，其余 medium），属展示近似而非 grader 结论。
+- 端到端验证：企业账号 `num_tests=3` run 成功（probes=3，attack_success=0，pass_rate=1.0，Qwen 目标安全拒答）；`engine_runs` 与引擎日志无密钥/prompt 原文/响应原文/本地路径泄漏；引擎 51/51 vitest（含真实 promptfoo 库 evaluate smoke e2e）与 Go 全量测试通过。
 ## 已知限制
 
+- maclaw 账号凭据（`maclaw_account_mappings` 的 api key/secret/access token）在 2026-09 存在加密格式迁移：旧容器以裸字符串直接加密，新代码改为 JSON 包装（`encryptJSON`）。`Provisioner.decryptString` 已兼容两种格式（JSON 解析失败时回退裸字符串，见 `TestProvisionerDecryptStringLegacyCompat`），新写入统一为 JSON 格式。若曾用 2026-09 之前的镜像写入凭据，升级后无需任何数据迁移。
 - 图文多模态攻击当前仅完成平台侧安全承接：Skill 可通过 `payload_dataset.payloads[].images[]` 产出图片+文字 payload，平台将其注册为临时 payload handle，并只向浏览器/报告暴露 `payload_modality`、`image_count`、`image_mime_types` 等安全摘要。当前 DeepSeek 文本模型不支持图片输入，企业被测模型连接需显式开启 `supports_vision=true` 后才会发送 OpenAI-compatible 图文消息；否则批量执行返回 `target_multimodal_not_supported` 安全失败。
 - 当前专家门户已导入三套多模态 Skill：`figstep-typographic-visual-skill`、`mm-safetybench-query-image-skill`、`hades-hidden-intent-visual-skill`。它们分别基于 FigStep SafeBench-Tiny/typographic image prompts、MM-SafetyBench processed questions/key-phrase image prompt、HADES repository scenario definitions 生成小规模图文 payload dataset，并通过 `judge_profile` 进入项目特定判定口径。
 - full MaClawSrv 原生 resource/catalog grant 能力尚未完全替代平台资源兼容层。
@@ -222,3 +253,22 @@ npm run build
 cd C:\Users\wangboyang\Desktop\evaluating_platform
 git diff --check
 ```
+## promptfoo 引擎接入 MaClaw（Phase 1，2026-09-28）
+
+Phase 1 把 promptfoo 引擎能力接入 MaClaw 发现-确认-执行主链路：
+
+- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 现为 **119 插件 + 30 攻击策略**（2026-10-09 实测校正，覆盖 harmful 家族、industry 行业合规、dataset 基准等分类，含 `harmful:cybercrime` 等子项）；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。前端 `engineEval.ts` 由后端目录生成、当前与之一致，但同步依赖 `gen_frontend_options_test.go`（手工 dump、无断言），漂移防护待 CI 补齐。
+- **三个 MCP 工具**（`redteam_tool_bridge.go` 注册，见 `redteam_mcp.go`）：`search_redteam_plugin_catalog`（目录检索）、`run_promptfoo_redteam_evaluation`（grant 保护，发起引擎评测）、`get_promptfoo_evaluation_result`（安全结果查询）。
+- **BFF confirm fast path**：MaClaw agent loop 的 LLM tool-calling 在当前模型下不可靠（confirm 后可能把工具参数当文本输出），因此当计划卡只选择 promptfoo 引擎能力时，BFF `engine_confirm.go` 直接编排引擎（Prepare+Wait 拆分 + 平台内存 job store `engine_job_store.go`，job id 前缀 `pfj-`）。发现与规划仍归 MaClaw，执行平台受控。注意：`EvaluationJobFromPlatformEngine` 不回填 `progress.run_id`（pfj- 不是 maclaw runtime run id），前端对引擎 job 用轮询直接刷新进度卡，不开 `/evaluation/runs/pfj-…/events` SSE（2026-10-08 修复：该 SSE 被运行时秒断，触发重连+会话快照循环，卡片闪烁）。
+- **报告 engine 维度**：引擎 run 落库 `maclaw_redteam_reports` 时 `metadata.engine=promptfoo`，findings 带插件维度；结果映射器 `promptfoo_engine_bridge.go`（`EngineSafeResultCounts`/`EngineSafeResultFindings`）不再二次翻转极性（引擎已内部翻转）。
+- 验收：聊天 → 计划卡（MaClaw 选中 promptfoo_plugin:harmful）→ confirm → fast path job `pfj-…` 5/5 探针 succeeded → 报告落库 engine=promptfoo、风险“最高安全”、零泄漏。
+
+## 企业门户自选评测（Phase 2，2026-09-28）
+
+Phase 2 提供不经聊天工作台的引擎评测入口（对话优先原则下的辅助入口）：
+
+- **`/enterprise/eval` 自选评测页**（`frontend/src/pages/enterprise/EngineEvalPage.tsx`）：表单（评测目的/用例数/插件/策略）→ `POST /api/v1/maclaw/engine/runs` → 3s 轮询 `GET /runs/:id` 展示阶段进度与 SafeRunResult（totals/severity_counts/plugin_stats）→ 历史列表（`GET /runs`）+ 展开详情（插件统计/严重度/拦截率）。
+- **服务层**：`frontend/src/services/engineEval.ts`（create/get/list/cancel + 内置插件目录展示项）。
+- **菜单**：企业门户侧边栏新增「自选评测」（SafetyOutlined），「AI 服务」加「荐」徽标；自选评测页页首固定「推荐使用 AI 对话发起评测」引导条 + 返回按钮（对话优先）。
+- 验收：不进聊天工作台，直接经向导 API 完成 harmful+prompt-injection 双插件评测（run `er-172433739a094b079bf675f0cf906e7c`，3/3 探针 succeeded，attack_success=0，pass_rate=1.0）；`engine_runs.result` 与 API 响应零泄漏。
+- 已知限制：双插件评测耗时约 5 分钟（用例生成 + Qwen 目标推理串行延迟），进度卡已展示阶段与计数，无前端超时取消之外的等待问题。

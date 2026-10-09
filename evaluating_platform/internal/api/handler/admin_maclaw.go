@@ -558,10 +558,16 @@ func shouldRewriteLocalhostForRuntimeMode(runtimeMode string) bool {
 }
 
 func (h *AdminMaclawHandler) syncDefaultConfigToMappedAccounts(c *gin.Context, cfg maclaw.RuntimeAppConfig) gin.H {
-	result := gin.H{"attempted": 0, "succeeded": 0, "failed": 0}
 	if h.provider == nil || !h.provider.Enabled() || h.mappingRepo == nil {
-		return result
+		return gin.H{"attempted": 0, "succeeded": 0, "failed": 0}
 	}
+	return h.forEachMappedAccount(c, cfg)
+}
+
+// forEachMappedAccount 分页遍历全部账号映射并应用 runtime 配置补丁（P2-03
+// 合并自 default/hub 两个逐字相同的同步循环）。
+func (h *AdminMaclawHandler) forEachMappedAccount(c *gin.Context, patch maclaw.RuntimeAppConfig) gin.H {
+	result := gin.H{"attempted": 0, "succeeded": 0, "failed": 0}
 	for offset := 0; ; offset += 200 {
 		accounts, err := h.mappingRepo.List(c.Request.Context(), 200, offset)
 		if err != nil {
@@ -581,11 +587,10 @@ func (h *AdminMaclawHandler) syncDefaultConfigToMappedAccounts(c *gin.Context, c
 				result["failed"] = result["failed"].(int) + 1
 				continue
 			}
-			if err := updateRuntimeConfigPatch(c, session, cfg); err != nil {
+			if err := updateRuntimeConfigPatch(c, session, patch); err != nil {
 				result["failed"] = result["failed"].(int) + 1
 				continue
 			}
-			refreshMaclawInstanceReadiness(c, session)
 			result["succeeded"] = result["succeeded"].(int) + 1
 		}
 		if len(accounts) < 200 {
@@ -595,43 +600,14 @@ func (h *AdminMaclawHandler) syncDefaultConfigToMappedAccounts(c *gin.Context, c
 }
 
 func (h *AdminMaclawHandler) syncHubConfigToMappedAccounts(c *gin.Context) gin.H {
-	result := gin.H{"attempted": 0, "succeeded": 0, "failed": 0}
 	if h.hubService == nil || !h.hubService.Enabled() || h.provider == nil || !h.provider.Enabled() || h.mappingRepo == nil {
-		return result
+		return gin.H{"attempted": 0, "succeeded": 0, "failed": 0}
 	}
 	patch, err := h.hubService.RuntimeConfigPatch(c.Request.Context())
 	if err != nil || patch == nil || patch.IsEmpty() {
-		return result
+		return gin.H{"attempted": 0, "succeeded": 0, "failed": 0}
 	}
-	for offset := 0; ; offset += 200 {
-		accounts, err := h.mappingRepo.List(c.Request.Context(), 200, offset)
-		if err != nil {
-			result["failed"] = result["failed"].(int) + 1
-			return result
-		}
-		if len(accounts) == 0 {
-			return result
-		}
-		for _, account := range accounts {
-			result["attempted"] = result["attempted"].(int) + 1
-			session, err := h.provider.Resolve(c.Request.Context(), maclaw.RuntimeIdentity{
-				UserID: account.PlatformUserID.String(),
-				Role:   string(account.PlatformRole),
-			})
-			if err != nil || session == nil || session.Client == nil {
-				result["failed"] = result["failed"].(int) + 1
-				continue
-			}
-			if err := updateRuntimeConfigPatch(c, session, *patch); err != nil {
-				result["failed"] = result["failed"].(int) + 1
-				continue
-			}
-			result["succeeded"] = result["succeeded"].(int) + 1
-		}
-		if len(accounts) < 200 {
-			return result
-		}
-	}
+	return h.forEachMappedAccount(c, *patch)
 }
 
 func updateRuntimeConfigPatch(c *gin.Context, session *maclaw.GatewaySession, patch maclaw.RuntimeAppConfig) error {

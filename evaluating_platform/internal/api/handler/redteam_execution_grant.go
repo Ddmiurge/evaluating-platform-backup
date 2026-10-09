@@ -50,8 +50,8 @@ func mintRedteamExecutionGrantWithContext(secret, userID, sessionID string, expi
 		UserID:                 userID,
 		SessionID:              strings.TrimSpace(sessionID),
 		TestCount:              ctx.TestCount,
-		SelectedCapabilityRefs: normalizeGrantStringList(ctx.SelectedCapabilityRefs),
-		SelectedSkillNames:     normalizeGrantStringList(ctx.SelectedSkillNames),
+		SelectedCapabilityRefs: uniqueNonEmptyStrings(ctx.SelectedCapabilityRefs),
+		SelectedSkillNames:     uniqueNonEmptyStrings(ctx.SelectedSkillNames),
 		SelectionStrategy:      strings.TrimSpace(ctx.SelectionStrategy),
 		ExpiresAt:              expiresAt.UTC().Unix(),
 	}
@@ -62,18 +62,6 @@ func mintRedteamExecutionGrantWithContext(secret, userID, sessionID string, expi
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(data)
 	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func verifyRedteamExecutionGrant(secret, token, userID, sessionID string, now time.Time) error {
-	payload, err := verifyRedteamExecutionGrantPayload(secret, token, userID, now)
-	if err != nil {
-		return err
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if strings.TrimSpace(payload.SessionID) != "" && sessionID != "" && !strings.EqualFold(strings.TrimSpace(payload.SessionID), sessionID) {
-		return errors.New("execution grant session mismatch")
-	}
-	return nil
 }
 
 func verifyRedteamExecutionGrantPayload(secret, token, userID string, now time.Time) (redteamExecutionGrantPayload, error) {
@@ -116,16 +104,3 @@ func verifyRedteamExecutionGrantPayload(secret, token, userID string, now time.T
 	return payload, nil
 }
 
-func normalizeGrantStringList(items []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[item] {
-			continue
-		}
-		seen[item] = true
-		out = append(out, item)
-	}
-	return out
-}

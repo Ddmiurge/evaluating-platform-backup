@@ -63,7 +63,6 @@ export function AdminPortal() {
           </div>
         </div>
         <Menu
-          theme="dark"
           mode="inline"
           selectedKeys={[selectedKey]}
           style={{ background: 'transparent', border: 'none', marginTop: 8 }}
@@ -105,7 +104,7 @@ export function AdminPortal() {
             placement="bottomRight"
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <Avatar size={32} icon={<UserOutlined />} style={{ background: 'rgba(139,92,246,0.2)', border: '1px solid rgba(139,92,246,0.4)' }} />
+              <Avatar size={32} icon={<UserOutlined />} style={{ background: 'rgba(124, 58, 237, 0.12)', border: '1px solid rgba(124, 58, 237, 0.4)' }} />
               <Text style={{ color: 'var(--text-primary)', fontSize: 13 }}>{user?.name || '管理员'}</Text>
             </div>
           </Dropdown>

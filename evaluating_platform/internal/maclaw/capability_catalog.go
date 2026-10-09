@@ -144,6 +144,10 @@ func (s *CapabilityCatalogService) Search(ctx context.Context, q CapabilityCatal
 			cards = append(cards, composedAttackCapabilityCard(item))
 		}
 	}
+	// Built-in promptfoo engine plugin/strategy catalog (static, Phase 1).
+	for _, card := range PromptfooPluginCatalogCards() {
+		cards = append(cards, card)
+	}
 	scored := make([]scoredCapabilityCard, 0, len(cards))
 	for _, card := range cards {
 		if !card.Enabled {
@@ -511,6 +515,12 @@ func capabilityAliases(token string) []string {
 		return []string{"role play", "role_play"}
 	case "编码", "格式混淆", "编码／格式混淆":
 		return []string{"encoding", "format obfuscation", "encoding_evasion"}
+	case "引擎评测", "第二引擎", "promptfoo":
+		return []string{"promptfoo", "engine_plugin", "promptfoo_plugin"}
+	case "有害内容", "有害":
+		return []string{"harmful"}
+	case "隐私泄露", "隐私":
+		return []string{"pii", "privacy"}
 	default:
 		return nil
 	}

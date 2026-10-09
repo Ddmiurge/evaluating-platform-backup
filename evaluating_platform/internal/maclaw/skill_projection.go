@@ -115,6 +115,20 @@ func (s *SkillProjectionService) RecordExpertSkills(ctx context.Context, identit
 	return nil
 }
 
+// logFailuresSummary 统一投影同步的失败摘要日志（P2-16 合并自三处逐字相同的尾声）。
+// wrap 为 true 时返回错误（严格路径），否则仅记录日志（尽力而为路径）。
+func logFailuresSummary(prefix, unit string, failures []string) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	preview := strings.Join(failures, "; ")
+	if len(preview) > 500 {
+		preview = preview[:500] + "..."
+	}
+	log.Printf("[WARN] %s completed with %d failed %s: %s", prefix, len(failures), unit, preview)
+	return fmt.Errorf("%s had %d failed %s", prefix, len(failures), unit)
+}
+
 func (s *SkillProjectionService) SyncPublishedSkillsToAllEnterpriseMappings(ctx context.Context) error {
 	if s == nil || s.publications == nil || s.mappings == nil || s.provider == nil {
 		return nil
@@ -161,15 +175,7 @@ func (s *SkillProjectionService) SyncPublishedSkillsToAllEnterpriseMappings(ctx 
 			break
 		}
 	}
-	if len(failures) > 0 {
-		preview := strings.Join(failures, "; ")
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		log.Printf("[WARN] maclaw skill distribution completed with %d failed enterprise mapping(s): %s", len(failures), preview)
-		return fmt.Errorf("maclaw skill distribution had %d failed enterprise mapping(s)", len(failures))
-	}
-	return nil
+	return logFailuresSummary("maclaw skill distribution", "enterprise mapping(s)", failures)
 }
 
 func (s *SkillProjectionService) ListEnterpriseCatalog(ctx context.Context, own []SkillSummary, q SkillSearchInput) ([]SkillSummary, error) {
@@ -343,13 +349,7 @@ func (s *SkillProjectionService) SyncEnterprisePublishedHubSkillsBestEffort(ctx 
 			failures = append(failures, fmt.Sprintf("%s: %v", pub.SourceSkillName, err))
 		}
 	}
-	if len(failures) > 0 {
-		preview := strings.Join(failures, "; ")
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		log.Printf("[WARN] maclaw enterprise hub skill backfill completed with %d failed skill(s): %s", len(failures), preview)
-	}
+	logFailuresSummary("maclaw enterprise hub skill backfill", "skill(s)", failures)
 	return nil
 }
 
@@ -406,13 +406,7 @@ func (s *SkillProjectionService) SyncExpertPublishedHubSkillsBestEffort(ctx cont
 			failures = append(failures, fmt.Sprintf("%s: %v", pub.SourceSkillName, err))
 		}
 	}
-	if len(failures) > 0 {
-		preview := strings.Join(failures, "; ")
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		log.Printf("[WARN] maclaw expert hub skill backfill completed with %d failed skill(s): %s", len(failures), preview)
-	}
+	logFailuresSummary("maclaw expert hub skill backfill", "skill(s)", failures)
 	return nil
 }
 
@@ -655,20 +649,3 @@ func skillIsPublished(item SkillSummary) bool {
 	return status == "" || status == "active" || status == "published" || status == "enabled"
 }
 
-func matchesSkillQuery(item model.MaclawSkillPublication, query string) bool {
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
-		return true
-	}
-	haystack := strings.ToLower(strings.Join(append([]string{
-		item.Name,
-		item.SourceSkillName,
-		item.Description,
-	}, append(item.Triggers, item.Tags...)...), " "))
-	for _, token := range strings.Fields(query) {
-		if !strings.Contains(haystack, token) {
-			return false
-		}
-	}
-	return true
-}

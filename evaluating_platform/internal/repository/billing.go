@@ -75,18 +75,6 @@ func (r *BillingRepository) ListByUser(ctx context.Context, userID uuid.UUID, li
 	}
 	return records, total, nil
 }
-
-// GetAssessmentCost 查询某次评估的总费用
-func (r *BillingRepository) GetAssessmentCost(ctx context.Context, assessmentID uuid.UUID) (float64, error) {
-	query := `SELECT COALESCE(SUM(amount), 0) FROM billing_records WHERE assessment_id = $1`
-	var total float64
-	if err := r.pool.QueryRow(ctx, query, assessmentID).Scan(&total); err != nil {
-		return 0, fmt.Errorf("sum billing cost: %w", err)
-	}
-	return total, nil
-}
-
-// ListTransactions 分页查询用户的余额变动记录（按时间倒序）
 func (r *BillingRepository) ListTransactions(ctx context.Context, userID uuid.UUID, limit, offset int) ([]model.BalanceTransaction, int, error) {
 	countQuery := `SELECT COUNT(*) FROM balance_transactions WHERE user_id = $1`
 	var total int

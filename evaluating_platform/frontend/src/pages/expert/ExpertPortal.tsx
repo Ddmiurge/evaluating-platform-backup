@@ -89,7 +89,6 @@ export function ExpertPortal() {
         </div>
 
         <Menu
-          theme="dark"
           mode="inline"
           selectedKeys={[location.pathname]}
           style={{ background: 'transparent', border: 'none', marginTop: 8 }}
@@ -113,7 +112,7 @@ export function ExpertPortal() {
           }}
         >
           <Text style={{ color: 'var(--text-muted)', fontSize: 11 }}>专家累计收益</Text>
-          <div style={{ color: '#ff7a45', fontSize: 18, fontWeight: 700 }}>
+          <div style={{ color: 'var(--color-high)', fontSize: 18, fontWeight: 700 }}>
             {earnings !== null ? `¥ ${earnings.toFixed(2)}` : '—'}
           </div>
           <Text style={{ color: 'var(--text-muted)', fontSize: 11 }}>工具调用分成</Text>
@@ -159,7 +158,7 @@ export function ExpertPortal() {
                 <Avatar
                   size={32}
                   icon={<UserOutlined />}
-                  style={{ background: 'rgba(255, 122, 69, 0.2)', border: '1px solid rgba(255, 122, 69, 0.4)' }}
+                  style={{ background: 'rgba(234, 88, 12, 0.12)', border: '1px solid rgba(234, 88, 12, 0.4)' }}
                 />
                 <Text style={{ color: 'var(--text-primary)', fontSize: 13 }}>{user?.name || '专家用户'}</Text>
               </div>

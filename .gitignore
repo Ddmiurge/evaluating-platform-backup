@@ -54,3 +54,40 @@ ppt_assets/
 *.zip
 *.tar
 *.tar.gz
+
+# === 敏感 / 部署资产（严禁提交；2026-10-09 审计后加固）===
+# 部署备份快照（含明文 .env.before / pg_dump / hubcenter.db）
+deploy-backups/
+deploy-demo/
+deploy-skill-sync/
+**/deploy-backups/
+**/deploy-demo/
+**/deploy-skill-sync/
+
+# 数据库转储与快照
+*.pg_dump.sql
+*.sql.dump
+*.db
+**/*.pg_dump.sql
+**/*.sql.dump
+**/*.db
+
+# 部署前后快照与补丁
+*.before
+*.patch
+**/*.before
+**/*.patch
+
+# 数据导出
+*_data_export_*.zip
+**/*_data_export_*.zip
+
+# 本地环境变量（保留 .env.example）
+**/.env
+**/.env.local
+**/.env.*
+!**/.env.example
+
+# 本地代理/工作区状态（非项目源码）
+.workbuddy/
+**/.workbuddy/

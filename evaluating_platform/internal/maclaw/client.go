@@ -215,8 +215,9 @@ type EvaluationResourcePreview struct {
 type EvaluationTargetKind string
 
 const (
-	EvaluationTargetKindLLM  EvaluationTargetKind = "llm"
-	EvaluationTargetKindHTTP EvaluationTargetKind = "http"
+	EvaluationTargetKindLLM   EvaluationTargetKind = "llm"
+	EvaluationTargetKindHTTP  EvaluationTargetKind = "http"
+	EvaluationTargetKindAgent EvaluationTargetKind = "agent"
 )
 
 type EvaluationTargetAuthType string

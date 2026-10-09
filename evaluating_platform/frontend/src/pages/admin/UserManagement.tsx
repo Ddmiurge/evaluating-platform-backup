@@ -124,7 +124,7 @@ export function UserManagement() {
     {
       title: '余额',
       dataIndex: 'balance',
-      render: (v: number) => <Text style={{ color: '#4d96ff' }}>¥{v?.toFixed(2)}</Text>,
+      render: (v: number) => <Text style={{ color: 'var(--color-primary)' }}>¥{v?.toFixed(2)}</Text>,
     },
     {
       title: '注册时间',

@@ -5,54 +5,44 @@ import zhCN from 'antd/locale/zh_CN'
 import App from './App.tsx'
 import './styles/theme.css'
 
-const cobaltBlue = '#1a6dff'
+const brandBlue = '#2563eb'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ConfigProvider
       locale={zhCN}
       theme={{
-        algorithm: theme.darkAlgorithm,
+        algorithm: theme.defaultAlgorithm,
         token: {
-          colorPrimary: cobaltBlue,
-          colorBgBase: '#0a0c10',
-          colorBgContainer: '#141820',
-          colorBgElevated: '#1a2030',
-          colorBorder: '#1e2535',
-          colorText: '#e8eaf0',
-          colorTextSecondary: '#8890a4',
-          borderRadius: 6,
+          colorPrimary: brandBlue,
+          colorBgBase: '#f6f7f9',
+          colorBgContainer: '#ffffff',
+          colorBgElevated: '#ffffff',
+          colorBorder: '#e2e8f0',
+          colorText: '#0f172a',
+          colorTextSecondary: '#475569',
+          borderRadius: 8,
           fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         },
         components: {
-          Button: {
-            colorPrimary: cobaltBlue,
-            colorPrimaryHover: '#3d85ff',
-            colorPrimaryActive: '#0052d9',
-          },
           Layout: {
-            siderBg: '#0f1117',
-            headerBg: '#0f1117',
-            bodyBg: '#0a0c10',
+            siderBg: '#ffffff',
+            headerBg: '#ffffff',
+            bodyBg: '#f6f7f9',
           },
           Menu: {
-            darkItemBg: '#0f1117',
-            darkSubMenuItemBg: '#0a0c10',
-            darkItemSelectedBg: 'rgba(26, 109, 255, 0.2)',
-            darkItemSelectedColor: '#4d96ff',
+            itemBg: 'transparent',
+            itemSelectedBg: 'rgba(37, 99, 235, 0.10)',
+            itemSelectedColor: brandBlue,
+            itemColor: '#475569',
+            itemHoverBg: '#f2f6fd',
           },
           Table: {
-            headerBg: '#141820',
-            rowHoverBg: '#1a2030',
+            headerBg: '#f8fafc',
+            rowHoverBg: '#f1f5f9',
           },
           Card: {
-            colorBgContainer: '#141820',
-          },
-          Input: {
-            colorBgContainer: '#0f1117',
-          },
-          Select: {
-            colorBgContainer: '#0f1117',
+            colorBgContainer: '#ffffff',
           },
         },
       }}

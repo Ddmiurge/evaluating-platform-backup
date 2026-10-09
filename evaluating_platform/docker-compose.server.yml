@@ -1,0 +1,8 @@
+services:
+  postgres:
+    ports: !override []
+  redis:
+    ports: !override []
+  backend:
+    ports: !override
+      - "8088:8080"

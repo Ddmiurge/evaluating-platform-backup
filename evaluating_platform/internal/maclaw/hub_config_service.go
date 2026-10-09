@@ -2,7 +2,6 @@ package maclaw
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -68,14 +67,9 @@ func (s *MaclawHubConfigService) SaveHubConfig(ctx context.Context, next MaclawH
 	if err != nil {
 		return nil, err
 	}
-	keyID, key := s.keyStore.CurrentKey()
-	data, err := json.Marshal(normalized)
+	encrypted, keyID, err := encryptJSON(s.keyStore, normalized, "maclaw hub config")
 	if err != nil {
-		return nil, fmt.Errorf("marshal maclaw hub config: %w", err)
-	}
-	encrypted, err := appcrypto.Encrypt(data, key)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt maclaw hub config: %w", err)
+		return nil, err
 	}
 	if err := s.store.UpsertHubConfig(ctx, encrypted, keyID, updatedBy); err != nil {
 		return nil, err
@@ -99,17 +93,9 @@ func (s *MaclawHubConfigService) RuntimeConfigPatch(ctx context.Context) (*Runti
 }
 
 func (s *MaclawHubConfigService) decryptConfig(record *model.MaclawHubConfigRecord) (*MaclawHubConfig, error) {
-	key, err := s.keyStore.GetKey(record.ConfigKeyID)
-	if err != nil {
-		return nil, fmt.Errorf("load maclaw hub config key: %w", err)
-	}
-	plain, err := appcrypto.Decrypt(record.EncryptedConfig, key)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt maclaw hub config: %w", err)
-	}
 	var cfg MaclawHubConfig
-	if err := json.Unmarshal(plain, &cfg); err != nil {
-		return nil, fmt.Errorf("decode maclaw hub config: %w", err)
+	if err := decryptJSON(s.keyStore, record.EncryptedConfig, record.ConfigKeyID, &cfg, "maclaw hub config"); err != nil {
+		return nil, err
 	}
 	normalized, err := NormalizeHubConfig(cfg)
 	if err != nil {

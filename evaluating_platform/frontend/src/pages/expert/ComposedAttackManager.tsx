@@ -21,6 +21,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { expertService } from '../../services/expert'
+import { formatDate, formatSize } from '../../utils/format'
 
 const { Paragraph, Text } = Typography
 const { TextArea } = Input
@@ -40,32 +41,6 @@ interface ComposedAttackRecord {
 interface Payload {
   index: number
   data: string
-}
-
-function formatDate(value?: string) {
-  if (!value) {
-    return '未记录时间'
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function formatSize(value: number) {
-  if (!value) {
-    return '0 KB'
-  }
-  return `${(value / 1024).toFixed(1)} KB`
 }
 
 export function ComposedAttackManager() {
@@ -131,7 +106,7 @@ export function ComposedAttackManager() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <Text style={{ color: 'var(--text-primary)', fontSize: 16, fontWeight: 600 }}>已组合攻击</Text>
           <Text style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
             这类资产已经是最终攻击载荷。编排命中后会直接执行，跳过模板拼接。
@@ -244,7 +219,7 @@ export function ComposedAttackManager() {
         {!previewData || previewData.length === 0 ? (
           <Empty description="暂无载荷数据" />
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space orientation="vertical" style={{ width: '100%' }} size="middle">
             {previewData.map((payload) => {
               const safeText = payload.data || ''
               const isExpanded = expandedRows[payload.index]

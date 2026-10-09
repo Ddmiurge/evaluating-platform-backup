@@ -1,39 +1,39 @@
-/* 全局黑底科技感主题 + 宝蓝按钮 */
+/* 全局现代白色主题 + 现代蓝主色 */
 :root {
   /* 背景层级 */
-  --bg-base: #0a0c10;
-  --bg-surface: #0f1117;
-  --bg-card: #141820;
-  --bg-hover: #1a2030;
-  --bg-active: #1f2740;
+  --bg-base: #f6f7f9;
+  --bg-surface: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f2f6fd;
+  --bg-active: #e8f0fe;
 
-  /* 宝蓝色系 */
-  --color-primary: #1a6dff;
-  --color-primary-hover: #3d85ff;
-  --color-primary-active: #0052d9;
-  --color-primary-light: rgba(26, 109, 255, 0.15);
-  --color-primary-border: rgba(26, 109, 255, 0.4);
+  /* 现代蓝主色 */
+  --color-primary: #2563eb;
+  --color-primary-hover: #3b82f6;
+  --color-primary-active: #1d4ed8;
+  --color-primary-light: rgba(37, 99, 235, 0.10);
+  --color-primary-border: rgba(37, 99, 235, 0.35);
 
   /* 文字 */
-  --text-primary: #e8eaf0;
-  --text-secondary: #8890a4;
-  --text-muted: #4a5268;
-  --text-link: #4d96ff;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --text-link: #2563eb;
 
   /* 边框 */
-  --border-color: #1e2535;
-  --border-light: #252d3d;
+  --border-color: #e2e8f0;
+  --border-light: #eef2f7;
 
-  /* 状态色 */
-  --color-critical: #ff4d4f;
-  --color-high: #ff7a45;
-  --color-medium: #ffc53d;
-  --color-low: #52c41a;
-  --color-info: #40a9ff;
+  /* 状态色（白底 AA 对比度） */
+  --color-critical: #dc2626;
+  --color-high: #ea580c;
+  --color-medium: #d97706;
+  --color-low: #16a34a;
+  --color-info: #0284c7;
 
-  /* 发光效果 */
-  --glow-primary: 0 0 20px rgba(26, 109, 255, 0.3);
-  --glow-card: 0 4px 24px rgba(0, 0, 0, 0.6);
+  /* 柔和阴影 */
+  --glow-primary: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --glow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.06);
 
   /* 动画 */
   --transition-fast: 0.15s ease;
@@ -53,75 +53,6 @@ body {
   min-height: 100vh;
 }
 
-/* 网格背景纹理 */
-.tech-grid-bg {
-  background-image:
-    linear-gradient(rgba(26, 109, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(26, 109, 255, 0.03) 1px, transparent 1px);
-  background-size: 40px 40px;
-}
-
-/* 宝蓝按钮统一样式 */
-.ant-btn-primary {
-  background-color: var(--color-primary) !important;
-  border-color: var(--color-primary) !important;
-  color: #ffffff !important;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  box-shadow: var(--glow-primary);
-  transition: all var(--transition-fast);
-}
-
-.ant-btn-primary:hover {
-  background-color: var(--color-primary-hover) !important;
-  border-color: var(--color-primary-hover) !important;
-  box-shadow: 0 0 28px rgba(26, 109, 255, 0.5);
-  transform: translateY(-1px);
-}
-
-.ant-btn-primary:active {
-  background-color: var(--color-primary-active) !important;
-  transform: translateY(0);
-}
-
-/* 卡片 */
-.tech-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  box-shadow: var(--glow-card);
-  transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
-}
-
-.tech-card:hover {
-  border-color: var(--color-primary-border);
-  box-shadow: var(--glow-card), 0 0 0 1px var(--color-primary-border);
-}
-
-/* 扫描线动画 */
-@keyframes scan-line {
-  0% { transform: translateY(-100%); opacity: 0; }
-  10% { opacity: 0.3; }
-  90% { opacity: 0.3; }
-  100% { transform: translateY(100vh); opacity: 0; }
-}
-
-/* 数据流动画 */
-@keyframes data-flow {
-  0% { background-position: 0 0; }
-  100% { background-position: 40px 40px; }
-}
-
-/* 脉冲动画（用于运行中状态指示器）*/
-@keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 4px var(--color-primary); }
-  50% { box-shadow: 0 0 12px var(--color-primary), 0 0 24px var(--color-primary-light); }
-}
-
-.status-running {
-  animation: pulse-glow 2s infinite;
-}
-
 /* 风险等级颜色 */
 .severity-critical { color: var(--color-critical); }
 .severity-high { color: var(--color-high); }
@@ -129,18 +60,18 @@ body {
 .severity-low { color: var(--color-low); }
 .severity-info { color: var(--color-info); }
 
-/* 滚动条 */
+/* 滚动条（浅色） */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-surface);
+  background: #f1f5f9;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-light);
+  background: #cbd5e1;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-primary);
+  background: #94a3b8;
 }

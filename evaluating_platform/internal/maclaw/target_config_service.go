@@ -2,9 +2,7 @@ package maclaw
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,14 +75,9 @@ func (s *TargetConfigService) SaveTarget(ctx context.Context, userID uuid.UUID, 
 	if current != nil && isMaskedOrEmpty(next.CredentialSecret) {
 		next.CredentialSecret = current.CredentialSecret
 	}
-	keyID, key := s.keyStore.CurrentKey()
-	data, err := json.Marshal(next)
+	encrypted, keyID, err := encryptJSON(s.keyStore, next, "maclaw target config")
 	if err != nil {
-		return nil, fmt.Errorf("marshal maclaw target config: %w", err)
-	}
-	encrypted, err := appcrypto.Encrypt(data, key)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt maclaw target config: %w", err)
+		return nil, err
 	}
 	record := TargetConfigRecord{
 		UserID:          userID,
@@ -144,7 +137,7 @@ func (s *TargetConfigService) GetTargetWithSecret(ctx context.Context, userID uu
 		Enabled:          target.Enabled,
 		HealthStatus:     target.HealthStatus,
 		Tags:             append([]string(nil), target.Tags...),
-		Metadata:         copyStringMap(target.Metadata),
+		Metadata:         cloneMetadata(target.Metadata),
 	}
 	return &out, nil
 }
@@ -159,8 +152,14 @@ func (s *TargetConfigService) ProbeTarget(ctx context.Context, userID uuid.UUID,
 	}
 	healthURL := strings.TrimSpace(target.Metadata["health_url"])
 	if healthURL == "" {
-		healthURL = strings.TrimRight(strings.TrimSpace(target.BaseURL), "/") + "/models"
+		if TargetIsAgent(*target) {
+			// Agent targets: probe the conversation endpoint itself.
+			healthURL = strings.TrimSpace(target.Metadata[TargetMetadataAgentEndpoint])
+		} else {
+			healthURL = strings.TrimRight(strings.TrimSpace(target.BaseURL), "/") + "/models"
+		}
 	}
+	healthURL = substituteAgentAPIKey(healthURL, strings.TrimSpace(target.CredentialSecret))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
 		return nil, err
@@ -206,17 +205,9 @@ func (s *TargetConfigService) getStoredTarget(ctx context.Context, userID uuid.U
 }
 
 func (s *TargetConfigService) decryptTarget(record *TargetConfigRecord) (*storedEvaluationTarget, error) {
-	key, err := s.keyStore.GetKey(record.ConfigKeyID)
-	if err != nil {
-		return nil, fmt.Errorf("load maclaw target config key: %w", err)
-	}
-	plain, err := appcrypto.Decrypt(record.EncryptedConfig, key)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt maclaw target config: %w", err)
-	}
 	var out storedEvaluationTarget
-	if err := json.Unmarshal(plain, &out); err != nil {
-		return nil, fmt.Errorf("decode maclaw target config: %w", err)
+	if err := decryptJSON(s.keyStore, record.EncryptedConfig, record.ConfigKeyID, &out, "maclaw target config"); err != nil {
+		return nil, err
 	}
 	return &out, nil
 }
@@ -451,17 +442,6 @@ func cleanStringSlice(in []string) []string {
 		}
 		seen[item] = struct{}{}
 		out = append(out, item)
-	}
-	return out
-}
-
-func copyStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
 	}
 	return out
 }

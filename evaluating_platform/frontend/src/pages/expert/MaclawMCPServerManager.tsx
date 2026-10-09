@@ -235,7 +235,7 @@ export function MaclawMCPServerManager() {
       title: '服务',
       dataIndex: 'name',
       render: (_, item) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <Text strong>{item.name}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>{item.endpoint_url || '未配置远程地址'}</Text>
         </Space>
@@ -319,7 +319,7 @@ export function MaclawMCPServerManager() {
   ]
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
         <div>
           <Title level={3} style={{ margin: 0, color: 'var(--text-primary)' }}>MCP 服务</Title>

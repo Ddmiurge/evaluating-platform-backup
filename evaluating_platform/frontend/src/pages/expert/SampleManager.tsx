@@ -22,6 +22,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { expertService } from '../../services/expert'
+import { formatDate, formatSize } from '../../utils/format'
 
 const { Paragraph, Text, Title } = Typography
 const { TextArea } = Input
@@ -75,32 +76,6 @@ function buildSampleFilterOptions(samples: SampleRecord[]) {
     .map((value) => ({ value, label: subTypeLabel[value] || value }))
 
   return [{ value: '', label: '全部类型' }, ...sampleTypeOptions, ...extraOptions]
-}
-
-function formatDate(value?: string) {
-  if (!value) {
-    return '未记录时间'
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function formatSize(value: number) {
-  if (!value) {
-    return '0 KB'
-  }
-  return `${(value / 1024).toFixed(1)} KB`
 }
 
 export function SampleManager() {
@@ -291,7 +266,7 @@ export function SampleManager() {
         {!previewData || previewData.length === 0 ? (
           <Empty description="暂无样本数据" />
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space orientation="vertical" style={{ width: '100%' }} size="middle">
             {previewData.map((payload) => {
               const safeText = payload.data || ''
               const isExpanded = expandedRows[payload.index]

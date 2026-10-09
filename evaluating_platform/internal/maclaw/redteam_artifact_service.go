@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -390,16 +388,11 @@ func (s *RedteamArtifactService) cleanupReportImagesLocked(now time.Time) {
 }
 
 func (s *RedteamArtifactService) safeHandle(parts ...string) string {
-	now := s.nowUTC().Format(time.RFC3339Nano)
-	sum := sha256.Sum256([]byte(strings.Join(append([]string{s.handleSalt, now}, parts...), "\x00")))
-	return parts[0] + "_" + hex.EncodeToString(sum[:])[:24]
+	return safeHandleWithSalt(s.handleSalt, s.nowUTC(), parts)
 }
 
 func (s *RedteamArtifactService) nowUTC() time.Time {
-	if s != nil && s.now != nil {
-		return s.now().UTC()
-	}
-	return time.Now().UTC()
+	return utcNow(s.now)
 }
 
 type PlatformArtifactGateway struct {
@@ -1343,14 +1336,6 @@ func (p *pdfPageWriter) text(x, y float64, text string, size float64, r, g, b fl
 
 func (p *pdfPageWriter) line(x1, y, x2 float64, r, g, b, width float64) {
 	fmt.Fprintf(&p.buf, "%.2f %.2f %.2f RG\n%.1f w\n%.1f %.1f m %.1f %.1f l S\n", r, g, b, width, x1, y, x2, y)
-}
-
-func (p *pdfPageWriter) rect(x, y, width, height, r, g, b float64, fill bool) {
-	if fill {
-		fmt.Fprintf(&p.buf, "%.2f %.2f %.2f rg\n%.1f %.1f %.1f %.1f re f\n", r, g, b, x, y, width, height)
-		return
-	}
-	fmt.Fprintf(&p.buf, "%.2f %.2f %.2f RG\n0.5 w\n%.1f %.1f %.1f %.1f re S\n", r, g, b, x, y, width, height)
 }
 
 func pdfUTF16Hex(value string) string {

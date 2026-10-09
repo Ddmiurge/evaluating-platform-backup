@@ -114,12 +114,6 @@ function selectionReasons(source: Record<string, unknown>) {
   return [...new Set(reasons)]
 }
 
-export function runtimeContentHasPlanConfirm(value: unknown) {
-  const body = parseJSONRecord(value)
-  if (!body) return false
-  return firstString(body.response_source) === 'plan_confirm'
-}
-
 export function parseRuntimePlan(value: unknown): PlanInfo | undefined {
   const raw = parseJSONRecord(value)
   if (!raw) return undefined

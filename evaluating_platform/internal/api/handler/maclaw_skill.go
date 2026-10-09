@@ -36,10 +36,6 @@ func NewMaclawSkillHandler(gateway maclaw.SkillGateway) *MaclawSkillHandler {
 	return &MaclawSkillHandler{gateway: gateway}
 }
 
-func NewMaclawSkillHandlerWithProvider(provider maclaw.GatewayProvider) *MaclawSkillHandler {
-	return &MaclawSkillHandler{provider: provider}
-}
-
 func NewMaclawSkillHandlerWithProviderAndProjection(provider maclaw.GatewayProvider, projection *maclaw.SkillProjectionService) *MaclawSkillHandler {
 	return &MaclawSkillHandler{provider: provider, projection: projection}
 }
@@ -72,7 +68,6 @@ func (h *MaclawSkillHandler) List(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw skill projection failed", "code": "maclaw_skill_projection_failed"})
 			return
 		}
-		_ = session
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
@@ -167,17 +162,8 @@ func (h *MaclawSkillHandler) Import(c *gin.Context) {
 		return
 	}
 	attachHubSkillID(items, skillID)
-	if h.projection != nil {
-		identity := maclawRuntimeIdentity(c)
-		if err := h.projection.RecordExpertSkills(c.Request.Context(), identity, session, items); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw skill publication failed", "code": "maclaw_skill_publication_failed"})
-			return
-		}
-		if strings.TrimSpace(identity.Role) == "expert" {
-			if err := h.projection.SyncPublishedSkillsToAllEnterpriseMappings(c.Request.Context()); err != nil {
-				log.Printf("[WARN] maclaw skill enterprise distribution failed: %v", err)
-			}
-		}
+	if !h.recordSkillPublication(c, session, items) {
+		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"items": items})
 }
@@ -202,7 +188,7 @@ func (h *MaclawSkillHandler) submitSkillArchiveToHub(ctx context.Context, hubURL
 	if err != nil {
 		return "", err
 	}
-	submissionID, err := submitSkillHubArchive(ctx, hubURL, skillHubSubmitEmail(session), firstNonEmptySkillString(in.ArchiveName, "skill.zip"), data)
+	submissionID, err := submitSkillHubArchive(ctx, hubURL, skillHubSubmitEmail(session), firstNonEmpty(in.ArchiveName, "skill.zip"), data)
 	if err != nil {
 		return "", err
 	}
@@ -441,15 +427,6 @@ func safeSkillArchiveName(v string) string {
 	return v
 }
 
-func firstNonEmptySkillString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
 func (h *MaclawSkillHandler) Install(c *gin.Context) {
 	session, gateway, ok := h.skillGatewaySession(c)
 	if !ok {
@@ -476,17 +453,8 @@ func (h *MaclawSkillHandler) Install(c *gin.Context) {
 	if strings.ToLower(strings.TrimSpace(in.Source)) == maclaw.DefaultHubSkillSource {
 		attachHubSkillID(items, in.SkillID)
 	}
-	if h.projection != nil {
-		identity := maclawRuntimeIdentity(c)
-		if err := h.projection.RecordExpertSkills(c.Request.Context(), identity, session, items); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw skill publication failed", "code": "maclaw_skill_publication_failed"})
-			return
-		}
-		if strings.TrimSpace(identity.Role) == "expert" {
-			if err := h.projection.SyncPublishedSkillsToAllEnterpriseMappings(c.Request.Context()); err != nil {
-				log.Printf("[WARN] maclaw skill enterprise distribution failed: %v", err)
-			}
-		}
+	if !h.recordSkillPublication(c, session, items) {
+		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"items": items})
 }
@@ -505,17 +473,31 @@ func attachHubSkillID(items []maclaw.SkillSummary, hubSkillID string) {
 	}
 }
 
+// recordSkillPublication 统一 Import/Install 的发布投影记录块（P2-05）。
+// 返回 false 表示记录失败（已写响应）。
+func (h *MaclawSkillHandler) recordSkillPublication(c *gin.Context, session *maclaw.GatewaySession, items []maclaw.SkillSummary) bool {
+	if h.projection == nil {
+		return true
+	}
+	identity := maclawRuntimeIdentity(c)
+	if err := h.projection.RecordExpertSkills(c.Request.Context(), identity, session, items); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw skill publication failed", "code": "maclaw_skill_publication_failed"})
+		return false
+	}
+	if strings.TrimSpace(identity.Role) == "expert" {
+		if err := h.projection.SyncPublishedSkillsToAllEnterpriseMappings(c.Request.Context()); err != nil {
+			log.Printf("[WARN] maclaw skill enterprise distribution failed: %v", err)
+		}
+	}
+	return true
+}
+
 func (h *MaclawSkillHandler) available(c *gin.Context) bool {
 	if h == nil || h.gateway == nil || !h.gateway.Enabled() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw runtime is not configured"})
 		return false
 	}
 	return true
-}
-
-func (h *MaclawSkillHandler) skillGateway(c *gin.Context) (maclaw.SkillGateway, bool) {
-	_, gateway, ok := h.skillGatewaySession(c)
-	return gateway, ok
 }
 
 func (h *MaclawSkillHandler) skillGatewaySession(c *gin.Context) (*maclaw.GatewaySession, maclaw.SkillGateway, bool) {
@@ -539,15 +521,12 @@ func (h *MaclawSkillHandler) applySearchSourcePolicy(ctx context.Context, in *ma
 	if in == nil {
 		return nil
 	}
-	cfg, err := h.normalizedHubConfig(ctx)
+	cfg, err := h.resolveSkillHubPolicy(ctx)
 	if err != nil {
 		return err
 	}
 	if cfg == nil {
-		if h == nil || h.hubConfig == nil {
-			return nil
-		}
-		return errSkillHubConfigUnavailable
+		return nil
 	}
 	allowed := allowedSkillSourceSet(cfg.AllowedSources)
 	if len(in.Sources) == 0 {
@@ -565,15 +544,12 @@ func (h *MaclawSkillHandler) applyInstallSourcePolicy(ctx context.Context, in *m
 	if in == nil {
 		return nil
 	}
-	cfg, err := h.normalizedHubConfig(ctx)
+	cfg, err := h.resolveSkillHubPolicy(ctx)
 	if err != nil {
 		return err
 	}
 	if cfg == nil {
-		if h == nil || h.hubConfig == nil {
-			return nil
-		}
-		return errSkillHubConfigUnavailable
+		return nil
 	}
 	source := strings.ToLower(strings.TrimSpace(in.Source))
 	if source == "" {
@@ -595,6 +571,22 @@ func (h *MaclawSkillHandler) defaultHubURL(ctx context.Context) (string, error) 
 		return "", err
 	}
 	return cfg.HubURL, nil
+}
+
+// resolveSkillHubPolicy 统一 search/install 源策略的 hub 配置解析前奏（P2-05）。
+// (nil, nil) = 无 hub 约束；(nil, err) = 配置不可用。
+func (h *MaclawSkillHandler) resolveSkillHubPolicy(ctx context.Context) (*maclaw.MaclawHubConfig, error) {
+	cfg, err := h.normalizedHubConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		if h == nil || h.hubConfig == nil {
+			return nil, nil
+		}
+		return nil, errSkillHubConfigUnavailable
+	}
+	return cfg, nil
 }
 
 func (h *MaclawSkillHandler) normalizedHubConfig(ctx context.Context) (*maclaw.MaclawHubConfig, error) {

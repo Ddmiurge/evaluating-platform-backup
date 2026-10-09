@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"evaluating_platform/internal/maclaw"
 	"net/http"
 	"strconv"
 
@@ -74,7 +75,7 @@ func (h *AttackSampleHandler) Upload(c *gin.Context) {
 		logger.Error("upload sample failed", map[string]interface{}{
 			"expert_id": expertID, "error": err.Error(),
 		})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": maclaw.SafeErrorSummary(err)})
 		return
 	}
 
@@ -153,7 +154,7 @@ func (h *AttackSampleHandler) Preview(c *gin.Context) {
 
 	payloads, err := h.loader.Preview(c.Request.Context(), id, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": maclaw.SafeErrorSummary(err)})
 		return
 	}
 
