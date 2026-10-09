@@ -120,15 +120,44 @@ async function requestOnce(input: GenerationInput): Promise<GeneratedTestCase[]>
     choices?: Array<{ message?: { content?: string } }>;
   };
   const content = payload.choices?.[0]?.message?.content ?? '';
-  const parsed = parseCases(content, input.numTests);
+  const parsed = parseCases(content, input.numTests, pluginIds);
   if (parsed.length === 0) {
     throw new Error('generation returned no usable cases');
   }
   return parsed;
 }
 
+/** Trim, drop empties, and de-duplicate a plugin-id whitelist. */
+function normalizeAllowedPluginIds(ids?: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const id of ids ?? []) {
+    const trimmed = typeof id === 'string' ? id.trim() : '';
+    if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Coerce a model-reported plugin_id against the requested whitelist (E-02).
+ * An id outside the whitelist is a generation hallucination: it is normalized
+ * to the sole requested plugin when exactly one was requested, otherwise to
+ * 'unknown'. This keeps plugin_stats from inventing families that would fall
+ * into the catalog's 'other' bucket. Without a whitelist the legacy behaviour
+ * is preserved (a missing id becomes 'custom').
+ */
+function normalizePluginId(proposed: string, allowed: readonly string[]): string {
+  if (allowed.length === 0) {
+    return proposed || 'custom';
+  }
+  if (proposed && allowed.includes(proposed)) {
+    return proposed;
+  }
+  return allowed.length === 1 ? (allowed[0] as string) : 'unknown';
+}
+
 /** Parse the model output (tolerating markdown fences) into test cases. */
-export function parseCases(raw: string, limit: number): GeneratedTestCase[] {
+export function parseCases(raw: string, limit: number, allowedPluginIds?: readonly string[]): GeneratedTestCase[] {
+  const allowed = normalizeAllowedPluginIds(allowedPluginIds);
   const cleaned = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
@@ -151,7 +180,8 @@ export function parseCases(raw: string, limit: number): GeneratedTestCase[] {
     const obj = item as Record<string, unknown>;
     const prompt = typeof obj.prompt === 'string' ? obj.prompt.trim() : '';
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) continue;
-    const pluginId = typeof obj.plugin_id === 'string' && obj.plugin_id.trim() ? obj.plugin_id.trim() : 'custom';
+    const proposed = typeof obj.plugin_id === 'string' ? obj.plugin_id.trim() : '';
+    const pluginId = normalizePluginId(proposed, allowed);
     const strategyId = typeof obj.strategy_id === 'string' && obj.strategy_id.trim() ? obj.strategy_id.trim() : undefined;
     out.push({ prompt, plugin_id: pluginId, ...(strategyId ? { strategy_id: strategyId } : {}) });
   }

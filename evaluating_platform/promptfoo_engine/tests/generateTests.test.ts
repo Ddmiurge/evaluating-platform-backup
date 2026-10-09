@@ -58,3 +58,44 @@ describe('EngineRunError', () => {
     expect(err).toBeInstanceOf(Error);
   });
 });
+
+describe('parseCases plugin_id whitelist normalization (E-02)', () => {
+  it('keeps ids that are in the requested whitelist', () => {
+    const raw = JSON.stringify([
+      { prompt: '攻击A', plugin_id: 'harmful' },
+      { prompt: '攻击B', plugin_id: 'pii' },
+    ]);
+    const out = parseCases(raw, 10, ['harmful', 'pii']);
+    expect(out.map((c) => c.plugin_id)).toEqual(['harmful', 'pii']);
+  });
+
+  it('normalizes an out-of-whitelist id to the sole requested plugin', () => {
+    const raw = JSON.stringify([{ prompt: '攻击A', plugin_id: 'harmful:cybercrime' }]);
+    const out = parseCases(raw, 10, ['pii']);
+    expect(out[0]?.plugin_id).toBe('pii');
+  });
+
+  it('normalizes an out-of-whitelist id to unknown when several are requested', () => {
+    const raw = JSON.stringify([{ prompt: '攻击A', plugin_id: 'hallucinated-family' }]);
+    const out = parseCases(raw, 10, ['harmful', 'pii']);
+    expect(out[0]?.plugin_id).toBe('unknown');
+  });
+
+  it('normalizes a missing plugin_id to the sole requested plugin', () => {
+    const raw = JSON.stringify([{ prompt: '攻击A' }]);
+    const out = parseCases(raw, 10, ['harmful']);
+    expect(out[0]?.plugin_id).toBe('harmful');
+  });
+
+  it('trims/dedupes the whitelist and ignores empty entries', () => {
+    const raw = JSON.stringify([{ prompt: '攻击A', plugin_id: 'pii' }]);
+    const out = parseCases(raw, 10, [' pii ', 'pii', '']);
+    expect(out[0]?.plugin_id).toBe('pii');
+  });
+
+  it('preserves legacy fallback (custom) when no whitelist is supplied', () => {
+    const raw = JSON.stringify([{ prompt: '攻击A' }]);
+    const out = parseCases(raw, 10);
+    expect(out[0]?.plugin_id).toBe('custom');
+  });
+});
