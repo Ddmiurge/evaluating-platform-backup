@@ -1,31 +1,28 @@
+import { expect, test } from 'vitest'
 import { shouldStreamRuntimeRun } from './runtimeRunPolicy.ts'
 
-function assertEqual(actual: unknown, expected: unknown) {
-  if (actual !== expected) {
-    throw new Error(`Expected ${String(expected)}, got ${String(actual)}`)
-  }
-}
+test('shouldStreamRuntimeRun only streams confirmation evaluation runs', () => {
+  expect(shouldStreamRuntimeRun({
+    id: 'chat-run',
+    status: 'running',
+    response_source: 'chat',
+  })).toBe(false)
 
-assertEqual(shouldStreamRuntimeRun({
-  id: 'chat-run',
-  status: 'running',
-  response_source: 'chat',
-}), false)
+  expect(shouldStreamRuntimeRun({
+    id: 'ask-run',
+    status: 'queued',
+    response_source: 'ask_user',
+  })).toBe(false)
 
-assertEqual(shouldStreamRuntimeRun({
-  id: 'ask-run',
-  status: 'queued',
-  response_source: 'ask_user',
-}), false)
+  expect(shouldStreamRuntimeRun({
+    id: 'plan-run',
+    status: 'running',
+    response_source: 'plan_confirm',
+  })).toBe(false)
 
-assertEqual(shouldStreamRuntimeRun({
-  id: 'plan-run',
-  status: 'running',
-  response_source: 'plan_confirm',
-}), false)
-
-assertEqual(shouldStreamRuntimeRun({
-  id: 'eval-run',
-  status: 'running',
-  metadata: { evaluation_action: 'confirm_plan' },
-}), true)
+  expect(shouldStreamRuntimeRun({
+    id: 'eval-run',
+    status: 'running',
+    metadata: { evaluation_action: 'confirm_plan' },
+  })).toBe(true)
+})

@@ -31,6 +31,9 @@ frontend/node_modules/
 .tmp/
 artifacts/
 
+# Vitest 临时配置产物
+vitest.config.ts.timestamp-*.mjs
+
 # 数据卷（Docker）
 postgres_data/
 redis_data/
