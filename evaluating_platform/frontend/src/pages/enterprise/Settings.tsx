@@ -40,8 +40,8 @@ export function Settings() {
 
         <div style={{
           marginTop: 20, padding: '12px 16px',
-          background: 'rgba(26,109,255,0.06)',
-          border: '1px solid rgba(26,109,255,0.15)',
+          background: 'var(--color-primary-light)',
+          border: '1px solid var(--color-primary-border)',
           borderRadius: 6,
         }}>
           <Text style={{ color: 'var(--text-muted)', fontSize: 13 }}>

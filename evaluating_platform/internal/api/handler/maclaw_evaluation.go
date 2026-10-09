@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"evaluating_platform/internal/maclaw"
 )
@@ -16,6 +18,8 @@ type MaclawEvaluationHandler struct {
 	provider           maclaw.GatewayProvider
 	resourceProjection *maclaw.ResourceProjectionService
 	runtimeMode        string
+	engineJobs         *maclaw.PlatformEngineJobStore
+	engineRunService   *maclaw.EngineRunService
 }
 
 func NewMaclawEvaluationHandler(gateway maclaw.EvaluationGateway) *MaclawEvaluationHandler {
@@ -32,6 +36,15 @@ func NewMaclawEvaluationHandlerWithProvider(provider maclaw.GatewayProvider) *Ma
 
 func NewMaclawEvaluationHandlerWithProviderAndProjection(provider maclaw.GatewayProvider, projection *maclaw.ResourceProjectionService) *MaclawEvaluationHandler {
 	return &MaclawEvaluationHandler{provider: provider, resourceProjection: projection}
+}
+
+// SetPromptfooEngineJobs lets the jobs endpoints resolve platform-side
+// promptfoo engine jobs (confirm fast path) before proxying to MaClaw.
+func (h *MaclawEvaluationHandler) SetPromptfooEngineJobs(jobs *maclaw.PlatformEngineJobStore, runs *maclaw.EngineRunService) {
+	if h != nil {
+		h.engineJobs = jobs
+		h.engineRunService = runs
+	}
 }
 
 func (h *MaclawEvaluationHandler) SetRuntimeMode(mode string) {
@@ -164,6 +177,12 @@ func (h *MaclawEvaluationHandler) CreateTarget(c *gin.Context) {
 		}
 	}
 	ensureTargetHealthURL(&in)
+	if in.Kind == maclaw.EvaluationTargetKindAgent {
+		if err := maclaw.ValidateAgentTargetInput(in); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "agent_target_invalid"})
+			return
+		}
+	}
 	out, err := gateway.SaveEvaluationTarget(c.Request.Context(), in)
 	if err != nil {
 		writeMaclawError(c, err)
@@ -303,6 +322,11 @@ func (h *MaclawEvaluationHandler) GetJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "job id is required"})
 		return
 	}
+	// Platform-side promptfoo engine job (confirm fast path).
+	if job := h.platformEngineJob(c, jobID); job != nil {
+		c.JSON(http.StatusOK, job)
+		return
+	}
 	out, err := gateway.GetEvaluationJob(c.Request.Context(), jobID)
 	if err != nil {
 		writeMaclawError(c, err)
@@ -315,7 +339,47 @@ func (h *MaclawEvaluationHandler) GetJob(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-func (h *MaclawEvaluationHandler) CancelJob(c *gin.Context) {
+// platformEngineJob resolves a platform engine job for the caller and lazily
+// refreshes its progress from the persisted engine run record.
+func (h *MaclawEvaluationHandler) platformEngineJob(c *gin.Context, jobID string) *maclaw.EvaluationJob {
+	if h == nil || h.engineJobs == nil {
+		return nil
+	}
+	job := h.engineJobs.Get(jobID)
+	if job == nil {
+		return nil
+	}
+	userID := strings.TrimSpace(c.GetString("user_id"))
+	if job.UserID != userID {
+		return nil
+	}
+	if h.engineRunService != nil && !isTerminalEvaluationJobStatusPublic(job.Status) {
+		if parsed, err := uuid.Parse(userID); err == nil {
+			if record, err := h.engineRunService.Get(c.Request.Context(), parsed, job.EngineRunID); err == nil && record != nil {
+				h.engineJobs.UpdateProgress(jobID, engineJobStatusFromPhase(record.Status), record.PlannedCount, record.ExecutedCount, record.CurrentStage, engineStatusText(record.Status), record.ErrorCode, record.DurationMs)
+			}
+		}
+		job = h.engineJobs.Get(jobID)
+	}
+	return maclaw.EvaluationJobFromPlatformEngine(job)
+}
+
+func isTerminalEvaluationJobStatusPublic(status maclaw.EvaluationJobStatus) bool {
+	switch status {
+	case maclaw.EvaluationJobStatusSucceeded, maclaw.EvaluationJobStatusFailed, maclaw.EvaluationJobStatusCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// evaluationJobAction 统一 job 类 handler 的角色检查/gateway/ID 解析/调用/404 样板（P2-01）。
+func (h *MaclawEvaluationHandler) evaluationJobAction(
+	c *gin.Context,
+	requireRunJob bool,
+	successStatus int,
+	call func(ctx context.Context, gateway maclaw.EvaluationGateway, id string) (*maclaw.EvaluationJob, error),
+) {
 	if !requireEnterpriseMaclawExecutionRole(c) {
 		return
 	}
@@ -328,66 +392,34 @@ func (h *MaclawEvaluationHandler) CancelJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "job id is required"})
 		return
 	}
-	out, err := gateway.CancelEvaluationJob(c.Request.Context(), jobID)
+	out, err := call(c.Request.Context(), gateway, jobID)
 	if err != nil {
 		writeMaclawError(c, err)
 		return
 	}
-	if !isEvaluationRunJob(out) {
+	if requireRunJob && !isEvaluationRunJob(out) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "requested maclaw resource was not found", "code": "maclaw_not_found"})
 		return
 	}
-	c.JSON(http.StatusOK, out)
+	c.JSON(successStatus, out)
+}
+
+func (h *MaclawEvaluationHandler) CancelJob(c *gin.Context) {
+	h.evaluationJobAction(c, true, http.StatusOK, func(ctx context.Context, gateway maclaw.EvaluationGateway, id string) (*maclaw.EvaluationJob, error) {
+		return gateway.CancelEvaluationJob(ctx, id)
+	})
 }
 
 func (h *MaclawEvaluationHandler) RetryJob(c *gin.Context) {
-	if !requireEnterpriseMaclawExecutionRole(c) {
-		return
-	}
-	gateway, ok := h.evaluationGateway(c)
-	if !ok {
-		return
-	}
-	jobID := strings.TrimSpace(firstNonEmpty(c.Param("id"), c.Param("job_id"), c.Param("jobId")))
-	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job id is required"})
-		return
-	}
-	out, err := gateway.RetryEvaluationJob(c.Request.Context(), jobID)
-	if err != nil {
-		writeMaclawError(c, err)
-		return
-	}
-	if !isEvaluationRunJob(out) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "requested maclaw resource was not found", "code": "maclaw_not_found"})
-		return
-	}
-	c.JSON(http.StatusAccepted, out)
+	h.evaluationJobAction(c, true, http.StatusAccepted, func(ctx context.Context, gateway maclaw.EvaluationGateway, id string) (*maclaw.EvaluationJob, error) {
+		return gateway.RetryEvaluationJob(ctx, id)
+	})
 }
 
 func (h *MaclawEvaluationHandler) ResumeJob(c *gin.Context) {
-	if !requireEnterpriseMaclawExecutionRole(c) {
-		return
-	}
-	gateway, ok := h.evaluationGateway(c)
-	if !ok {
-		return
-	}
-	jobID := strings.TrimSpace(firstNonEmpty(c.Param("id"), c.Param("job_id"), c.Param("jobId")))
-	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job id is required"})
-		return
-	}
-	out, err := gateway.ResumeEvaluationJob(c.Request.Context(), jobID)
-	if err != nil {
-		writeMaclawError(c, err)
-		return
-	}
-	if !isEvaluationRunJob(out) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "requested maclaw resource was not found", "code": "maclaw_not_found"})
-		return
-	}
-	c.JSON(http.StatusAccepted, out)
+	h.evaluationJobAction(c, true, http.StatusAccepted, func(ctx context.Context, gateway maclaw.EvaluationGateway, id string) (*maclaw.EvaluationJob, error) {
+		return gateway.ResumeEvaluationJob(ctx, id)
+	})
 }
 
 func (h *MaclawEvaluationHandler) GetJobRecovery(c *gin.Context) {
@@ -680,15 +712,6 @@ func parseAssessmentTypes(c *gin.Context) []string {
 func isEnterpriseLikeRole(role string) bool {
 	role = strings.TrimSpace(role)
 	return role == "enterprise" || role == "admin"
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 func isEvaluationRunJob(job *maclaw.EvaluationJob) bool {

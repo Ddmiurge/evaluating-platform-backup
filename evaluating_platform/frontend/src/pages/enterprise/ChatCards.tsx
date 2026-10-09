@@ -8,17 +8,17 @@ import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, resolveReportSaf
 import { parseChatMarkdown, type ChatMarkdownInline } from './chatMarkdown'
 
 const RISK_COLORS: Record<string, string> = {
-  critical: '#cf1322',
-  high: '#ff4d4f',
-  高风险: '#ff4d4f',
-  medium: '#fa8c16',
-  中风险: '#fa8c16',
-  low: '#52c41a',
-  低风险: '#52c41a',
-  info: '#69db7c',
-  safe: '#69db7c',
-  最高安全: '#69db7c',
-  安全: '#69db7c',
+  critical: '#dc2626',
+  high: '#ea580c',
+  高风险: '#ea580c',
+  medium: '#d97706',
+  中风险: '#d97706',
+  low: '#16a34a',
+  低风险: '#16a34a',
+  info: '#16a34a',
+  safe: '#16a34a',
+  最高安全: '#16a34a',
+  安全: '#16a34a',
 }
 
 const RISK_LABELS: Record<string, string> = {
@@ -131,13 +131,13 @@ function progressPercent(phase?: string, currentStage?: string, executedCount?: 
 function capabilityVisual(item: WelcomeCapability) {
   switch (item.tone) {
     case 'governance':
-      return { icon: <SafetyOutlined />, color: '#69db7c' }
+      return { icon: <SafetyOutlined />, color: '#16a34a' }
     case 'engine':
-      return { icon: <ThunderboltOutlined />, color: '#ffd43b' }
+      return { icon: <ThunderboltOutlined />, color: '#d97706' }
     case 'tool':
-      return { icon: <ApiOutlined />, color: '#4d96ff' }
+      return { icon: <ApiOutlined />, color: '#2563eb' }
     default:
-      return { icon: <BugOutlined />, color: '#ff6b6b' }
+      return { icon: <BugOutlined />, color: '#dc2626' }
   }
 }
 
@@ -193,8 +193,8 @@ function PlanConfirmCard({
   ].map(displayCapabilityName).filter(Boolean))]
 
   return (
-    <div style={{ background: 'var(--bg-card)', border: '1px solid rgba(26,109,255,0.3)', borderRadius: 12, padding: '16px 20px', maxWidth: 500, marginTop: 8 }}>
-      <div style={{ color: '#4d96ff', fontWeight: 600, marginBottom: 12, fontSize: 14 }}>执行确认</div>
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--color-primary-border)', borderRadius: 12, padding: '16px 20px', maxWidth: 500, marginTop: 8 }}>
+      <div style={{ color: 'var(--color-primary)', fontWeight: 600, marginBottom: 12, fontSize: 14 }}>执行确认</div>
       <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
         {rows.map(([label, value]) => (
           <div key={label} style={{ display: 'flex', gap: 8, fontSize: 13 }}>
@@ -206,7 +206,7 @@ function PlanConfirmCard({
           <span style={{ color: 'var(--text-muted)', minWidth: 70 }}>评估类型</span>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {(normalizedPlan.assessment_types ?? []).map(type => (
-              <span key={type} style={{ background: 'rgba(26,109,255,0.15)', color: '#4d96ff', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
+              <span key={type} style={{ background: 'var(--color-primary-light)', color: 'var(--color-primary)', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
                 {LABELS[type] || type}
               </span>
             ))}
@@ -217,7 +217,7 @@ function PlanConfirmCard({
             <span style={{ color: 'var(--text-muted)', minWidth: 70 }}>使用能力</span>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {selectedCapabilities.map(item => (
-                <span key={item} style={{ background: 'rgba(105,219,124,0.12)', color: '#69db7c', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
+                <span key={item} style={{ background: 'rgba(22, 163, 74, 0.10)', color: 'var(--color-low)', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
                   {item}
                 </span>
               ))}
@@ -239,7 +239,7 @@ function PlanConfirmCard({
         </div>
       </div>
       {confirmed ? (
-        <div style={{ color: '#69db7c', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ color: 'var(--color-low)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
           <CheckCircleOutlined /> 已确认，正在按 {testCount} 条测试问题启动评估...
         </div>
       ) : (
@@ -313,11 +313,43 @@ function ReportCard({
   onRetryJob?: (jobId: string) => void
 }) {
   const [downloading, setDownloading] = useState(false)
+  const [findingsOpen, setFindingsOpen] = useState(false)
+  const [findingsLoading, setFindingsLoading] = useState(false)
+  const [successfulFindings, setSuccessfulFindings] = useState<Array<{ title?: string; severity?: string; category?: string; description?: string }> | null>(null)
   const safetyScore = resolveReportSafetyScore({
     cardType,
     directSafetyScore,
     riskScore,
   })
+
+  // 攻击成功摘要：按需拉取报告详情，仅展示后端已脱敏的成功项摘要。
+  // 完整攻击样例与目标回答仍在 PDF 报告内，这里只做安全摘要层。
+  const toggleFindings = async () => {
+    const next = !findingsOpen
+    setFindingsOpen(next)
+    if (!next || !reportId || successfulFindings || findingsLoading) return
+    setFindingsLoading(true)
+    try {
+      const report = await reportService.getMaclawReport(reportId)
+      const successful = (report.findings || []).filter(finding => {
+        const judgeResult = String((finding as { metadata?: Record<string, string> }).metadata?.judge_result || '').toLowerCase()
+        const severity = String(finding.severity || '').toLowerCase()
+        const isFailureByJudge = judgeResult === 'failure' || judgeResult === 'fail'
+        const looksSuccessful = severity === 'high' || severity === 'critical' || severity === '高' || judgeResult === 'success'
+        return looksSuccessful && !isFailureByJudge
+      })
+      setSuccessfulFindings(successful.slice(0, Math.max(successCount ?? 0, 0) || 5).map(finding => ({
+        title: finding.title,
+        severity: finding.severity,
+        category: finding.category,
+        description: finding.description,
+      })))
+    } catch {
+      setSuccessfulFindings([])
+    } finally {
+      setFindingsLoading(false)
+    }
+  }
 
   const handleDownload = async () => {
     if (!reportId) return
@@ -337,7 +369,7 @@ function ReportCard({
   if (cardType === 'report') {
     const normalizedRiskLevel = (riskLevel || '').trim()
     const normalizedRiskKey = normalizedRiskLevel.toLowerCase()
-    const color = RISK_COLORS[normalizedRiskLevel] || RISK_COLORS[normalizedRiskKey] || '#69db7c'
+    const color = RISK_COLORS[normalizedRiskLevel] || RISK_COLORS[normalizedRiskKey] || '#16a34a'
     const label = RISK_LABELS[normalizedRiskLevel] || RISK_LABELS[normalizedRiskKey] || riskLevel || '最高安全'
     const resolvedFailureCount = typeof failureCount === 'number'
       ? failureCount
@@ -352,7 +384,7 @@ function ReportCard({
     return (
       <div style={{ background: 'var(--bg-card)', border: `1px solid ${color}40`, borderRadius: 12, padding: '16px 20px', maxWidth: 420, marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <CheckCircleOutlined style={{ color: '#69db7c', fontSize: 18 }} />
+          <CheckCircleOutlined style={{ color: 'var(--color-low)', fontSize: 18 }} />
           <span style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 600 }}>评估已完成</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -365,7 +397,7 @@ function ReportCard({
         {stats.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${stats.length}, minmax(0, 1fr))`, gap: 6, marginBottom: 12 }}>
             {stats.map(([labelText, value]) => (
-              <div key={labelText as string} style={{ border: '1px solid var(--border-color)', borderRadius: 6, padding: '6px 4px', textAlign: 'center', background: 'rgba(255,255,255,0.02)' }}>
+              <div key={labelText as string} style={{ border: '1px solid var(--border-color)', borderRadius: 6, padding: '6px 4px', textAlign: 'center', background: '#f8fafc' }}>
                 <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 700 }}>{value as number}</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 2 }}>{labelText as string}</div>
               </div>
@@ -376,6 +408,38 @@ function ReportCard({
           <Button type="primary" icon={<DownloadOutlined />} size="small" loading={downloading} onClick={handleDownload}>
             {reportId ? '下载报告' : '下载 PDF 报告'}
           </Button>
+        )}
+        {reportId && (
+          <div style={{ marginTop: 12 }}>
+            <Button type="link" size="small" style={{ padding: 0, color: 'var(--color-primary)' }} onClick={() => { void toggleFindings() }}>
+              {findingsOpen ? '收起攻击成功摘要' : '展开攻击成功摘要（脱敏）'}
+            </Button>
+            {findingsOpen && (
+              <div style={{ marginTop: 8 }}>
+                {findingsLoading ? (
+                  <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>加载中...</div>
+                ) : successfulFindings && successfulFindings.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {successfulFindings.map((finding, index) => (
+                      <div key={index} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: '8px 12px', background: '#fffbeb' }}>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                          <span style={{ color: 'var(--text-primary)', fontSize: 12, fontWeight: 600 }}>#{index + 1}</span>
+                          {finding.category && <span style={{ fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border-color)', borderRadius: 4, padding: '0 6px' }}>{finding.category}</span>}
+                          {finding.severity && <span style={{ fontSize: 11, color: '#b45309', border: '1px solid #f59e0b66', borderRadius: 4, padding: '0 6px' }}>{finding.severity}</span>}
+                        </div>
+                        {finding.description && (
+                          <div style={{ color: 'var(--text-secondary, #475569)', fontSize: 12, lineHeight: 1.6 }}>{finding.description}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>未发现攻击成功（与报告“最高安全”一致）</div>
+                )}
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>以上为脱敏摘要，完整攻击样例与目标回答见 PDF 报告。</div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     )
@@ -400,7 +464,7 @@ function ReportCard({
               ? '初始化评估'
               : '正在执行测试'
     const showSpinner = isRunning && phase !== 'executed' && !isFailed
-    const borderColor = isFailed ? 'rgba(255,77,79,0.35)' : 'rgba(105,219,124,0.3)'
+    const borderColor = isFailed ? 'rgba(220,38,38,0.35)' : 'rgba(22,163,74,0.3)'
     const stageLabel = progressStageLabel(phase, currentStage)
     const percent = progressPercent(phase, currentStage, executedCount, plannedCount)
     const progressStatus = isFailed ? 'exception' : percent >= 100 ? 'success' : 'active'
@@ -410,7 +474,7 @@ function ReportCard({
     return (
       <div style={{ background: 'var(--bg-card)', border: `1px solid ${borderColor}`, borderRadius: 12, padding: '14px 18px', maxWidth: 420, marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-          {showSpinner ? <Spin indicator={<LoadingOutlined style={{ color: '#4d96ff' }} />} /> : <CheckCircleOutlined style={{ color: isFailed ? '#ff4d4f' : '#69db7c', fontSize: 18 }} />}
+          {showSpinner ? <Spin indicator={<LoadingOutlined style={{ color: 'var(--color-primary)' }} />} /> : <CheckCircleOutlined style={{ color: isFailed ? 'var(--color-critical)' : 'var(--color-low)', fontSize: 18 }} />}
           <div>
             <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 600 }}>{phaseLabel}</div>
             <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{statusText || '评估任务执行中，请稍候...'}</div>
@@ -418,10 +482,10 @@ function ReportCard({
         </div>
         <div style={{ display: 'grid', gap: 6 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: 'var(--text-muted)', fontSize: 12 }}>
-            <span style={{ color: '#4d96ff', fontWeight: 500 }}>{countLabel}</span>
+            <span style={{ color: 'var(--color-primary)', fontWeight: 500 }}>{countLabel}</span>
             <span>{stageLabel}</span>
           </div>
-          <Progress percent={percent} size="small" status={progressStatus} showInfo={false} strokeColor={isFailed ? '#ff4d4f' : '#4d96ff'} trailColor="rgba(255,255,255,0.08)" />
+          <Progress percent={percent} size="small" status={progressStatus} showInfo={false} strokeColor={isFailed ? 'var(--color-critical)' : 'var(--color-primary)'} trailColor="#eef2f7" />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12 }}>
             {phase === 'reporting' && <span>测试已完成，报告生成后会自动提供下载卡片。</span>}
           </div>
@@ -460,8 +524,8 @@ function ReportCard({
 function SkillLaunchCard({ skillName, openUrl }: { skillName?: string; openUrl?: string }) {
   if (!openUrl) return null
   return (
-    <div style={{ background: 'var(--bg-card)', border: '1px solid rgba(26,109,255,0.3)', borderRadius: 12, padding: '16px 20px', maxWidth: 500, marginTop: 8 }}>
-      <div style={{ color: '#4d96ff', fontWeight: 600, marginBottom: 8, fontSize: 14 }}>互动 Skill</div>
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--color-primary-border)', borderRadius: 12, padding: '16px 20px', maxWidth: 500, marginTop: 8 }}>
+      <div style={{ color: 'var(--color-primary)', fontWeight: 600, marginBottom: 8, fontSize: 14 }}>互动 Skill</div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>
         {skillName ? `已匹配到「${skillName}」页面工具。` : '已匹配到一个可直接打开的页面工具。'}
         点击下面按钮会在新标签页打开，不会启动评测流程。
@@ -478,7 +542,7 @@ function renderMarkdownInline(parts: ChatMarkdownInline[], keyPrefix: string) {
     const key = `${keyPrefix}-${index}`
     if (part.code) {
       return (
-        <code key={key} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, padding: '1px 5px', fontSize: '0.92em' }}>
+        <code key={key} style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 4, padding: '1px 5px', fontSize: '0.92em' }}>
           {part.text}
         </code>
       )
@@ -517,7 +581,7 @@ function ChatMarkdown({ content, enabled }: { content: string; enabled: boolean 
         }
         if (block.type === 'code_block') {
           return (
-            <pre key={key} style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'rgba(0,0,0,0.24)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 10px', fontSize: 12, lineHeight: 1.6 }}>
+            <pre key={key} style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', fontSize: 12, lineHeight: 1.6 }}>
               <code>{block.text}</code>
             </pre>
           )
@@ -536,8 +600,8 @@ export function WelcomePanel({ items, onQuickPrompt }: { items: WelcomeCapabilit
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 32, minHeight: '100%' }}>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ width: 64, height: 64, borderRadius: 16, background: 'rgba(26,109,255,0.15)', border: '1px solid rgba(26,109,255,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-          <RobotOutlined style={{ fontSize: 32, color: '#4d96ff' }} />
+        <div style={{ width: 64, height: 64, borderRadius: 16, background: 'var(--color-primary-light)', border: '1px solid var(--color-primary-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+          <RobotOutlined style={{ fontSize: 32, color: 'var(--color-primary)' }} />
         </div>
         <div style={{ color: 'var(--text-primary)', fontSize: 22, fontWeight: 600 }}>AI 安全评估助手</div>
         <div style={{ color: 'var(--text-muted)', fontSize: 14, marginTop: 8 }}>描述你的评估需求，我来帮你制定评估方案</div>
@@ -567,10 +631,10 @@ export function WelcomePanel({ items, onQuickPrompt }: { items: WelcomeCapabilit
 export function TypingIndicator() {
   return (
     <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-      <Avatar size={34} icon={<RobotOutlined />} style={{ background: 'rgba(105,219,124,0.2)', border: '1px solid rgba(105,219,124,0.4)', flexShrink: 0 }} />
+      <Avatar size={34} icon={<RobotOutlined />} style={{ background: 'rgba(22,163,74,0.15)', border: '1px solid rgba(22,163,74,0.4)', flexShrink: 0 }} />
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '4px 12px 12px 12px', padding: '12px 16px', display: 'flex', gap: 4, alignItems: 'center' }}>
         {[0, 1, 2].map(index => (
-          <div key={index} style={{ width: 6, height: 6, borderRadius: '50%', background: '#4d96ff', animation: `bounce 1.2s ${index * 0.2}s infinite` }} />
+          <div key={index} style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-primary)', animation: `bounce 1.2s ${index * 0.2}s infinite` }} />
         ))}
       </div>
     </div>
@@ -617,10 +681,10 @@ export function MessageBubble({
 
   return (
     <div style={{ display: 'flex', flexDirection: isUser ? 'row-reverse' : 'row', gap: 10, marginBottom: 20, alignItems: 'flex-start' }}>
-      <Avatar size={34} icon={isUser ? <UserOutlined /> : <RobotOutlined />} style={{ background: isUser ? 'rgba(26,109,255,0.2)' : 'rgba(105,219,124,0.2)', border: `1px solid ${isUser ? 'rgba(26,109,255,0.4)' : 'rgba(105,219,124,0.4)'}`, flexShrink: 0 }} />
+      <Avatar size={34} icon={isUser ? <UserOutlined /> : <RobotOutlined />} style={{ background: isUser ? 'var(--color-primary-light)' : 'rgba(22,163,74,0.15)', border: `1px solid ${isUser ? 'var(--color-primary-border)' : 'rgba(22,163,74,0.4)'}`, flexShrink: 0 }} />
       <div style={{ maxWidth: '72%' }}>
         {msg.content && !hideTextBubble && (
-          <div style={{ background: isUser ? 'rgba(26,109,255,0.15)' : 'var(--bg-card)', border: `1px solid ${isUser ? 'rgba(26,109,255,0.3)' : 'var(--border-color)'}`, borderRadius: isUser ? '12px 4px 12px 12px' : '4px 12px 12px 12px', padding: '10px 14px', color: 'var(--text-primary)', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <div style={{ background: isUser ? 'var(--color-primary-light)' : 'var(--bg-card)', border: `1px solid ${isUser ? 'var(--color-primary-border)' : 'var(--border-color)'}`, borderRadius: isUser ? '12px 4px 12px 12px' : '4px 12px 12px 12px', padding: '10px 14px', color: 'var(--text-primary)', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             <ChatMarkdown content={msg.content} enabled={!isUser} />
           </div>
         )}

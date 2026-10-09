@@ -1,14 +1,6 @@
 import api from './api'
 import type { User } from './auth'
 
-export interface AdminStats {
-  total_users: number
-  users_by_role: Record<string, number>
-  total_assessments: number
-  total_revenue: number
-  weekly_assessments: number[]
-}
-
 export interface AdminOverview {
   total_users: number
   users_by_role: Record<string, number>
@@ -166,11 +158,6 @@ export const adminService = {
 
   async deleteUser(id: string): Promise<void> {
     await api.delete(`/admin/users/${id}`)
-  },
-
-  async getStats(): Promise<AdminStats> {
-    const res = await api.get<AdminStats>('/admin/stats')
-    return res.data
   },
 
   async getOverview(): Promise<AdminOverview> {

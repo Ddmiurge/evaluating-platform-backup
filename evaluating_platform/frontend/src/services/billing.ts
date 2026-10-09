@@ -51,9 +51,4 @@ export const billingService = {
     const res = await api.get('/billing/earnings', { params: { limit, offset } })
     return res.data
   },
-
-  async getPrices(): Promise<{ prices: Record<string, unknown> }> {
-    const res = await api.get('/billing/prices')
-    return res.data
-  },
 }

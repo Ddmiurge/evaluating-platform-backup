@@ -1,4 +1,4 @@
-# Project Guide
+﻿# Project Guide
 
 更新时间：2026-05-22
 
@@ -52,10 +52,11 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 - 资源治理：查看专家发布数据、Skill、MCP 摘要，可启用、禁用或归档安全目录项。
 - 评测与任务：查看 job/run 安全摘要，执行 cancel/retry/resume 可用动作。
 - 模型配置：维护平台默认模型配置和单账号覆盖；密钥只写入，不回显明文。
-- Hub 管理：维护统一私有 Hub URL、启用状态和允许 Skill 来源。
-- 系统健康：检查 backend、MaClawSrv、数据库、Redis、MinIO 和配置缺失。
+- Hub 管理：维护统一私有 Hub URL、启用状态和允许 Skill 来源 企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。企业被测模型连接是平台侧加密 target config，入口在企业聊天页“被测对象连接”（Drawer 支持切换 LLM / 智能体两种类型）。
 
-企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。企业被测模型连接是平台侧加密 target config，入口在企业聊天页“被测模型连接”。
+ 企业被测智能体连接（2026-09 迭代，P3b）：target 新增 `kind=agent`，采用自定义 HTTP 端点模式（对齐 promptfoo `http` provider 模型）。配置存放在 target metadata（`agent_endpoint` / `agent_method` / `agent_headers_template` / `agent_body_template` / `agent_response_path`），凭据复用加密 `credential_secret`（write-only）。模板支持两个占位符：`{{prompt}}`（每条攻击用例替换一次）与 `{{api_key}}`（服务端替换，密钥不出现在浏览器响应/日志/报告/engine_runs）。v1 单轮调用、纯文本（含图用例安全失败 `target_multimodal_not_supported`）；多轮会话与 MCP Agent 属阶段 2。接入指引见 `evaluating_platform/docs/architecture/agent-target-preparation-guide.md`，实现见 `internal/maclaw/agent_target.go`（存储校验/探测/聊天链路调用）与 `promptfoo_engine/src/runner/redteamRun.ts` 的 `buildTargetProvider`（引擎侧模板透传）。
+
+ 自选评测（Phase 2）插件/策略目录（2026-09 迭代，P2-L1）：后端 `internal/maclaw/promptfoo_plugin_catalog.go` 扩充到 15 插件/10 策略，插件按风险类别归类（harmful/privacy/injection/jailbreak/bias/security-exploit/hallucination/off-topic/brand），id 与 promptfoo 命名对齐（含 `harmful:cybercrime` 等子项）；策略补充 crescendo/assumed-knowledge/few-shot/homoglyph/many-shot/translate。仍走方案 A（引擎 LLM 生成 + evaluate + llm-rubric），fail-closed 开关未动。前端 `engineEval.ts` 目录与后端手动保持一致，插件下拉按类别 optGroup 分组；引擎 `redteamRun.ts` 的 `inferSeverityFromPlugin`/`CATEGORY_PREFIXES`/`CATEGORY_LABELS` 覆盖全部新增 id，网络犯罪家族判 critical。辅助 LLM”配置。企业被测模型连接是平台侧加密 target config，入口在企业聊天页“被测模型连接”。
 
 ## 多租户与安全边界
 
@@ -169,10 +170,15 @@ Skill 分发是 Hub-first：
 - `minio`
 - `minio-init`
 - `maclaw-runtime`
+- `hubcenter`
 - `backend`
 - `frontend`
+- `promptfoo-engine`
 
 旧 `skill_runner` 和 `ccbos_mcp` 服务不得恢复。
+
+`promptfoo-engine` 是第二执行引擎容器（Phase 0 已接入）：仅 compose 内网可达（expose 8090，不映射宿主机），Bearer Token 鉴权，安全开关 fail-closed（远程生成/遥测/分享任一未禁用则拒绝启动）。promptfoo 依赖已改为 registry 锁定 `0.123.0`，服务器构建无需本地 checkout。BFF 端点在 `/api/v1/maclaw/engine/*`，详见 `evaluating_platform/docs/architecture/maclaw-current-state.md`。
+
 
 `frontend` 是可部署镜像，不再是挂载源码的 Vite dev server。镜像构建流程为 `node:22-alpine` 编译 Vite 静态资源，再由 `nginx:alpine` 托管，并把 `/api/v1/*` 代理到 `backend:8080`。浏览器访问 `frontend` 暴露端口即可同时加载页面和调用 BFF。
 
@@ -182,9 +188,11 @@ Skill 分发是 Hub-first：
 
 当前平台已为后续图文攻击 Skill 预留执行通道：MaClaw 原生 Skill 可在 `payload_dataset` 条目中输出 `payload_text` 和 `images[]`，平台通过 `register_skill_payload_dataset` 注册为本次 run/session 绑定的临时 payload handles。图片原始数据只允许存在于服务端临时 handle 中，浏览器、报告、证据、进度和 MCP 目录只展示 `payload_modality=text_image`、`image_count`、`image_mime_types` 等安全元信息。
 
-当前已适配并导入的多模态 Skill 包包括 `figstep-typographic-visual-skill`、`mm-safetybench-query-image-skill` 和 `hades-hidden-intent-visual-skill`。它们分别使用 FigStep SafeBench-Tiny、MM-SafetyBench processed questions、HADES 仓库 scenario 定义中的轻量项目原生数据/资产，输出标准 `payload_dataset`，并通过 `judge_profile` 标记为 `figstep_typographic_jailbreak`、`mm_safetybench_safe_unsafe`、`hades_hidden_intent_jailbreak`。
+当前已适配并导入的多模态 Skill 包包括 `figstep-typographic-visual-skill`、`mm-safetybench-query-image-skill` 和 `hades-hidden-intent-visual-skill`。它们分别使用 FigStep SafeBench-Tiny、MM-SafetyBench proces 企业被测模型连接新增 `supports_vision` 元数据开关。只有该开关为 `true` 时，`call_evaluation_target` 才会按 OpenAI-compatible 图文消息格式发送 `text + image_url` content；当前 DeepSeek 文本模型应保持关闭。若图文 payload 被用于不支持图片输入的目标，平台返回安全失败 `target_multimodal_not_supported`，不会调用目标模型。智能体目标（`kind=agent`）v1 一律不支持图文载荷，同样返回 `target_multimodal_not_supported`。
 
-企业被测模型连接新增 `supports_vision` 元数据开关。只有该开关为 `true` 时，`call_evaluation_target` 才会按 OpenAI-compatible 图文消息格式发送 `text + image_url` content；当前 DeepSeek 文本模型应保持关闭。若图文 payload 被用于不支持图片输入的目标，平台返回安全失败 `target_multimodal_not_supported`，不会调用目标模型。
+ 攻击结果展示（2026-09 迭代，P5）：自选评测页在插件统计下方展示风险类别分组（每类含探针数、严重度分布、组内插件脱敏原因摘要 ≤3 条）与攻击成功明细表（插件/策略维度 `attack_success>0` 条目），所有摘要来自引擎 `redactReason` 脱敏输出（≤200 字），不含原始 prompt/响应/payload；攻击成功 0 条时展示“未发现攻击成功”。聊天链路 ReportCard 新增“攻击成功摘要（脱敏）”折叠区，按需拉取 `GET /maclaw/evaluation/reports/:id` 的已脱敏 findings，完整攻击样例仍只在 PDF 报告与 evidence handle。
+
+ 聊天窗口抖动修复（2026-09 迭代，P1）：确认执行后 progress 卡单一数据源——SSE 事件流激活期间，job 轮询通道不再向同一 `assessment_id` 并发写入进度卡（仅在 SSE 未连接时播种 queued 卡，SSE 断开时自动回退为轮询写入），消除双通道交替覆盖导致的“出现→消失→再出现”抖动。true` 时，`call_evaluation_target` 才会按 OpenAI-compatible 图文消息格式发送 `text + image_url` content；当前 DeepSeek 文本模型应保持关闭。若图文 payload 被用于不支持图片输入的目标，平台返回安全失败 `target_multimodal_not_supported`，不会调用目标模型。
 
 ## 验证
 

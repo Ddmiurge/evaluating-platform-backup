@@ -26,6 +26,9 @@ type MaclawRuntimeHandler struct {
 	skillProjection    *maclaw.SkillProjectionService
 	capabilityCatalog  *maclaw.CapabilityCatalogService
 	targetConfig       *maclaw.TargetConfigService
+	engineBridge       *maclaw.RedteamToolBridge
+	engineJobs         *maclaw.PlatformEngineJobStore
+	engineRunService   *maclaw.EngineRunService
 	executionGrantKey  string
 	skillPreflightMu   sync.Mutex
 	skillPreflightOK   map[string]time.Time
@@ -54,18 +57,8 @@ func NewMaclawRuntimeHandlerWithProvider(provider maclaw.GatewayProvider) *Macla
 	return &MaclawRuntimeHandler{provider: provider}
 }
 
-func NewMaclawRuntimeHandlerWithProviderAndProjection(provider maclaw.GatewayProvider, projection *maclaw.ResourceProjectionService) *MaclawRuntimeHandler {
-	return &MaclawRuntimeHandler{provider: provider, resourceProjection: projection}
-}
-
 func NewMaclawRuntimeHandlerWithProviderAndProjections(provider maclaw.GatewayProvider, resourceProjection *maclaw.ResourceProjectionService, skillProjection *maclaw.SkillProjectionService) *MaclawRuntimeHandler {
 	return &MaclawRuntimeHandler{provider: provider, resourceProjection: resourceProjection, skillProjection: skillProjection}
-}
-
-func NewMaclawRuntimeHandlerWithCapabilityCatalog(gateway maclaw.RuntimeGateway, instanceID string, catalog *maclaw.CapabilityCatalogService) *MaclawRuntimeHandler {
-	h := NewMaclawRuntimeHandler(gateway, instanceID)
-	h.capabilityCatalog = catalog
-	return h
 }
 
 func NewMaclawRuntimeHandlerWithProviderProjectionsAndCatalog(provider maclaw.GatewayProvider, resourceProjection *maclaw.ResourceProjectionService, skillProjection *maclaw.SkillProjectionService, catalog *maclaw.CapabilityCatalogService) *MaclawRuntimeHandler {
@@ -81,6 +74,17 @@ func (h *MaclawRuntimeHandler) SetExecutionGrantSecret(secret string) {
 func (h *MaclawRuntimeHandler) SetTargetConfigService(targetConfig *maclaw.TargetConfigService) {
 	if h != nil {
 		h.targetConfig = targetConfig
+	}
+}
+
+// SetPromptfooEngine wires the Phase-1 confirm fast path: plan cards that
+// select only promptfoo engine capabilities are executed platform-side
+// instead of re-entering the MaClaw agent loop.
+func (h *MaclawRuntimeHandler) SetPromptfooEngine(bridge *maclaw.RedteamToolBridge, jobs *maclaw.PlatformEngineJobStore, runs *maclaw.EngineRunService) {
+	if h != nil {
+		h.engineBridge = bridge
+		h.engineJobs = jobs
+		h.engineRunService = runs
 	}
 }
 
@@ -280,8 +284,10 @@ func (h *MaclawRuntimeHandler) attachCurrentTargetContext(c *gin.Context, in *ma
 	if err != nil {
 		return
 	}
+	// Accept every callable target kind (llm / http / agent): the store holds
+	// at most one target per user, and an agent target is as valid as an LLM
+	// target for planning context.
 	targets, err := h.targetConfig.ListTargets(c.Request.Context(), userID, maclaw.EvaluationTargetQuery{
-		Kind:            maclaw.EvaluationTargetKindLLM,
 		IncludeInactive: true,
 	})
 	if err != nil || len(targets) == 0 {
@@ -364,6 +370,13 @@ func (h *MaclawRuntimeHandler) ConfirmPlan(c *gin.Context) {
 		return
 	}
 	resources, selectedSkills := selectedCapabilityRefsFromContent(planMessage.Content)
+	// Phase-1 fast path: plan cards that select only promptfoo engine
+	// capabilities run platform-side (the MaClaw agent loop has no engine
+	// fast path, and its LLM tool-calling is unreliable here).
+	if enginePlugins, ok := promptfooEngineRefsFromPlan(planMessage.Content); ok && len(selectedSkills) == 0 && len(resources) == 0 {
+		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount, enginePlugins)
+		return
+	}
 	if err := h.preflightSelectedSkillTenantModel(c, selectedSkills); err != nil {
 		return
 	}
@@ -510,8 +523,9 @@ func (h *MaclawRuntimeHandler) confirmTargetConfigured(c *gin.Context) (bool, er
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id", "code": "invalid_user"})
 		return false, err
 	}
+	// Accept every callable target kind (llm / http / agent): the user's single
+	// stored target is the evaluation target regardless of kind.
 	targets, err := h.targetConfig.ListTargets(c.Request.Context(), userID, maclaw.EvaluationTargetQuery{
-		Kind:            maclaw.EvaluationTargetKindLLM,
 		IncludeInactive: true,
 	})
 	if err != nil {
@@ -545,30 +559,6 @@ func annotateEvaluationJobProgressDuration(job *maclaw.EvaluationJob, stage stri
 	if data, err := json.Marshal(stageDurations); err == nil {
 		job.Progress.StageDurationsJSON = string(data)
 	}
-}
-
-func (h *MaclawRuntimeHandler) syncAllPublishedCapabilities(c *gin.Context) error {
-	if h.resourceProjection != nil && h.provider != nil {
-		session, _, ok := h.runtimeSessionWithInstance(c)
-		if !ok {
-			return http.ErrAbortHandler
-		}
-		if err := h.resourceProjection.SyncEnterprisePublishedResources(c.Request.Context(), maclawRuntimeIdentity(c), session); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw resource projection failed", "code": "maclaw_resource_projection_failed"})
-			return err
-		}
-	}
-	if h.skillProjection != nil && h.provider != nil {
-		session, _, ok := h.runtimeSessionWithInstance(c)
-		if !ok {
-			return http.ErrAbortHandler
-		}
-		if err := h.skillProjection.SyncEnterprisePublishedSkills(c.Request.Context(), maclawRuntimeIdentity(c), session); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw skill projection failed", "code": "maclaw_skill_projection_failed"})
-			return err
-		}
-	}
-	return nil
 }
 
 func (h *MaclawRuntimeHandler) listRecentRuntimeMessages(c *gin.Context, gateway maclaw.RuntimeGateway, instanceID, sessionID string) ([]maclaw.RuntimeMessage, error) {
@@ -608,11 +598,6 @@ func selectedCapabilityRefs(messages []maclaw.RuntimeMessage) (resources []strin
 		return selectedCapabilityRefsFromContent(msg.Content)
 	}
 	return nil, nil
-}
-
-func hasPlanConfirmMessage(messages []maclaw.RuntimeMessage) bool {
-	_, ok := latestPlanConfirmMessage(messages)
-	return ok
 }
 
 func latestPlanConfirmMessage(messages []maclaw.RuntimeMessage) (*maclaw.RuntimeMessage, bool) {
@@ -772,7 +757,7 @@ func selectedCapabilityRefsFromContent(content string) (resources []string, skil
 			}
 		}
 	}
-	return uniqueStringsPreserve(resources), uniqueStringsPreserve(skills)
+	return uniqueNonEmptyStrings(resources), uniqueNonEmptyStrings(skills)
 }
 
 func planConfirmExecutionRequirements(content string, overrideTestCount int, targetConfigured bool) (int, []string) {
@@ -1379,20 +1364,6 @@ func intFromAny(value any) int {
 	default:
 		return 0
 	}
-}
-
-func uniqueStringsPreserve(items []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[item] {
-			continue
-		}
-		seen[item] = true
-		out = append(out, item)
-	}
-	return out
 }
 
 func (h *MaclawRuntimeHandler) CancelRun(c *gin.Context) {

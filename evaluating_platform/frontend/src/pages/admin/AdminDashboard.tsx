@@ -13,9 +13,9 @@ export function AdminDashboard() {
   }, [])
 
   const cards = [
-    { title: '平台用户', value: overview?.total_users ?? 0, icon: <TeamOutlined />, color: '#4d96ff' },
-    { title: '发布资源', value: overview?.published_resources ?? 0, icon: <SafetyOutlined />, color: '#52c41a' },
-    { title: 'shadow 资源', value: overview?.shadow_resources ?? 0, icon: <DatabaseOutlined />, color: '#8b5cf6' },
+    { title: '平台用户', value: overview?.total_users ?? 0, icon: <TeamOutlined />, color: '#2563eb' },
+    { title: '发布资源', value: overview?.published_resources ?? 0, icon: <SafetyOutlined />, color: '#16a34a' },
+    { title: 'shadow 资源', value: overview?.shadow_resources ?? 0, icon: <DatabaseOutlined />, color: '#7c3aed' },
   ]
 
   return (

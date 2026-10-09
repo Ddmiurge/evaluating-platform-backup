@@ -37,8 +37,6 @@ export interface MaclawMCPServerInput {
 }
 
 export const expertService = {
-  getCategories: () => api.get('/tools/categories').then((r) => r.data),
-
   uploadSample: (data: FormData) =>
     api.post('/samples', data, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -90,9 +88,6 @@ export const expertService = {
     api.post('/templates/upload-csv', data, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then((r) => r.data),
-
-  listEvalPackages: (params?: { limit?: number; offset?: number }) =>
-    api.get('/eval-packages', { params }).then((r) => r.data),
 
   listMaclawSkills: (limit = 100) =>
     api.get('/maclaw/skills', { params: { limit } }).then((r) => r.data),

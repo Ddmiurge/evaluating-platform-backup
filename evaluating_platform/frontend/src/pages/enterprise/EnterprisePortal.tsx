@@ -7,11 +7,11 @@ import {
   UserOutlined,
   BellOutlined,
   WalletOutlined,
-  RobotOutlined,
-} from '@ant-design/icons'
+  RobotOutlined, SafetyOutlined } from '@ant-design/icons'
 import { BillingPage } from './BillingPage'
 import { Settings } from './Settings'
 import { ChatPage } from './ChatPage'
+import { EngineEvalPage } from './EngineEvalPage'
 import { useAuth } from '../../context/AuthContext'
 import { billingService } from '../../services/billing'
 import appLogoUrl from '../../assets/qianxin-ai-security-logo.png'
@@ -20,7 +20,8 @@ const { Sider, Header, Content } = Layout
 const { Text } = Typography
 
 const menuItems = [
-  { key: '/enterprise', icon: <RobotOutlined />, label: 'AI 服务' },
+  { key: '/enterprise', icon: <RobotOutlined />, label: <span>AI 服务 <Badge count="荐" size="small" offset={[6, -2]} /></span> },
+  { key: '/enterprise/eval', icon: <SafetyOutlined />, label: '自选评测' },
   { key: '/enterprise/billing', icon: <WalletOutlined />, label: '计费管理' },
   { key: '/enterprise/settings', icon: <SettingOutlined />, label: '账户设置' },
 ]
@@ -42,7 +43,7 @@ export function EnterprisePortal() {
   }, [location.pathname, navigate])
 
   const selectedKey = location.pathname === '/enterprise' ? '/enterprise' : location.pathname
-  const paddedContent = location.pathname === '/enterprise/billing' || location.pathname === '/enterprise/settings'
+  const paddedContent = location.pathname === '/enterprise/eval' || location.pathname === '/enterprise/billing' || location.pathname === '/enterprise/settings'
 
   const userMenu = [
     {
@@ -103,7 +104,6 @@ export function EnterprisePortal() {
         </div>
 
         <Menu
-          theme="dark"
           mode="inline"
           selectedKeys={[selectedKey]}
           style={{ background: 'transparent', border: 'none', marginTop: 8 }}
@@ -125,7 +125,7 @@ export function EnterprisePortal() {
           borderRadius: 8,
         }}>
           <Text style={{ color: 'var(--text-muted)', fontSize: 11 }}>账户余额</Text>
-          <div style={{ color: '#4d96ff', fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ color: 'var(--color-primary)', fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
             {balance !== null ? `¥ ${balance.toFixed(2)}` : '—'}
           </div>
           <Button
@@ -165,7 +165,7 @@ export function EnterprisePortal() {
                 <Avatar
                   size={32}
                   icon={<UserOutlined />}
-                  style={{ background: 'rgba(26, 109, 255, 0.2)', border: '1px solid rgba(26, 109, 255, 0.4)' }}
+                  style={{ background: 'var(--color-primary-light)', border: '1px solid var(--color-primary-border)' }}
                 />
                 <Text style={{ color: 'var(--text-primary)', fontSize: 13 }}>
                   {user?.name || user?.email || '用户'}
@@ -177,6 +177,7 @@ export function EnterprisePortal() {
 
         <Content style={{ padding: paddedContent ? 24 : 0, minHeight: 'calc(100vh - 64px)' }}>
           <Routes>
+            <Route path="eval" element={<EngineEvalPage />} />
             <Route path="billing" element={<BillingPage />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<ChatPage />} />

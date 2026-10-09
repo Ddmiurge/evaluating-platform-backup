@@ -48,12 +48,7 @@ export function Login() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'var(--bg-base)',
-      backgroundImage: `
-        linear-gradient(rgba(26, 109, 255, 0.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(26, 109, 255, 0.04) 1px, transparent 1px)
-      `,
-      backgroundSize: '40px 40px',
+      background: 'linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%)',
     }}>
       <div style={{
         position: 'fixed',
@@ -70,7 +65,7 @@ export function Login() {
         background: 'var(--bg-card)',
         border: '1px solid var(--border-color)',
         borderRadius: 12,
-        boxShadow: '0 0 60px rgba(26, 109, 255, 0.1), 0 20px 60px rgba(0,0,0,0.8)',
+        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04), 0 12px 40px rgba(15, 23, 42, 0.08)',
       }}>
         <div style={{ textAlign: 'center', marginBottom: 36 }}>
           <div style={{
@@ -80,11 +75,11 @@ export function Login() {
             width: 56,
             height: 56,
             borderRadius: 14,
-            background: 'rgba(26, 109, 255, 0.15)',
-            border: '1px solid rgba(26, 109, 255, 0.4)',
+            background: 'var(--color-primary-light)',
+            border: '1px solid var(--color-primary-border)',
             marginBottom: 16,
           }}>
-            <SafetyCertificateOutlined style={{ fontSize: 28, color: '#4d96ff' }} />
+            <SafetyCertificateOutlined style={{ fontSize: 28, color: 'var(--color-primary)' }} />
           </div>
           <Title level={3} style={{ color: 'var(--text-primary)', margin: 0, letterSpacing: 1 }}>
             AI 安全评估平台

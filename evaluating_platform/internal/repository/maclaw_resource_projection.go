@@ -112,9 +112,7 @@ func (r *MaclawResourcePublicationRepository) ListPublished(ctx context.Context,
 		limitSQL = fmt.Sprintf(" LIMIT $%d", len(args))
 	}
 	query := `
-		SELECT source_expert_user_id, source_maclaw_tenant_id, source_resource_id, source_resource_handle,
-		       source_version, name, kind, status, enabled, summary, assessment_types, tags, metadata,
-		       created_at, updated_at
+		SELECT ` + resourcePublicationColumns + `
 		FROM maclaw_resource_publications
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY updated_at DESC` + limitSQL
@@ -166,9 +164,7 @@ func (r *MaclawResourcePublicationRepository) ListAdmin(ctx context.Context, q m
 		limitSQL = fmt.Sprintf(" LIMIT $%d", len(args))
 	}
 	query := `
-		SELECT source_expert_user_id, source_maclaw_tenant_id, source_resource_id, source_resource_handle,
-		       source_version, name, kind, status, enabled, summary, assessment_types, tags, metadata,
-		       created_at, updated_at
+		SELECT ` + resourcePublicationColumns + `
 		FROM maclaw_resource_publications
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY updated_at DESC` + limitSQL
@@ -224,14 +220,17 @@ func (r *MaclawResourcePublicationRepository) Count(ctx context.Context) (publis
 	return published, total, nil
 }
 
-func (r *MaclawResourcePublicationRepository) getBySourceResourceID(ctx context.Context, sourceResourceID string) (*model.MaclawResourcePublication, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT source_expert_user_id, source_maclaw_tenant_id, source_resource_id, source_resource_handle,
+// resourcePublicationColumns 提取自 4 处手写列清单（P2-13）。
+const resourcePublicationColumns = `source_expert_user_id, source_maclaw_tenant_id, source_resource_id, source_resource_handle,
 		       source_version, name, kind, status, enabled, summary, assessment_types, tags, metadata,
-		       created_at, updated_at
+		       created_at, updated_at`
+
+// queryFirstPublication 统一单条发布的查询/扫描/空结果语义（P2-13）。
+func (r *MaclawResourcePublicationRepository) queryFirstPublication(ctx context.Context, whereSQL string, arg any) (*model.MaclawResourcePublication, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT ` + resourcePublicationColumns + `
 		FROM maclaw_resource_publications
-		WHERE source_resource_id = $1
-	`, sourceResourceID)
+		WHERE ` + whereSQL, arg)
 	if err != nil {
 		return nil, fmt.Errorf("query maclaw resource publication: %w", err)
 	}
@@ -246,27 +245,12 @@ func (r *MaclawResourcePublicationRepository) getBySourceResourceID(ctx context.
 	return &items[0], nil
 }
 
+func (r *MaclawResourcePublicationRepository) getBySourceResourceID(ctx context.Context, sourceResourceID string) (*model.MaclawResourcePublication, error) {
+	return r.queryFirstPublication(ctx, "source_resource_id = $1", sourceResourceID)
+}
+
 func (r *MaclawResourcePublicationRepository) GetPublishedByHandle(ctx context.Context, handle string) (*model.MaclawResourcePublication, error) {
-	const query = `
-		SELECT source_expert_user_id, source_maclaw_tenant_id, source_resource_id, source_resource_handle,
-		       source_version, name, kind, status, enabled, summary, assessment_types, tags, metadata,
-		       created_at, updated_at
-		FROM maclaw_resource_publications
-		WHERE (source_resource_handle = $1 OR source_resource_id = $1) AND enabled = true AND status = 'published'
-	`
-	rows, err := r.pool.Query(ctx, query, strings.TrimSpace(handle))
-	if err != nil {
-		return nil, fmt.Errorf("query maclaw resource publication: %w", err)
-	}
-	defer rows.Close()
-	items, err := scanResourcePublications(rows)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	return &items[0], nil
+	return r.queryFirstPublication(ctx, "(source_resource_handle = $1 OR source_resource_id = $1) AND enabled = true AND status = 'published'", strings.TrimSpace(handle))
 }
 
 type MaclawResourceShadowRepository struct {

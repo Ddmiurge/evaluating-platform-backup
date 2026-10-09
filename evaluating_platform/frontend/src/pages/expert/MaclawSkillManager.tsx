@@ -107,8 +107,8 @@ function SkillCard({ item }: { item: MaclawSkillSummary }) {
 
   return (
     <Card size="small" style={{ height: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}>
-      <Space direction="vertical" size={10} style={{ width: '100%' }}>
-        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={2} style={{ width: '100%' }}>
           <Text strong style={{ color: 'var(--text-primary)' }}>{item.name}</Text>
           <Paragraph ellipsis={{ rows: 2 }} style={{ margin: 0, color: 'var(--text-secondary)' }}>
             {item.description || '未填写说明'}
@@ -142,7 +142,7 @@ function SearchResultCard({
 }) {
   return (
     <Card size="small" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}>
-      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={8} style={{ width: '100%' }}>
         <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space wrap>
             <Text strong style={{ color: 'var(--text-primary)' }}>{item.name}</Text>
@@ -208,7 +208,7 @@ export function MaclawSkillManager() {
     try {
       const res = await expertService.searchMaclawSkills({
         query: values.query,
-        top_n: values.top_n || 10,
+        top_n: 10,
         include_installed: true,
       })
       setSearchResults((res.items || []) as MaclawSkillSearchResult[])
@@ -275,7 +275,7 @@ export function MaclawSkillManager() {
   }
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
         <div>
           <Title level={3} style={{ margin: 0, color: 'var(--text-primary)' }}>maclaw Skill 管理</Title>

@@ -20,18 +20,17 @@ func NewMaclawAccountMappingRepository(pool *pgxpool.Pool) *MaclawAccountMapping
 	return &MaclawAccountMappingRepository{pool: pool}
 }
 
-func (r *MaclawAccountMappingRepository) GetByPlatformUserID(ctx context.Context, id uuid.UUID) (*model.MaclawAccountMapping, error) {
-	const query = `
-		SELECT platform_user_id, platform_role, platform_email, platform_org_name,
+// maclawAccountMappingColumns 与 scanMaclawAccountMapping 提取自
+// GetByPlatformUserID/List 的重复 18 列清单与 Scan 目标（P2-14）。
+const maclawAccountMappingColumns = `platform_user_id, platform_role, platform_email, platform_org_name,
 		       maclaw_tenant_id, maclaw_user_id, maclaw_credential_id, maclaw_instance_id,
 		       encrypted_api_key, encrypted_api_secret, credential_key_id,
 		       encrypted_access_token, access_token_key_id, access_token_expires_at,
-		       provisioning_status, COALESCE(last_error, ''), created_at, updated_at
-		FROM maclaw_account_mappings
-		WHERE platform_user_id = $1
-	`
+		       provisioning_status, COALESCE(last_error, ''), created_at, updated_at`
+
+func scanMaclawAccountMapping(row pgx.Row) (*model.MaclawAccountMapping, error) {
 	var out model.MaclawAccountMapping
-	err := r.pool.QueryRow(ctx, query, id).Scan(
+	if err := row.Scan(
 		&out.PlatformUserID,
 		&out.PlatformRole,
 		&out.PlatformEmail,
@@ -50,14 +49,26 @@ func (r *MaclawAccountMappingRepository) GetByPlatformUserID(ctx context.Context
 		&out.LastError,
 		&out.CreatedAt,
 		&out.UpdatedAt,
-	)
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (r *MaclawAccountMappingRepository) GetByPlatformUserID(ctx context.Context, id uuid.UUID) (*model.MaclawAccountMapping, error) {
+	const query = `
+		SELECT ` + maclawAccountMappingColumns + `
+		FROM maclaw_account_mappings
+		WHERE platform_user_id = $1
+	`
+	out, err := scanMaclawAccountMapping(r.pool.QueryRow(ctx, query, id))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query maclaw account mapping: %w", err)
 	}
-	return &out, nil
+	return out, nil
 }
 
 func (r *MaclawAccountMappingRepository) Upsert(ctx context.Context, mapping *model.MaclawAccountMapping) error {
@@ -123,11 +134,7 @@ func (r *MaclawAccountMappingRepository) List(ctx context.Context, limit, offset
 		offset = 0
 	}
 	const query = `
-		SELECT platform_user_id, platform_role, platform_email, platform_org_name,
-		       maclaw_tenant_id, maclaw_user_id, maclaw_credential_id, maclaw_instance_id,
-		       encrypted_api_key, encrypted_api_secret, credential_key_id,
-		       encrypted_access_token, access_token_key_id, access_token_expires_at,
-		       provisioning_status, COALESCE(last_error, ''), created_at, updated_at
+		SELECT ` + maclawAccountMappingColumns + `
 		FROM maclaw_account_mappings
 		ORDER BY updated_at DESC
 		LIMIT $1 OFFSET $2

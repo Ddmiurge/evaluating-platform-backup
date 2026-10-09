@@ -80,6 +80,9 @@ type MaclawConfig struct {
 	RedteamMCPEndpoint       string `mapstructure:"redteam_mcp_endpoint"`
 	RedteamMCPSecret         string `mapstructure:"redteam_mcp_secret"`
 	RedteamTargetConcurrency int    `mapstructure:"redteam_target_concurrency"`
+	EngineBaseURL            string `mapstructure:"engine_base_url"`
+	EngineBearerToken        string `mapstructure:"engine_bearer_token"`
+	EngineTimeoutSeconds     int    `mapstructure:"engine_timeout_seconds"`
 }
 
 func Load(path string) (*Config, error) {
@@ -115,6 +118,9 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("maclaw.redteam_mcp_endpoint", "MACLAW_REDTEAM_MCP_ENDPOINT")
 	_ = v.BindEnv("maclaw.redteam_mcp_secret", "MACLAW_REDTEAM_MCP_SECRET")
 	_ = v.BindEnv("maclaw.redteam_target_concurrency", "MACLAW_REDTEAM_TARGET_CONCURRENCY")
+	_ = v.BindEnv("maclaw.engine_base_url", "PROMPTFOO_ENGINE_BASE_URL")
+	_ = v.BindEnv("maclaw.engine_bearer_token", "PROMPTFOO_ENGINE_BEARER_TOKEN")
+	_ = v.BindEnv("maclaw.engine_timeout_seconds", "PROMPTFOO_ENGINE_TIMEOUT_SECONDS")
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -151,4 +157,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("maclaw.redteam_mcp_endpoint", "")
 	v.SetDefault("maclaw.redteam_mcp_secret", "")
 	v.SetDefault("maclaw.redteam_target_concurrency", 5)
+	v.SetDefault("maclaw.engine_base_url", "")
+	v.SetDefault("maclaw.engine_bearer_token", "")
+	v.SetDefault("maclaw.engine_timeout_seconds", 15)
 }

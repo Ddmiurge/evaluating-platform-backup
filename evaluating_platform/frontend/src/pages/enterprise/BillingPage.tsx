@@ -45,7 +45,7 @@ export function BillingPage() {
     { title: '工具', dataIndex: 'tool_name', render: (v: string) => <Text style={{ color: 'var(--text-primary)' }}>{v}</Text> },
     { title: '类型', dataIndex: 'tool_category', render: (v: string) => <Tag>{v || '—'}</Tag> },
     { title: '用量', dataIndex: 'tokens_used', render: (v: number) => <Text style={{ color: 'var(--text-secondary)' }}>{v} tokens</Text> },
-    { title: '金额', dataIndex: 'amount', render: (v: number) => <Text style={{ color: '#ff7a45', fontWeight: 600 }}>-¥{v?.toFixed(4)}</Text> },
+    { title: '金额', dataIndex: 'amount', render: (v: number) => <Text style={{ color: 'var(--color-high)', fontWeight: 600 }}>-¥{v?.toFixed(4)}</Text> },
     { title: '时间', dataIndex: 'created_at', render: (v: string) => <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>{v?.slice(0, 16).replace('T', ' ')}</Text> },
   ]
 
@@ -54,7 +54,7 @@ export function BillingPage() {
       <Tag color={v === 'recharge' ? 'success' : 'error'}>{v === 'recharge' ? '充值' : '扣费'}</Tag>
     )},
     { title: '金额', dataIndex: 'amount', render: (v: number, r: BalanceTransaction) => (
-      <Text style={{ color: r.type === 'recharge' ? '#52c41a' : '#ff7a45', fontWeight: 600 }}>
+      <Text style={{ color: r.type === 'recharge' ? 'var(--color-low)' : 'var(--color-high)', fontWeight: 600 }}>
         {r.type === 'recharge' ? '+' : '-'}¥{Math.abs(v)?.toFixed(4)}
       </Text>
     )},
@@ -73,18 +73,18 @@ export function BillingPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <div style={{
                 width: 56, height: 56, borderRadius: 14,
-                background: 'rgba(26,109,255,0.15)',
-                border: '1px solid rgba(26,109,255,0.3)',
+                background: 'var(--color-primary-light)',
+                border: '1px solid var(--color-primary-border)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                <WalletOutlined style={{ color: '#4d96ff', fontSize: 24 }} />
+                <WalletOutlined style={{ color: 'var(--color-primary)', fontSize: 24 }} />
               </div>
               <Statistic
                 title={<Text style={{ color: 'var(--text-secondary)' }}>可用余额</Text>}
                 value={balance ?? 0}
                 prefix="¥"
                 precision={2}
-                valueStyle={{ color: '#4d96ff', fontSize: 36, fontWeight: 700 }}
+                styles={{ content: { color: 'var(--color-primary)', fontSize: 36, fontWeight: 700 } }}
               />
             </div>
             <Button type="primary" icon={<PlusOutlined />} size="large"

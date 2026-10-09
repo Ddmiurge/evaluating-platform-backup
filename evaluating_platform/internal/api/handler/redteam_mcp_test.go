@@ -357,3 +357,53 @@ func performRedteamMCPRequestWithHeaders(t *testing.T, handler *RedteamMCPHandle
 	}
 	return w.Body.String()
 }
+
+func TestRedteamMCPHandlerRegistersPromptfooEngineTools(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	bridge := maclaw.NewRedteamToolBridge(&handlerRedteamCapabilitySearcher{}, nil, nil)
+	handler := NewRedteamMCPHandler(bridge, "mcp-secret")
+
+	// tools/list must advertise the three Phase-1 engine tools.
+	list := performRedteamMCPRequest(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	for _, want := range []string{"search_redteam_plugin_catalog", "run_promptfoo_redteam_evaluation", "get_promptfoo_evaluation_result"} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("tools/list missing %q: %s", want, list)
+		}
+	}
+
+	// Catalog search works without engine wiring and returns safe cards.
+	search := performRedteamMCPRequestWithHeaders(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_redteam_plugin_catalog","arguments":{"query":"有害内容","limit":5}}}`, map[string]string{
+		"X-Evaluating-Platform-User-ID": uuid.NewString(),
+		"X-Evaluating-Platform-Role":    "enterprise",
+	})
+	if !strings.Contains(search, "promptfoo_plugin:harmful") || !strings.Contains(search, `\"engine\":\"promptfoo\"`) {
+		t.Fatalf("catalog search response = %s", search)
+	}
+
+	// Catalog search is rejected for expert roles.
+	rejected := performRedteamMCPRequestWithHeaders(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_redteam_plugin_catalog","arguments":{"query":"x"}}}`, map[string]string{
+		"X-Evaluating-Platform-User-ID": uuid.NewString(),
+		"X-Evaluating-Platform-Role":    "expert",
+	})
+	if !strings.Contains(rejected, "enterprise or admin") {
+		t.Fatalf("expert role should be rejected: %s", rejected)
+	}
+
+	// run_promptfoo_redteam_evaluation requires an execution grant.
+	noGrant := performRedteamMCPRequestWithHeaders(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_promptfoo_redteam_evaluation","arguments":{"run_id":"r1","purpose":"p"}}}`, map[string]string{
+		"X-Evaluating-Platform-User-ID": uuid.NewString(),
+		"X-Evaluating-Platform-Role":    "enterprise",
+	})
+	if !strings.Contains(noGrant, "grant") {
+		t.Fatalf("run tool without grant should fail: %s", noGrant)
+	}
+
+	// get_promptfoo_evaluation_result requires enterprise/admin role.
+	expert := performRedteamMCPRequestWithHeaders(t, handler, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_promptfoo_evaluation_result","arguments":{"engine_run_id":"er-x"}}}`, map[string]string{
+		"X-Evaluating-Platform-User-ID": uuid.NewString(),
+		"X-Evaluating-Platform-Role":    "expert",
+	})
+	if !strings.Contains(expert, "enterprise or admin") {
+		t.Fatalf("expert role should be rejected: %s", expert)
+	}
+}

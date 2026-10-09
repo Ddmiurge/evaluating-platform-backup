@@ -570,3 +570,38 @@ type fakeHubRuntimeConfigProvider struct {
 func (p fakeHubRuntimeConfigProvider) RuntimeConfigPatch(context.Context) (*RuntimeAppConfig, error) {
 	return p.cfg, nil
 }
+
+// TestProvisionerDecryptStringLegacyCompat locks in backward compatibility for
+// account-mapping credentials written by 2026-07 era containers, which
+// encrypted raw strings without the JSON wrapper that encryptJSON adds now.
+func TestProvisionerDecryptStringLegacyCompat(t *testing.T) {
+	p := newTestProvisioner(t, fakeUserLookup{}, newFakeMappingStore(), &fakeProvisioningAdmin{})
+
+	// New format: JSON-wrapped string via encryptString.
+	secret := "e-legacy-raw-secret-value"
+	encJSON, keyIDJSON, err := p.encryptString(secret)
+	if err != nil {
+		t.Fatalf("encryptString: %v", err)
+	}
+	got, err := p.decryptString(encJSON, keyIDJSON)
+	if err != nil {
+		t.Fatalf("decryptString(json format): %v", err)
+	}
+	if got != secret {
+		t.Fatalf("json roundtrip = %q, want %q", got, secret)
+	}
+
+	// Legacy format: raw bytes encrypted directly (what the 2026-07 build wrote).
+	_, key := p.keyStore.CurrentKey()
+	encRaw, err := appcrypto.Encrypt([]byte(secret), key)
+	if err != nil {
+		t.Fatalf("raw encrypt: %v", err)
+	}
+	got, err = p.decryptString(encRaw, "test")
+	if err != nil {
+		t.Fatalf("decryptString(legacy raw format): %v", err)
+	}
+	if got != secret {
+		t.Fatalf("legacy raw = %q, want %q", got, secret)
+	}
+}

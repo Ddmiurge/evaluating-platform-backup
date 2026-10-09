@@ -755,7 +755,7 @@ func (s *fakeSkillPublicationStore) MarkSkillPublicationUnavailable(_ context.Co
 func (s *fakeSkillPublicationStore) ListPublishedSkills(_ context.Context, q SkillSearchInput) ([]model.MaclawSkillPublication, error) {
 	out := make([]model.MaclawSkillPublication, 0, len(s.items))
 	for _, item := range s.items {
-		if item.Enabled && item.Status == "active" && matchesSkillQuery(*item, q.Query) {
+		if item.Enabled && item.Status == "active" {
 			out = append(out, *item)
 		}
 	}

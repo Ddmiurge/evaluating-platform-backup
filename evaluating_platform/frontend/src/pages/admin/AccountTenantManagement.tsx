@@ -75,7 +75,7 @@ export function AccountTenantManagement() {
         open={!!selected}
         size="large"
         onClose={() => setSelected(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {selected && <MaclawModelConfig userId={selected.platform_user_id} mode="account" title="单租户 maclaw 模型配置" />}
       </Drawer>

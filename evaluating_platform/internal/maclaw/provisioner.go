@@ -2,6 +2,7 @@ package maclaw
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -512,12 +513,7 @@ func (p *Provisioner) refreshToken(ctx context.Context, mapping *model.MaclawAcc
 }
 
 func (p *Provisioner) encryptString(value string) ([]byte, string, error) {
-	keyID, key := p.keyStore.CurrentKey()
-	encrypted, err := appcrypto.Encrypt([]byte(value), key)
-	if err != nil {
-		return nil, "", fmt.Errorf("encrypt maclaw secret: %w", err)
-	}
-	return encrypted, keyID, nil
+	return encryptJSON(p.keyStore, value, "maclaw secret")
 }
 
 func (p *Provisioner) decryptString(value []byte, keyID string) (string, error) {
@@ -529,6 +525,13 @@ func (p *Provisioner) decryptString(value []byte, keyID string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("decrypt maclaw secret: %w", err)
 	}
+	var out string
+	if err := json.Unmarshal(plaintext, &out); err == nil {
+		return out, nil
+	}
+	// Legacy fallback: 2026-07 era containers persisted maclaw secrets as raw
+	// (non-JSON-wrapped) strings. Read them back so account mappings created by
+	// those builds keep resolving after the encryptJSON migration.
 	return string(plaintext), nil
 }
 

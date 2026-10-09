@@ -27,6 +27,7 @@ import {
 } from '@ant-design/icons'
 import { expertService } from '../../services/expert'
 import { ComposedAttackManager } from './ComposedAttackManager'
+import { formatDate } from '../../utils/format'
 
 const { Paragraph, Text, Title } = Typography
 const { TextArea } = Input
@@ -87,25 +88,6 @@ function templateCategoryOptions(extra: string[] = []) {
       return true
     })
     .map((value) => ({ value, label: templateSubTypeLabel[value] || value }))
-}
-
-function formatDate(value?: string) {
-  if (!value) {
-    return '未记录时间'
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function toTimestamp(value?: string) {
@@ -360,7 +342,7 @@ export function EngineManager() {
                   </Popconfirm>,
                 ]}
                 style={{ height: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: 8 }}
-                bodyStyle={{ minHeight: 130, padding: 28 }}
+                styles={{ body: { minHeight: 130, padding: 28 } }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
                   <FolderOutlined style={{ color: 'var(--text-primary)', fontSize: 22 }} />
@@ -466,9 +448,9 @@ export function EngineManager() {
         width={920}
       >
         {!selectedBatch ? null : (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space orientation="vertical" style={{ width: '100%' }} size="middle">
             <Card size="small" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Space orientation="vertical" size={4} style={{ width: '100%' }}>
                 <Text style={{ color: 'var(--text-secondary)' }}>模板数量：{selectedBatch.templates.length}</Text>
                 <Text style={{ color: 'var(--text-secondary)' }}>最近更新时间：{selectedBatch.latestUpdatedAt ? formatDate(selectedBatch.latestUpdatedAt) : '暂无模板'}</Text>
                 <Space size={[0, 8]} wrap>
@@ -506,7 +488,7 @@ export function EngineManager() {
                       }
                       style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}
                     >
-                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      <Space orientation="vertical" size={6} style={{ width: '100%' }}>
                         <Text style={{ color: 'var(--text-secondary)' }}>
                           类型：{templateSubTypeLabel[template.sub_type] || template.sub_type}
                         </Text>

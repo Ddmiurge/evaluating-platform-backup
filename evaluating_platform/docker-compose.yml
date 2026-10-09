@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: Qianxinshujuku@2026
       POSTGRES_DB: evaluating_platform
     ports:
       - "5432:5432"
@@ -69,6 +69,10 @@ services:
     image: "${MACLAW_RUNTIME_IMAGE:-maclaw-runtime:latest}"
     container_name: ep_maclaw_runtime
     restart: unless-stopped
+    # Docker daemon DNS (223.5.5.5/114.114.114.114) is unreachable from this
+    # network; use the site resolver so tenant LLM hosts resolve.
+    dns:
+      - 10.95.38.38
     environment:
       MACLAW_DATA_ROOT: /data/maclaw
       MACLAW_HTTP_ADDR: 0.0.0.0:18080
@@ -113,6 +117,10 @@ services:
       dockerfile: Dockerfile
     container_name: ep_backend
     restart: unless-stopped
+    # Same unreachable daemon DNS as maclaw-runtime: the BFF calls the judge
+    # model (api.xiaomimimo.com) and LLM_BASE_URL (api.deepseek.com) directly.
+    dns:
+      - 10.95.38.38
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,6 +129,8 @@ services:
       maclaw-runtime:
         condition: service_healthy
       hubcenter:
+        condition: service_healthy
+      promptfoo-engine:
         condition: service_healthy
     environment:
       LLM_API_KEY: "${LLM_API_KEY}"
@@ -131,7 +141,7 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin123
       GIN_MODE: debug
-      DATABASE_DSN: "host=postgres user=postgres password=postgres dbname=evaluating_platform port=5432 sslmode=disable"
+      DATABASE_DSN: "host=postgres user=postgres password=Qianxinshujuku@2026 dbname=evaluating_platform port=5432 sslmode=disable"
       REDIS_ADDR: "redis:6379"
       STORAGE_ENDPOINT: "minio:9000"
       MACLAW_BASE_URL: "${MACLAW_BASE_URL:-http://maclaw-runtime:18080}"
@@ -146,8 +156,13 @@ services:
       MACLAW_REDTEAM_TARGET_CONCURRENCY: "${MACLAW_REDTEAM_TARGET_CONCURRENCY:-5}"
       MACLAW_REDTEAM_TARGET_MAX_TOKENS: "${MACLAW_REDTEAM_TARGET_MAX_TOKENS:-512}"
       MACLAW_REDTEAM_JUDGE_MAX_TOKENS: "${MACLAW_REDTEAM_JUDGE_MAX_TOKENS:-1024}"
+      # promptfoo-engine (Phase 0): BFF-side engine access. Empty base URL
+      # disables all engine endpoints (fail-closed).
+      PROMPTFOO_ENGINE_BASE_URL: "${PROMPTFOO_ENGINE_BASE_URL:-http://promptfoo-engine:8090}"
+      PROMPTFOO_ENGINE_BEARER_TOKEN: "${PROMPTFOO_ENGINE_BEARER_TOKEN:-change-me-promptfoo-engine-bearer-secret}"
+      PROMPTFOO_ENGINE_TIMEOUT_SECONDS: "${PROMPTFOO_ENGINE_TIMEOUT_SECONDS:-15}"
     ports:
-      - "8080:8080"
+      - "8088:8080"
     volumes:
       - ./configs:/app/configs:ro
       - ./migrations:/app/migrations:ro
@@ -170,12 +185,43 @@ services:
     ports:
       - "5173:80"
 
+  promptfoo-engine:
+    build:
+      context: ./promptfoo_engine
+      dockerfile: Dockerfile
+    image: evaluating_platform-promptfoo-engine:latest
+    container_name: ep_promptfoo_engine
+    restart: unless-stopped
+    environment:
+      # fail-closed security switches (also asserted at boot by the engine)
+      PROMPTFOO_DISABLE_REMOTE_GENERATION: "1"
+      PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: "1"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+      PROMPTFOO_DISABLE_SHARE: "1"
+      PROMPTFOO_ENGINE_BEARER_TOKEN: "${PROMPTFOO_ENGINE_BEARER_TOKEN:-change-me-promptfoo-engine-bearer-secret}"
+      PROMPTFOO_ENGINE_PORT: "8090"
+      PROMPTFOO_ENGINE_DATA_ROOT: /data/runs
+      PROMPTFOO_ENGINE_WORKERS: "${PROMPTFOO_ENGINE_WORKERS:-2}"
+      PROMPTFOO_ENGINE_MAX_QUEUE: "${PROMPTFOO_ENGINE_MAX_QUEUE:-100}"
+    # Internal only: no host port mapping. The BFF reaches the engine over
+    # the compose network at http://promptfoo-engine:8090.
+    expose:
+      - "8090"
+    volumes:
+      - promptfoo_engine_data:/data/runs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
   redis_data:
   minio_data:
   maclaw_data:
   hubcenter_data:
+  promptfoo_engine_data:
 
 networks:
   default:

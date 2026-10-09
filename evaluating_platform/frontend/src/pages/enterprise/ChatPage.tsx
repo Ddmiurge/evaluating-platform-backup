@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MouseEvent, type SetStateAction } from 'react'
-import { Button, Drawer, Form, Input, Select, Space, Switch, message } from 'antd'
+import { Alert, Button, Drawer, Form, Input, Segmented, Select, Space, Switch, message } from 'antd'
 import { ApiOutlined, DeleteOutlined, LoadingOutlined, PlusOutlined, SendOutlined } from '@ant-design/icons'
 
 import type { ChatMessage, ChatSession, WelcomeCapability } from '../../services/chat'
 import { maclawRuntimeChatService as chatService } from '../../services/maclawRuntime'
-import type { EvaluationTarget, RuntimeRun } from '../../services/maclawRuntime'
+import type { EvaluationJob, EvaluationTarget, RuntimeRun } from '../../services/maclawRuntime'
 import { MessageBubble, TypingIndicator, WelcomePanel } from './ChatCards'
-import { DEFAULT_WELCOME_CAPABILITIES, confirmedPlanStateFromMessages, formatSessionDate, messagesForSession, normalizeSessionTimestamps, pendingAssistantUserMessageId, prepareMessagesForDisplay } from './chatDisplay'
+import { AGENT_WELCOME_CAPABILITIES, DEFAULT_WELCOME_CAPABILITIES, confirmedPlanStateFromMessages, formatSessionDate, messagesForSession, normalizeSessionTimestamps, pendingAssistantUserMessageId, prepareMessagesForDisplay } from './chatDisplay'
 import { applyEvaluationJobRecovery, buildEvaluationJobProgressMessage, jobRunToStream, markEvaluationJobRecoveryStarted, markEvaluationJobRetryStarted } from './jobProgressMessages'
 
 const { TextArea } = Input
@@ -139,6 +139,7 @@ export function ChatPage() {
   const shouldStickToBottomRef = useRef(true)
   const activeIdRef = useRef<string | null>(null)
   const streamStopRef = useRef<(() => void) | null>(null)
+  const mountedRef = useRef(true)
 
   const markSessionRunning = useCallback((sessionId: string, running: boolean) => {
     if (!sessionId) return
@@ -185,12 +186,13 @@ export function ChatPage() {
     }
   }, [])
 
-  const loadWelcomeCapabilities = useCallback(async () => {
+  const loadWelcomeCapabilities = useCallback(async (targetKind: 'llm' | 'agent' = 'llm') => {
+    const fallback = targetKind === 'agent' ? AGENT_WELCOME_CAPABILITIES : DEFAULT_WELCOME_CAPABILITIES
     try {
-      const items = (await chatService.getWelcomeCapabilities(6)).slice(0, 6)
-      setWelcomeCapabilities(items.length > 0 ? items : DEFAULT_WELCOME_CAPABILITIES)
+      const items = (await chatService.getWelcomeCapabilities(6, targetKind)).slice(0, 6)
+      setWelcomeCapabilities(items.length > 0 ? items : fallback)
     } catch {
-      setWelcomeCapabilities(DEFAULT_WELCOME_CAPABILITIES)
+      setWelcomeCapabilities(fallback)
     }
   }, [])
 
@@ -237,9 +239,35 @@ export function ChatPage() {
   }, [applySessionSnapshot, loadSessions, markSessionRunning])
 
   const waitForEvaluationJob = useCallback(async (jobId: string, sessionId: string) => {
+    const MAX_CONSECUTIVE_POLL_FAILURES = 5
+    let consecutivePollFailures = 0
     for (let attempt = 0; attempt < 650; attempt += 1) {
-      if (activeIdRef.current !== sessionId) return
-      const job = await chatService.getEvaluationJob(jobId)
+      if (activeIdRef.current !== sessionId || !mountedRef.current) return
+      let job: EvaluationJob
+      try {
+        job = await chatService.getEvaluationJob(jobId)
+        consecutivePollFailures = 0
+      } catch {
+        consecutivePollFailures += 1
+        if (consecutivePollFailures < MAX_CONSECUTIVE_POLL_FAILURES) {
+          await new Promise(resolve => window.setTimeout(resolve, 1000))
+          continue
+        }
+        if (activeIdRef.current !== sessionId || !mountedRef.current) return
+        const pollFailureCard = buildEvaluationJobProgressMessage({
+          id: jobId,
+          kind: 'evaluation.run',
+          status: 'failed',
+          error: '评测任务状态查询连续失败，已停止自动跟踪。请刷新会话后重试。',
+        }, sessionId, 'failed')
+        setMessages(previous => prepareMessagesForDisplay([
+          ...previous.filter(message => message.id !== pollFailureCard.id),
+          pollFailureCard,
+        ]))
+        markSessionRunning(sessionId, false)
+        message.error('评测任务状态查询连续失败，请稍后刷新会话重试。')
+        return
+      }
       if (job.status === 'succeeded') {
         setMessages(previous => prepareMessagesForDisplay(
           previous.filter(message => message.id !== `job-${jobId}-queued`),
@@ -272,34 +300,56 @@ export function ChatPage() {
           card,
         ]))
         markSessionRunning(sessionId, false)
-        if (cardJob.progress?.recovery_action === 'resume') {
-          message.warning('评测任务中断，可在卡片中继续恢复。')
-        } else if (cardJob.progress?.recovery_action === 'retry') {
-          message.warning('评测任务中断，可在卡片中重试。')
-        } else {
-          message.error(cardJob.error || '评测任务未能完成，请稍后重试。')
+        if (mountedRef.current) {
+          if (cardJob.progress?.recovery_action === 'resume') {
+            message.warning('评测任务中断，可在卡片中继续恢复。')
+          } else if (cardJob.progress?.recovery_action === 'retry') {
+            message.warning('评测任务中断，可在卡片中重试。')
+          } else {
+            message.error(cardJob.error || '评测任务未能完成，请稍后重试。')
+          }
         }
         return
       }
       const run = jobRunToStream(job, sessionId)
       if (run?.id) {
-        const card = buildEvaluationJobProgressMessage(job, sessionId, 'queued')
-        setMessages(previous => prepareMessagesForDisplay(
-          [
-            ...previous.filter(message => message.id !== card.id),
-            card,
-          ],
-        ))
+        // Single source of truth for progress: once the SSE stream is active it
+        // owns every progress card for this run. The job poll only seeds the
+        // initial "queued" card before the stream connects, then stays out of
+        // the way. If both channels wrote the same assessment_id concurrently
+        // they would alternate as the "latest" progress card (collapseProgress
+        // keeps one per assessment_id) and the visible card would flicker.
+        // When the SSE stream errors out, streamStopRef is cleared and this
+        // branch resumes writing, so the job poll remains the fallback.
         if (!streamStopRef.current) {
+          const card = buildEvaluationJobProgressMessage(job, sessionId, 'queued')
+          setMessages(previous => prepareMessagesForDisplay(
+            [
+              ...previous.filter(message => message.id !== card.id),
+              card,
+            ],
+          ))
           startRunStream(run, sessionId)
         }
         await new Promise(resolve => window.setTimeout(resolve, 1000))
         continue
       }
+      // Jobs without a runtime run stream (platform promptfoo engine jobs,
+      // pfj-…): refresh the progress card straight from the job poll. Never
+      // fall back to session snapshots here — each snapshot rewrites the
+      // whole message list and confirmed state, which made the plan card and
+      // progress cards flicker in and out for the whole run.
+      const jobCard = buildEvaluationJobProgressMessage(job, sessionId, 'queued')
+      setMessages(previous => prepareMessagesForDisplay([
+        ...previous.filter(message => message.id !== jobCard.id),
+        jobCard,
+      ]))
       await new Promise(resolve => window.setTimeout(resolve, 1000))
     }
     markSessionRunning(sessionId, false)
-    message.error('评测任务排队超时，请稍后刷新会话。')
+    if (mountedRef.current && activeIdRef.current === sessionId) {
+      message.error('评测任务排队超时，请稍后刷新会话。')
+    }
   }, [applySessionSnapshot, loadSessions, markSessionRunning, startRunStream])
 
   const handleRetryJob = useCallback(async (jobId: string, sessionId: string) => {
@@ -358,7 +408,7 @@ export function ChatPage() {
     try {
       for (let attempt = 0; attempt < 60; attempt += 1) {
         await new Promise(resolve => window.setTimeout(resolve, 1500))
-        if (activeIdRef.current !== sessionId) return
+        if (activeIdRef.current !== sessionId || !mountedRef.current) return
         const snapshot = await chatService.getSession(sessionId)
         applySessionSnapshot(snapshot)
         if (pendingAssistantUserMessageId(snapshot.messages) !== userMessageId) {
@@ -366,11 +416,11 @@ export function ChatPage() {
           return
         }
       }
-      if (activeIdRef.current === sessionId) {
+      if (activeIdRef.current === sessionId && mountedRef.current) {
         message.warning('MaClaw 仍在生成回复，请稍后刷新会话。')
       }
     } catch {
-      if (activeIdRef.current === sessionId) {
+      if (activeIdRef.current === sessionId && mountedRef.current) {
         message.error('刷新 MaClaw 回复状态失败，请稍后重试。')
       }
     } finally {
@@ -546,20 +596,27 @@ export function ChatPage() {
       const target = (res.items || [])[0]
       if (target) {
         setCurrentTarget(target)
+        const isAgent = target.kind === 'agent'
         targetForm.setFieldsValue({
+          kind: isAgent ? 'agent' : 'llm',
           name: target.name,
           provider: target.provider || 'openai',
           base_url: target.base_url,
           model: target.model,
           credential_secret: '',
           supports_vision: target.metadata?.supports_vision === 'true',
+          agent_endpoint: target.metadata?.agent_endpoint,
+          agent_method: target.metadata?.agent_method || 'POST',
+          agent_headers_template: target.metadata?.agent_headers_template,
+          agent_body_template: target.metadata?.agent_body_template,
+          agent_response_path: target.metadata?.agent_response_path,
         })
       } else {
         setCurrentTarget(null)
-        targetForm.setFieldsValue({ name: '默认被测模型', provider: 'openai', auth_type: 'bearer' })
+        targetForm.setFieldsValue({ kind: 'llm', name: '默认被测模型', provider: 'openai', auth_type: 'bearer', agent_method: 'POST' })
       }
     } catch {
-      targetForm.setFieldsValue({ name: '默认被测模型', provider: 'openai', auth_type: 'bearer' })
+      targetForm.setFieldsValue({ kind: 'llm', name: '默认被测模型', provider: 'openai', auth_type: 'bearer', agent_method: 'POST' })
     }
   }, [targetForm])
 
@@ -567,7 +624,21 @@ export function ChatPage() {
     const values = await targetForm.validateFields()
     setSavingTarget(true)
     try {
-      const target = await chatService.saveEvaluationTarget({
+      const isAgent = values.kind === 'agent'
+      const target = await chatService.saveEvaluationTarget(isAgent ? {
+        name: values.name,
+        kind: 'agent',
+        auth_type: 'bearer',
+        credential_secret: values.credential_secret,
+        status: 'published',
+        metadata: {
+          agent_endpoint: values.agent_endpoint,
+          agent_method: values.agent_method || 'POST',
+          agent_headers_template: values.agent_headers_template || '',
+          agent_body_template: values.agent_body_template || '',
+          agent_response_path: values.agent_response_path || '',
+        },
+      } : {
         name: values.name,
         kind: 'llm',
         provider: values.provider,
@@ -584,13 +655,13 @@ export function ChatPage() {
       setCurrentTarget(target)
       const probe = await chatService.probeEvaluationTarget(target.id)
       if (probe.status === 'healthy') {
-        message.success('被测模型连接正常，后续计划会优先使用该企业 target')
+        message.success(isAgent ? '智能体连接正常，后续评测会调用该智能体端点' : '被测模型连接正常，后续计划会优先使用该企业 target')
       } else {
-        message.warning(probe.message || probe.error || '被测模型已保存，但连通性检查未通过')
+        message.warning(probe.message || probe.error || (isAgent ? '智能体已保存，但连通性检查未通过' : '被测模型已保存，但连通性检查未通过'))
       }
       targetForm.setFieldValue('credential_secret', '')
     } catch (error) {
-      message.error((error as Error).message || '保存被测模型失败')
+      message.error((error as Error).message || '保存被测目标失败')
     } finally {
       setSavingTarget(false)
     }
@@ -613,11 +684,12 @@ export function ChatPage() {
   }, [refreshCurrentTarget])
 
   useEffect(() => {
-    loadWelcomeCapabilities()
-    const handleFocus = () => { loadWelcomeCapabilities() }
+    const targetKind: 'llm' | 'agent' = currentTarget?.kind === 'agent' ? 'agent' : 'llm'
+    loadWelcomeCapabilities(targetKind)
+    const handleFocus = () => { loadWelcomeCapabilities(targetKind) }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
-  }, [loadWelcomeCapabilities])
+  }, [loadWelcomeCapabilities, currentTarget?.kind])
 
   useEffect(() => {
     if (!shouldStickToBottomRef.current) return
@@ -625,6 +697,7 @@ export function ChatPage() {
   }, [messages])
 
   useEffect(() => () => {
+    mountedRef.current = false
     streamStopRef.current?.()
   }, [])
 
@@ -653,7 +726,7 @@ export function ChatPage() {
             <div
               key={session.id}
               onClick={() => openSession(session.id)}
-              style={{ padding: '10px 12px', borderRadius: 8, cursor: 'pointer', marginBottom: 2, background: activeId === session.id ? 'rgba(26,109,255,0.12)' : 'transparent', border: `1px solid ${activeId === session.id ? 'rgba(26,109,255,0.3)' : 'transparent'}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+              style={{ padding: '10px 12px', borderRadius: 8, cursor: 'pointer', marginBottom: 2, background: activeId === session.id ? 'var(--color-primary-light)' : 'transparent', border: `1px solid ${activeId === session.id ? 'var(--color-primary-border)' : 'transparent'}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
             >
               <div style={{ flex: 1, overflow: 'hidden' }}>
                 <div style={{ color: 'var(--text-primary)', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -673,7 +746,7 @@ export function ChatPage() {
         <div ref={messageViewportRef} onScroll={updateScrollStickiness} style={{ flex: 1, overflowY: 'auto' }}>
           {activeLoading ? (
             <div style={{ textAlign: 'center', paddingTop: 60 }}>
-              <LoadingOutlined style={{ fontSize: 24, color: '#4d96ff' }} />
+              <LoadingOutlined style={{ fontSize: 24, color: 'var(--color-primary)' }} />
             </div>
           ) : showWelcomeState ? (
             <WelcomePanel items={welcomeCapabilities} onQuickPrompt={submitPrompt} />
@@ -706,7 +779,11 @@ export function ChatPage() {
         <div style={{ padding: '12px 24px 20px', borderTop: '1px solid var(--border-color)', background: 'var(--bg-surface)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-              {currentTarget ? `当前被测模型：${currentTarget.name}${currentTarget.model ? ` / ${currentTarget.model}` : ''}` : '请先配置本企业被测 LLM'}
+              {currentTarget
+                ? currentTarget.kind === 'agent'
+                  ? `当前被测智能体：${currentTarget.name}`
+                  : `当前被测模型：${currentTarget.name}${currentTarget.model ? ` / ${currentTarget.model}` : ''}`
+                : '请先配置本企业被测模型或智能体'}
             </span>
             <Button size="small" icon={<ApiOutlined />} onClick={() => { void openTargetDrawer() }}>
               被测模型连接
@@ -740,7 +817,7 @@ export function ChatPage() {
       </div>
 
       <Drawer
-        title="企业被测 LLM 连接"
+        title="企业被测对象连接"
         open={targetDrawerOpen}
         onClose={() => setTargetDrawerOpen(false)}
         size="large"
@@ -751,33 +828,137 @@ export function ChatPage() {
           </Space>
         )}
       >
-        <Form form={targetForm} layout="vertical" initialValues={{ name: '默认被测模型', provider: 'openai', auth_type: 'bearer', supports_vision: false }}>
-          <Form.Item label="名称" name="name" rules={[{ required: true, message: '请输入名称' }]}>
-            <Input placeholder="默认被测模型" />
+        <Form form={targetForm} layout="vertical" initialValues={{ kind: 'llm', name: '默认被测模型', provider: 'openai', auth_type: 'bearer', agent_method: 'POST', supports_vision: false }}>
+          <Form.Item label="被测对象类型" name="kind">
+            <Segmented
+              options={[
+                { value: 'llm', label: '大模型（LLM）' },
+                { value: 'agent', label: '智能体（Agent）' },
+              ]}
+              onChange={() => targetForm.setFieldValue('credential_secret', '')}
+            />
           </Form.Item>
-          <Form.Item label="Provider" name="provider" rules={[{ required: true, message: '请选择 provider' }]}>
-            <Select options={[
-              { value: 'openai', label: 'OpenAI Compatible' },
-              { value: 'anthropic', label: 'Anthropic Compatible' },
-              { value: 'custom', label: 'Custom HTTP' },
-            ]} />
-          </Form.Item>
-          <Form.Item label="Base URL" name="base_url" rules={[{ required: true, message: '请输入被测模型 Base URL' }]}>
-            <Input placeholder="https://api.example.com/v1" />
-          </Form.Item>
-          <Form.Item label="Model" name="model" rules={[{ required: true, message: '请输入模型名' }]}>
-            <Input placeholder="gpt-4.1 或本地模型名" />
-          </Form.Item>
-          <Form.Item label="API Key" name="credential_secret" extra="密钥只写入 maclaw，不会回显明文。留空表示沿用已保存密钥。">
-            <Input.Password placeholder="sk-..." autoComplete="new-password" />
-          </Form.Item>
-          <Form.Item
-            label="支持图片输入"
-            name="supports_vision"
-            valuePropName="checked"
-            extra="仅在被测模型支持 OpenAI-compatible 图文输入时开启；DeepSeek 文本模型请保持关闭。"
-          >
-            <Switch />
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.kind !== next.kind}>
+            {({ getFieldValue }) => {
+              const kind = getFieldValue('kind') || 'llm'
+              return kind === 'agent' ? (
+                <>
+                  <Form.Item label="名称" name="name" rules={[{ required: true, message: '请输入名称' }]}>
+                    <Input placeholder="如：客服 Agent" />
+                  </Form.Item>
+                  <Form.Item
+                    label="对话端点 URL"
+                    name="agent_endpoint"
+                    rules={[
+                      { required: true, message: '请输入智能体对话端点 URL' },
+                      { type: 'url', message: '请输入合法的 http(s) URL' },
+                    ]}
+                    extra="智能体的对话 API 地址。评测时每个攻击用例都会向该端点发起一次请求。建议使用沙箱/mock 端点，避免触发真实副作用。"
+                  >
+                    <Input placeholder="https://agent.example.com/chat" />
+                  </Form.Item>
+                  <Form.Item label="HTTP 方法" name="agent_method" initialValue="POST">
+                    <Select options={[
+                      { value: 'POST', label: 'POST' },
+                      { value: 'PUT', label: 'PUT' },
+                      { value: 'PATCH', label: 'PATCH' },
+                      { value: 'GET', label: 'GET' },
+                    ]} />
+                  </Form.Item>
+                  <Form.Item
+                    label="请求头模板（JSON）"
+                    name="agent_headers_template"
+                    rules={[
+                      {
+                        validator: (_rule, value: string) => {
+                          const raw = String(value || '').trim()
+                          if (!raw) return Promise.resolve()
+                          try {
+                            const parsed = JSON.parse(raw)
+                            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                              return Promise.reject(new Error('必须是 JSON 对象，如 {"X-Api-Key":"{{api_key}}"}'))
+                            }
+                            return Promise.resolve()
+                          } catch {
+                            return Promise.reject(new Error('必须是合法的 JSON 对象'))
+                          }
+                        },
+                      },
+                    ]}
+                    extra={'头部值可包含 {{api_key}} 占位符（服务端替换为下方密钥，不会回显）。示例：{"X-Api-Key":"{{api_key}}"}'}
+                  >
+                    <Input.TextArea rows={2} placeholder='{"X-Api-Key":"{{api_key}}"}' autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    label="请求体模板（JSON）"
+                    name="agent_body_template"
+                    rules={[
+                      {
+                        validator: (_rule, value: string) => {
+                          const raw = String(value || '').trim()
+                          if (!raw) return Promise.resolve()
+                          try {
+                            JSON.parse(raw)
+                            return Promise.resolve()
+                          } catch {
+                            return Promise.reject(new Error('必须是合法的 JSON'))
+                          }
+                        },
+                      },
+                    ]}
+                    extra={'用 {{prompt}} 占位攻击提示（每条用例替换一次），{{api_key}} 占位密钥。留空默认 {"prompt":"{{prompt}}"}。示例：{"query":"{{prompt}}","session":"fixed"}'}
+                  >
+                    <Input.TextArea rows={3} placeholder='{"query":"{{prompt}}"}' autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    label="响应提取路径"
+                    name="agent_response_path"
+                    extra="从 JSON 响应中提取智能体回复文本的点分路径。示例：reply.text、choices[0].message.content。留空表示提取不到时回退整包。"
+                  >
+                    <Input placeholder="reply.text" />
+                  </Form.Item>
+                  <Form.Item label="API Key / Token" name="credential_secret" extra="密钥只写入加密存储，不会回显明文。用于替换 {{api_key}} 占位符；若模板未使用占位符，默认以 Bearer 方式发送 Authorization 头。留空表示沿用已保存密钥。">
+                    <Input.Password placeholder="sk-..." autoComplete="new-password" />
+                  </Form.Item>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="智能体评测为单轮调用（v1）：每个攻击用例独立发起一次请求，不维护多轮会话状态。请确保端点无副作用或使用沙箱环境。"
+                  />
+                </>
+              ) : (
+                <>
+                  <Form.Item label="名称" name="name" rules={[{ required: true, message: '请输入名称' }]}>
+                    <Input placeholder="默认被测模型" />
+                  </Form.Item>
+                  <Form.Item label="Provider" name="provider" rules={[{ required: true, message: '请选择 provider' }]}>
+                    <Select options={[
+                      { value: 'openai', label: 'OpenAI Compatible' },
+                      { value: 'anthropic', label: 'Anthropic Compatible' },
+                      { value: 'custom', label: 'Custom HTTP' },
+                    ]} />
+                  </Form.Item>
+                  <Form.Item label="Base URL" name="base_url" rules={[{ required: true, message: '请输入被测模型 Base URL' }]}>
+                    <Input placeholder="https://api.example.com/v1" />
+                  </Form.Item>
+                  <Form.Item label="Model" name="model" rules={[{ required: true, message: '请输入模型名' }]}>
+                    <Input placeholder="gpt-4.1 或本地模型名" />
+                  </Form.Item>
+                  <Form.Item label="API Key" name="credential_secret" extra="密钥只写入 maclaw，不会回显明文。留空表示沿用已保存密钥。">
+                    <Input.Password placeholder="sk-..." autoComplete="new-password" />
+                  </Form.Item>
+                  <Form.Item
+                    label="支持图片输入"
+                    name="supports_vision"
+                    valuePropName="checked"
+                    extra="仅在被测模型支持 OpenAI-compatible 图文输入时开启；DeepSeek 文本模型请保持关闭。"
+                  >
+                    <Switch />
+                  </Form.Item>
+                </>
+              )
+            }}
           </Form.Item>
         </Form>
       </Drawer>

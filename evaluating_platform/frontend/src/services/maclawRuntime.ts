@@ -107,7 +107,7 @@ export interface EvaluationTargetInput {
   name: string
   kind: string
   provider?: string
-  base_url: string
+  base_url?: string
   model?: string
   auth_type?: string
   credential_secret?: string
@@ -309,6 +309,8 @@ function toChatMessage(message: RuntimeMessage): ChatMessage {
     if (typeof question === 'string' && question.trim()) {
       metadata.ask_user_question = question
       content = question
+    } else {
+      content = '需要补充更多信息，请继续描述你的需求。'
     }
     if (Array.isArray(runtimeJSON.options)) {
       metadata.ask_user_options_json = JSON.stringify(runtimeJSON.options.filter(item => typeof item === 'string' && item.trim()))
@@ -609,8 +611,10 @@ export const maclawRuntimeChatService = {
     await api.delete(`/maclaw/evaluation/sessions/${id}`)
   },
 
-  async getWelcomeCapabilities(limit = 6): Promise<WelcomeCapability[]> {
-    const res = await api.get<{ items: WelcomeCapability[] }>('/enterprise/welcome-capabilities', { params: { limit } })
+  async getWelcomeCapabilities(limit = 6, targetKind?: string): Promise<WelcomeCapability[]> {
+    const params: Record<string, string | number> = { limit }
+    if (targetKind === 'agent') params.target_kind = 'agent'
+    const res = await api.get<{ items: WelcomeCapability[] }>('/enterprise/welcome-capabilities', { params })
     return (res.data.items || []).slice(0, limit)
   },
 
@@ -649,12 +653,16 @@ export const maclawRuntimeChatService = {
               if (isTerminalEnvelope(envelope)) {
                 stopped = true
                 onDone()
+                void reader.cancel().catch(() => {})
                 break
               }
             }
             boundary = buffer.indexOf('\n\n')
           }
-          if (done) break
+          if (done) {
+            if (!stopped) onDone()
+            break
+          }
         }
       } catch (error) {
         if (!controller.signal.aborted) {
