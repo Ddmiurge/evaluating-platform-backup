@@ -206,6 +206,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		Strategies:     strategies,
 		JudgeMode:      judgeMode,
 		Credentials: derefOrEmptyEngineCreds(MaterializeEngineCredentialsWithGeneration(target, generation)),
+		Catalog:     PromptfooEngineCatalog(),
 	}
 	if err := b.engineRunner.CreateRun(ctx, engineReq); err != nil {
 		saved.Status = EnginePhaseFailed

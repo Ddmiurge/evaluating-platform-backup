@@ -85,11 +85,42 @@ type EngineRunRequest struct {
 	Strategies     []EngineCapabilityRef   `json:"strategies"`
 	JudgeMode      EngineJudgeMode         `json:"judge_mode"`
 	Credentials    EngineOneShotCredentials `json:"credentials"`
+	// Catalog is the plugin/strategy classification source of truth the BFF
+	// hands to the engine (U2/T2.2). Optional for backward compatibility: when
+	// absent the engine falls back to its "unknown plugin" defaults
+	// (category=other / medium). Never contains payloads or secrets.
+	Catalog *EngineCatalog `json:"catalog,omitempty"`
 }
 
 type EngineCapabilityRef struct {
 	ID     string                 `json:"id"`
 	Config map[string]interface{} `json:"config,omitempty"`
+}
+
+// EngineCatalog is the plugin/strategy catalog the BFF sends with each run so
+// the engine classifies and scores results from a single source of truth
+// (U2/T2.2). The engine looks every plugin_id up here instead of carrying its
+// own regex/mapping tables for category and severity.
+type EngineCatalog struct {
+	Plugins    []EngineCatalogPlugin   `json:"plugins"`
+	Strategies []EngineCatalogStrategy `json:"strategies"`
+}
+
+// EngineCatalogPlugin is one engine plugin family as the engine must classify
+// it: the risk category key, its Chinese display label, and the default
+// display severity. Named fields only — no payloads.
+type EngineCatalogPlugin struct {
+	ID            string `json:"id"`
+	Category      string `json:"category"`
+	CategoryLabel string `json:"category_label"`
+	Severity      string `json:"severity"`
+}
+
+// EngineCatalogStrategy is one attack strategy as the engine names it. The
+// engine only needs the label for display.
+type EngineCatalogStrategy struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // EngineRunStatus is the GET /runs/:id response (safe fields only).

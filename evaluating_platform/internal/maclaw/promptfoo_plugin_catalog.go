@@ -410,3 +410,53 @@ func PromptfooEngineSupportedStrategyIDs() []string {
 	}
 	return ids
 }
+
+// promptfooCategoryLabels maps a risk-category key to its Chinese display
+// label. Migrated from the engine's former CATEGORY_LABELS table so the label
+// vocabulary has a single source of truth (U2/T2.2): the backend now owns the
+// labels and ships them to the engine via EngineCatalog.
+var promptfooCategoryLabels = map[string]string{
+	"privacy":          "隐私泄露",
+	"harmful":          "有害内容",
+	"injection":        "提示注入",
+	"jailbreak":        "越狱对抗",
+	"bias":             "偏见歧视",
+	"hallucination":    "幻觉与事实性",
+	"off-topic":        "离题边界",
+	"brand":            "品牌风险",
+	"sensitive":        "敏感话题",
+	"dataset":          "数据集基准",
+	"industry":         "行业合规",
+	"security-exploit": "安全利用",
+	"other":            "其他",
+}
+
+// PromptfooCategoryLabel returns the Chinese display label for a risk-category
+// key, falling back to the key itself when unknown.
+func PromptfooCategoryLabel(category string) string {
+	if label, ok := promptfooCategoryLabels[category]; ok {
+		return label
+	}
+	return category
+}
+
+// PromptfooEngineCatalog builds the EngineCatalog the BFF sends with each
+// engine run (U2/T2.2). It is derived from the static plugin/strategy catalogs
+// so the engine and the backend agree on category, label, and severity for
+// every plugin_id — the engine no longer keeps its own regex/mapping tables.
+func PromptfooEngineCatalog() *EngineCatalog {
+	plugins := make([]EngineCatalogPlugin, 0, len(promptfooPluginCatalog))
+	for _, entry := range promptfooPluginCatalog {
+		plugins = append(plugins, EngineCatalogPlugin{
+			ID:            entry.ID,
+			Category:      entry.Category,
+			CategoryLabel: PromptfooCategoryLabel(entry.Category),
+			Severity:      entry.DefaultSev,
+		})
+	}
+	strategies := make([]EngineCatalogStrategy, 0, len(promptfooStrategyCatalog))
+	for _, entry := range promptfooStrategyCatalog {
+		strategies = append(strategies, EngineCatalogStrategy{ID: entry.ID, Name: entry.Name})
+	}
+	return &EngineCatalog{Plugins: plugins, Strategies: strategies}
+}

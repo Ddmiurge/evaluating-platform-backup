@@ -30,7 +30,7 @@ jobs:
         run: go test ./...
 
   frontend:
-    name: frontend (build + lint + scripts)
+    name: frontend (build + lint + unit tests + scripts)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -49,6 +49,8 @@ jobs:
       - name: lint
         run: npm run lint
         continue-on-error: true
+      - name: unit tests (vitest)
+        run: npm test
       - name: adapter scripts
         run: npm run test:adapters
 
@@ -103,6 +105,6 @@ jobs:
 #     it parses frontend/src/services/engineEval.ts and fails (CI red) whenever the
 #     plugin/strategy id sets drift from backend promptfoo_plugin_catalog.go, so the
 #     three copies can no longer silently diverge.
-#   - F-02 (pending): wire the frontend *.test.ts files into a real runner (vitest) and make
-#     "npm test" blocking; today only test:adapters runs.
+#   - F-02 (LANDED, U2): the frontend *.test.ts files now run under vitest via the
+#     blocking "unit tests (vitest)" step (npm test = vitest run).
 #   - frontend lint is non-blocking until pre-existing lint findings are cleaned up.

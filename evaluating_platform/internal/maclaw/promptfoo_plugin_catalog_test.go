@@ -162,3 +162,62 @@ func TestSearchPromptfooPluginCatalogNewEntries(t *testing.T) {
 		})
 	}
 }
+
+// TestPromptfooEngineCatalogBuilder verifies the U2/T2.2 catalog the BFF ships
+// to the engine: every plugin gets a complete category/label/severity, labels
+// come from PromptfooCategoryLabel, and the specific values the engine's
+// catalogClassification.test.ts mirrors are pinned here too (so the two sides
+// cannot drift).
+func TestPromptfooEngineCatalogBuilder(t *testing.T) {
+	catalog := PromptfooEngineCatalog()
+	if catalog == nil {
+		t.Fatal("PromptfooEngineCatalog() returned nil")
+	}
+	if len(catalog.Plugins) != len(promptfooPluginCatalog) {
+		t.Fatalf("catalog plugins = %d, want %d", len(catalog.Plugins), len(promptfooPluginCatalog))
+	}
+	if len(catalog.Strategies) != len(promptfooStrategyCatalog) {
+		t.Fatalf("catalog strategies = %d, want %d", len(catalog.Strategies), len(promptfooStrategyCatalog))
+	}
+
+	byID := make(map[string]EngineCatalogPlugin, len(catalog.Plugins))
+	for _, plugin := range catalog.Plugins {
+		if plugin.ID == "" || plugin.Category == "" || plugin.CategoryLabel == "" || plugin.Severity == "" {
+			t.Fatalf("incomplete catalog entry: %+v", plugin)
+		}
+		if want := PromptfooCategoryLabel(plugin.Category); plugin.CategoryLabel != want {
+			t.Fatalf("%s label = %q, want %q", plugin.ID, plugin.CategoryLabel, want)
+		}
+		byID[plugin.ID] = plugin
+	}
+
+	// Values mirrored by promptfoo_engine/tests/catalogClassification.test.ts.
+	for id, want := range map[string][2]string{
+		"harmful:cybercrime":                            {"harmful", "critical"},
+		"medical:hallucination":                         {"industry", "critical"},
+		"pharmacy:dosage-calculation":                   {"industry", "critical"},
+		"harmful":                                       {"harmful", "high"},
+		"telecom:cpni-disclosure":                       {"industry", "high"},
+		"beavertails":                                   {"dataset", "high"},
+		"hallucination":                                 {"hallucination", "medium"},
+		"competitors":                                   {"brand", "low"},
+		"wordplay":                                      {"off-topic", "low"},
+		"xstest":                                        {"dataset", "low"},
+		"teen-safety:age-restricted-goods-and-services": {"sensitive", "high"},
+	} {
+		got, ok := byID[id]
+		if !ok {
+			t.Fatalf("catalog missing %s", id)
+		}
+		if got.Category != want[0] || got.Severity != want[1] {
+			t.Fatalf("%s = (%s, %s), want (%s, %s)", id, got.Category, got.Severity, want[0], want[1])
+		}
+	}
+
+	if got := PromptfooCategoryLabel("other"); got != "其他" {
+		t.Fatalf("other label = %q, want 其他", got)
+	}
+	if got := PromptfooCategoryLabel("unmapped-category"); got != "unmapped-category" {
+		t.Fatalf("unmapped label = %q, want the key itself", got)
+	}
+}

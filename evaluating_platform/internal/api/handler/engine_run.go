@@ -247,6 +247,7 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		Strategies:     strategies,
 		JudgeMode:      judgeMode,
 		Credentials: derefOrEmpty(maclaw.MaterializeEngineCredentialsWithGeneration(target, generation)),
+		Catalog:     maclaw.PromptfooEngineCatalog(),
 	}
 	if err := h.engine.CreateRun(c.Request.Context(), engineReq); err != nil {
 		// Mark the local record failed so the UI does not show a ghost queued run.
