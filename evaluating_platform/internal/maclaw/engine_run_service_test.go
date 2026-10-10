@@ -14,10 +14,14 @@ import (
 )
 
 type fakeEngineRunStore struct {
-	records map[string]*EngineRunRecord
-	createN int
-	updateN int
-	getErr  error
+	records          map[string]*EngineRunRecord
+	createN          int
+	updateN          int
+	linkN            int
+	getErr           error
+	linkErr          error
+	getByJobErr      error
+	breakIdempotency bool
 }
 
 func newFakeEngineRunStore() *fakeEngineRunStore {
@@ -36,8 +40,17 @@ func (s *fakeEngineRunStore) Create(_ context.Context, record EngineRunRecord) (
 
 func (s *fakeEngineRunStore) Update(_ context.Context, record EngineRunRecord) (*EngineRunRecord, error) {
 	s.updateN++
-	if _, ok := s.records[record.ID]; !ok {
+	stored, ok := s.records[record.ID]
+	if !ok {
 		return nil, errors.New("not found")
+	}
+	// Mirror the repository's sticky job_id: a progress save must not erase
+	// the pfj- link established by LinkJob.
+	if record.JobID == "" {
+		record.JobID = stored.JobID
+	}
+	if record.JobID != "" {
+		record.Source = EngineRunSourceChatConfirm
 	}
 	record.UpdatedAt = time.Now().UTC()
 	snapshot := record
@@ -65,6 +78,60 @@ func (s *fakeEngineRunStore) List(_ context.Context, _ uuid.UUID, _ string, _ in
 		out = append(out, *rec)
 	}
 	return out, nil
+}
+
+// LinkJob mirrors the repository's guarded UPDATE semantics so the service
+// layer's idempotency contract is exercised against realistic behavior:
+//   - (job_id = ” OR job_id = $jobID) → repeat writes are no-ops
+//   - a job id bound to a different run → error, never a silent rebind
+func (s *fakeEngineRunStore) LinkJob(_ context.Context, userID uuid.UUID, runID, jobID string) (*EngineRunRecord, error) {
+	s.linkN++
+	if s.linkErr != nil {
+		return nil, s.linkErr
+	}
+	if s.breakIdempotency {
+		// REVERSE-TEST ONLY: simulate an unguarded writer that clones the run
+		// on every link, which is exactly the duplicate-run bug U5 forbids.
+		clone := *s.records[runID]
+		clone.ID = runID + "-dup"
+		clone.JobID = jobID
+		s.records[clone.ID] = &clone
+	}
+	rec, ok := s.records[runID]
+	if !ok || rec.PlatformUserID != userID {
+		return nil, errors.New("run not found")
+	}
+	// Enforce the uniqueness a browser job can only ever bind one run.
+	// (breakIdempotency models a store WITHOUT the 027 unique index, so the
+	// row-count assertion gets a chance to bite on its own.)
+	if !s.breakIdempotency {
+		for _, other := range s.records {
+			if other.ID != runID && other.JobID == jobID {
+				return nil, errors.New("job already bound to another run")
+			}
+		}
+	}
+	if rec.JobID != "" && rec.JobID != jobID {
+		return nil, errors.New("run already bound to another job")
+	}
+	rec.JobID = jobID
+	rec.Source = EngineRunSourceChatConfirm
+	rec.UpdatedAt = time.Now().UTC()
+	snapshot := *rec
+	return &snapshot, nil
+}
+
+func (s *fakeEngineRunStore) GetByJobID(_ context.Context, userID uuid.UUID, jobID string) (*EngineRunRecord, error) {
+	if s.getByJobErr != nil {
+		return nil, s.getByJobErr
+	}
+	for _, rec := range s.records {
+		if rec.JobID == jobID && rec.JobID != "" && rec.PlatformUserID == userID {
+			snapshot := *rec
+			return &snapshot, nil
+		}
+	}
+	return nil, nil
 }
 
 func TestNewEngineRunIDFormat(t *testing.T) {

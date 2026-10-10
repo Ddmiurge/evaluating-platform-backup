@@ -65,6 +65,12 @@ type PromptfooEngineRunInput struct {
 	JudgeMode  string            `json:"judge_mode,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 
+	// Source selects the engine_runs.source value (U5). Empty keeps the
+	// historical EngineRunSourceChat behavior; the confirm fast path passes
+	// EngineRunSourceChatConfirm so its pfj- jobs are distinguishable in
+	// engine_runs. Ignored (falls back to chat) for unknown values.
+	Source string `json:"-"`
+
 	ExecutionUserID    uuid.UUID `json:"-"`
 	ExecutionSessionID string    `json:"-"`
 }
@@ -191,7 +197,13 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	}
 	stageDurations["materialize_credentials"] = redteam.DurationMillisSinceTime(credStarted)
 
-	record := b.engineRuns.NewRun(userID, instanceID, sessionID, EngineRunSourceChat, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), plugins, strategies)
+	// U5: the confirm fast path tags its run as chat_confirm so the pfj- ↔ run
+	// binding written afterwards is distinguishable from ordinary chat runs.
+	runSource := EngineRunSourceChat
+	if isKnownEngineRunSource(in.Source) {
+		runSource = in.Source
+	}
+	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), plugins, strategies)
 	saved, err := b.engineRuns.Save(ctx, record)
 	if err != nil {
 		return nil, fmt.Errorf("persist engine run: %w", err)

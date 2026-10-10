@@ -39,6 +39,45 @@ type PlatformEngineJob struct {
 	ReportID      string
 	StartedAt     time.Time
 	CompletedAt   *time.Time
+
+	// Recovered is true when this job was rebuilt from PostgreSQL after a
+	// backend restart rather than created in this process. It never changes
+	// the DTO shape the browser sees — it exists for logs and tests.
+	Recovered bool
+
+	// PersistError records a failure to mirror this job into engine_runs
+	// (U5 fail-closed guard). When set, the job is NOT silently healthy: it is
+	// surfaced through EvaluationJobFromPlatformEngine as the job error so a
+	// disconnected PostgreSQL can never look like a normally progressing run.
+	PersistError string
+}
+
+// MarkPersistFailed flags the job as un-persistable so the next poll reports a
+// visible error instead of pretending the run is fine. Called when the
+// engine_runs write fails (PostgreSQL down, constraint violation, …).
+func (s *PlatformEngineJobStore) MarkPersistFailed(jobID, reason string) {
+	if s == nil || jobID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return
+	}
+	job.PersistError = reason
+	// Terminal-fail the job: a run whose progress cannot be recorded is not a
+	// run we can honestly keep reporting as "running".
+	if !isTerminalEvaluationJobStatus(job.Status) {
+		job.Status = EvaluationJobStatusFailed
+		if job.ErrorCode == "" {
+			job.ErrorCode = "engine_job_persist_failed"
+		}
+		now := time.Now().UTC()
+		if job.CompletedAt == nil {
+			job.CompletedAt = &now
+		}
+	}
 }
 
 func NewPlatformEngineJobStore() *PlatformEngineJobStore {
@@ -139,6 +178,48 @@ func isTerminalEvaluationJobStatus(status EvaluationJobStatus) bool {
 	}
 }
 
+// enginePhaseToJobStatus maps an engine_runs.status onto the shared job status
+// vocabulary. Single source of truth so the recovery path (engine_run_service)
+// and the live path (handler/engine_confirm.go) cannot drift apart.
+func enginePhaseToJobStatus(phase EngineRunPhase) EvaluationJobStatus {
+	switch phase {
+	case EnginePhaseSucceeded:
+		return EvaluationJobStatusSucceeded
+	case EnginePhaseFailed:
+		return EvaluationJobStatusFailed
+	case EnginePhaseCanceled:
+		return EvaluationJobStatusCanceled
+	case EnginePhaseQueued:
+		return EvaluationJobStatusPending
+	default:
+		return EvaluationJobStatusRunning
+	}
+}
+
+// enginePhaseStatusText renders the human-readable stage label for a phase.
+func enginePhaseStatusText(phase EngineRunPhase) string {
+	switch phase {
+	case EnginePhaseQueued:
+		return "排队中"
+	case EnginePhaseGeneratingTests:
+		return "生成攻击用例"
+	case EnginePhaseExecutingProbes:
+		return "执行探针"
+	case EnginePhaseEngineJudging:
+		return "引擎判定"
+	case EnginePhaseCompilingReport:
+		return "生成报告"
+	case EnginePhaseSucceeded:
+		return "评测完成"
+	case EnginePhaseFailed:
+		return "评测失败"
+	case EnginePhaseCanceled:
+		return "已取消"
+	default:
+		return "执行中"
+	}
+}
+
 // EvaluationJobFromPlatformEngine maps a platform engine job into the shared
 // EvaluationJob DTO shape so the browser treats both engines uniformly.
 func EvaluationJobFromPlatformEngine(job *PlatformEngineJob) *EvaluationJob {
@@ -169,6 +250,11 @@ func EvaluationJobFromPlatformEngine(job *PlatformEngineJob) *EvaluationJob {
 		Error:     job.ErrorCode,
 		CreatedAt: job.StartedAt,
 		StartedAt: &job.StartedAt,
+	}
+	// A persistence failure is reported ahead of the run error: it is the more
+	// actionable diagnosis (progress is not being recorded at all).
+	if job.PersistError != "" {
+		out.Error = job.PersistError
 	}
 	if job.CompletedAt != nil {
 		out.CompletedAt = job.CompletedAt

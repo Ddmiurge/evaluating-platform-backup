@@ -10,6 +10,8 @@ package maclaw
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,7 +22,34 @@ import (
 const (
 	EngineRunSourceWizard = "wizard"
 	EngineRunSourceChat   = "chat"
+	// EngineRunSourceChatConfirm marks the confirm fast path (U5): the run was
+	// started by a `pfj-` platform job created from a chat plan card. Kept
+	// distinct from EngineRunSourceChat so operators can tell "user submitted
+	// an engine run with a session" from "user clicked 确认执行 on a plan card".
+	EngineRunSourceChatConfirm = "chat_confirm"
 )
+
+// EngineJobIDPrefix is the prefix of platform-orchestrated engine job ids.
+// Kept here (not in the handler) so the service layer can validate the format
+// before writing it to the database; the 027 migration enforces the same shape
+// with a CHECK constraint as a second line of defense.
+const EngineJobIDPrefix = "pfj-"
+
+// IsValidEngineJobID reports whether id is a well-formed `pfj-<uuid>` job id.
+// Anything else must be rejected before persistence so that arbitrary user
+// content can never reach engine_runs.job_id.
+func IsValidEngineJobID(id string) bool {
+	if len(id) != len(EngineJobIDPrefix)+36 {
+		return false
+	}
+	if id[:len(EngineJobIDPrefix)] != EngineJobIDPrefix {
+		return false
+	}
+	if _, err := uuid.Parse(id[len(EngineJobIDPrefix):]); err != nil {
+		return false
+	}
+	return true
+}
 
 // EngineRunRecord is the persisted row in engine_runs.
 // Status semantics mirror engine_runs.status (values shared with
@@ -30,7 +59,8 @@ type EngineRunRecord struct {
 	PlatformUserID uuid.UUID
 	InstanceID     string
 	SessionID      string
-	Source         string // wizard | chat (EngineRunSourceWizard/EngineRunSourceChat)
+	Source         string // wizard | chat | chat_confirm (EngineRunSource*)
+	JobID          string // pfj-<uuid> when Source == chat_confirm, else ""
 	Engine         string // promptfoo
 	Status         EngineRunPhase
 	JudgeMode      EngineJudgeMode
@@ -60,6 +90,17 @@ type EngineRunStore interface {
 	Update(ctx context.Context, record EngineRunRecord) (*EngineRunRecord, error)
 	Get(ctx context.Context, userID uuid.UUID, runID string) (*EngineRunRecord, error)
 	List(ctx context.Context, userID uuid.UUID, sessionID string, limit int) ([]EngineRunRecord, error)
+	// LinkJob binds a `pfj-` platform job id to an existing run (U5).
+	// Implementations MUST make this idempotent: linking the same job id to
+	// the same run any number of times leaves exactly one row unchanged, and
+	// linking a job id already bound to a different run MUST fail rather than
+	// silently move the binding.
+	LinkJob(ctx context.Context, userID uuid.UUID, runID, jobID string) (*EngineRunRecord, error)
+	// GetByJobID resolves the run behind a `pfj-` job id. It is the restart
+	// recovery path: the browser still holds the job id, the in-memory job
+	// store is empty, and PostgreSQL is the only remaining source of truth.
+	// Returns (nil, nil) when no run is bound to that job id.
+	GetByJobID(ctx context.Context, userID uuid.UUID, jobID string) (*EngineRunRecord, error)
 }
 
 // EngineRunService orchestrates persistence around engine calls.
@@ -74,7 +115,7 @@ func NewEngineRunService(store EngineRunStore) *EngineRunService {
 
 // NewRun builds the initial record for a submitted run.
 func (s *EngineRunService) NewRun(userID uuid.UUID, instanceID, sessionID, source, purpose string, judgeMode EngineJudgeMode, numTests int, targetID string, plugins, strategies []EngineCapabilityRef) *EngineRunRecord {
-	if source != EngineRunSourceChat {
+	if !isKnownEngineRunSource(source) {
 		source = EngineRunSourceWizard
 	}
 	return &EngineRunRecord{
@@ -93,6 +134,95 @@ func (s *EngineRunService) NewRun(userID uuid.UUID, instanceID, sessionID, sourc
 		NumTests:       numTests,
 		StageDurations: map[string]int64{},
 		TokenUsage:     EngineTokenUsage{},
+	}
+}
+
+// isKnownEngineRunSource mirrors the 027 migration's source CHECK constraint.
+// Unknown values fall back to wizard rather than reaching the database, so a
+// typo can never trip the constraint at write time.
+func isKnownEngineRunSource(source string) bool {
+	switch source {
+	case EngineRunSourceWizard, EngineRunSourceChat, EngineRunSourceChatConfirm:
+		return true
+	default:
+		return false
+	}
+}
+
+// LinkJob binds a `pfj-` job id to this run and returns the persisted row.
+//
+// Idempotency contract (U5 hard requirement — a restart/retry must never
+// produce a duplicate run):
+//   - same (runID, jobID) linked repeatedly → exactly one row, unchanged.
+//   - the underlying store performs a guarded UPDATE
+//     (job_id = ” OR job_id = $jobID), so a second write is a no-op.
+//   - jobID that is already bound to a *different* run → error, never a
+//     silent rebind (that would make one browser job point at two runs).
+//
+// Fail-closed: an empty or malformed jobID is rejected here, before any SQL,
+// so arbitrary user content can never be persisted into engine_runs.job_id.
+func (s *EngineRunService) LinkJob(ctx context.Context, userID uuid.UUID, runID, jobID string) (*EngineRunRecord, error) {
+	jobID = strings.TrimSpace(jobID)
+	if runID == "" {
+		return nil, errors.New("engine run id is required")
+	}
+	if !IsValidEngineJobID(jobID) {
+		return nil, fmt.Errorf("invalid engine job id")
+	}
+	if s == nil || s.store == nil {
+		return nil, errors.New("engine run store is not configured")
+	}
+	return s.store.LinkJob(ctx, userID, runID, jobID)
+}
+
+// GetByJobID resolves the run bound to a `pfj-` job id. This is the restart
+// recovery path: the browser polls with the job id it received before the
+// restart, and PostgreSQL answers even though the in-memory store is empty.
+func (s *EngineRunService) GetByJobID(ctx context.Context, userID uuid.UUID, jobID string) (*EngineRunRecord, error) {
+	jobID = strings.TrimSpace(jobID)
+	if !IsValidEngineJobID(jobID) {
+		return nil, nil
+	}
+	if s == nil || s.store == nil {
+		return nil, errors.New("engine run store is not configured")
+	}
+	return s.store.GetByJobID(ctx, userID, jobID)
+}
+
+// PlatformEngineJobFromRecord rebuilds a job DTO from a persisted engine run.
+// Used on the recovery path so a post-restart poll renders the same shape the
+// browser saw before, even though nothing lives in memory anymore.
+func PlatformEngineJobFromRecord(record *EngineRunRecord, userID uuid.UUID) *PlatformEngineJob {
+	if record == nil {
+		return nil
+	}
+	jobID := strings.TrimSpace(record.JobID)
+	if jobID == "" {
+		return nil
+	}
+	startedAt := record.CreatedAt
+	if record.StartedAt != nil {
+		startedAt = *record.StartedAt
+	}
+	return &PlatformEngineJob{
+		ID:            jobID,
+		EngineRunID:   record.ID,
+		UserID:        userID.String(),
+		InstanceID:    record.InstanceID,
+		SessionID:     record.SessionID,
+		Status:        enginePhaseToJobStatus(record.Status),
+		PlannedCount:  record.PlannedCount,
+		ExecutedCount: record.ExecutedCount,
+		CurrentStage:  record.CurrentStage,
+		StatusText:    enginePhaseStatusText(record.Status),
+		DurationMs:    record.DurationMs,
+		ErrorCode:     record.ErrorCode,
+		StartedAt:     startedAt,
+		CompletedAt:   record.CompletedAt,
+		// Recovered marks a job rebuilt from PostgreSQL rather than from the
+		// in-memory store, so callers can tell "restored after restart" apart
+		// from "live in this process".
+		Recovered: true,
 	}
 }
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -341,15 +342,25 @@ func (h *MaclawEvaluationHandler) GetJob(c *gin.Context) {
 
 // platformEngineJob resolves a platform engine job for the caller and lazily
 // refreshes its progress from the persisted engine run record.
+//
+// U5 recovery semantics: PostgreSQL is the source of truth, the in-memory
+// store is only an acceleration read. After a BFF restart the job store is
+// empty but the browser still polls with the `pfj-` job id it received, so we
+// fall back to engine_runs via the job link written at confirm time.
 func (h *MaclawEvaluationHandler) platformEngineJob(c *gin.Context, jobID string) *maclaw.EvaluationJob {
 	if h == nil || h.engineJobs == nil {
 		return nil
 	}
 	job := h.engineJobs.Get(jobID)
-	if job == nil {
-		return nil
-	}
 	userID := strings.TrimSpace(c.GetString("user_id"))
+	if job == nil {
+		// Not in memory (or memory was wiped by a restart): try to recover
+		// from PostgreSQL before giving up and 404-ing the browser.
+		job = h.recoverEngineJobFromStore(c, jobID, userID)
+		if job == nil {
+			return nil
+		}
+	}
 	if job.UserID != userID {
 		return nil
 	}
@@ -362,6 +373,35 @@ func (h *MaclawEvaluationHandler) platformEngineJob(c *gin.Context, jobID string
 		job = h.engineJobs.Get(jobID)
 	}
 	return maclaw.EvaluationJobFromPlatformEngine(job)
+}
+
+// recoverEngineJobFromStore rebuilds a job from the persisted engine run bound
+// to jobID and re-seeds the in-memory store so subsequent polls are cheap.
+//
+// Fail-closed: any persistence error is logged and reported as "no job"
+// (→ 404 for an unknown id) rather than silently fabricating a healthy
+// running job. A recovery failure must never look like success.
+func (h *MaclawEvaluationHandler) recoverEngineJobFromStore(c *gin.Context, jobID, userID string) *maclaw.PlatformEngineJob {
+	if h.engineRunService == nil {
+		return nil
+	}
+	parsed, err := uuid.Parse(userID)
+	if err != nil {
+		return nil
+	}
+	record, err := h.engineRunService.GetByJobID(c.Request.Context(), parsed, jobID)
+	if err != nil {
+		log.Printf("[ERROR] engine job recovery lookup failed (job=%s user=%s): %v", jobID, userID, err)
+		return nil
+	}
+	job := maclaw.PlatformEngineJobFromRecord(record, parsed)
+	if job == nil {
+		return nil
+	}
+	// Re-seed the acceleration cache. Create is a no-op when the job is
+	// already present, so this never duplicates an in-flight entry.
+	h.engineJobs.Create(job)
+	return h.engineJobs.Get(jobID)
 }
 
 func isTerminalEvaluationJobStatusPublic(status maclaw.EvaluationJobStatus) bool {

@@ -12,6 +12,7 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ import (
 )
 
 const (
-	promptfooEngineJobIDPrefix = "pfj-"
+	promptfooEngineJobIDPrefix = maclaw.EngineJobIDPrefix
 	promptfooEngineWaitTimeout = 15 * time.Minute
 	promptfooEngineTickRefresh = 2 * time.Second
 )
@@ -112,13 +113,14 @@ func (h *MaclawRuntimeHandler) confirmPromptfooEnginePlan(c *gin.Context, sessio
 	}
 
 	prepared, err := h.engineBridge.PreparePromptfooEngineRun(c.Request.Context(), userID, instanceID, maclaw.PromptfooEngineRunInput{
-		RunID:      planMessage.ID,
-		SessionID:  sessionID,
-		Purpose:    purpose,
-		NumTests:   testCount,
-		Plugins:    plugins,
-		JudgeMode:  judgeMode,
-		Metadata:   map[string]string{"session_id": sessionID},
+		RunID:     planMessage.ID,
+		SessionID: sessionID,
+		Purpose:   purpose,
+		NumTests:  testCount,
+		Plugins:   plugins,
+		JudgeMode: judgeMode,
+		Source:    maclaw.EngineRunSourceChatConfirm,
+		Metadata:  map[string]string{"session_id": sessionID},
 	})
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to submit engine evaluation", "code": "engine_submit_failed", "detail": err.Error()})
@@ -127,6 +129,10 @@ func (h *MaclawRuntimeHandler) confirmPromptfooEnginePlan(c *gin.Context, sessio
 
 	jobID := promptfooEngineJobIDPrefix + uuid.NewString()
 	now := time.Now().UTC()
+	// Write order (U5): register the in-memory job first, then bind it to the
+	// already-persisted engine run. If the bind fails we mark the job failed
+	// below rather than leaving a "running" job nobody is recording — a
+	// disconnected PostgreSQL must be visible, never silent.
 	h.engineJobs.Create(&maclaw.PlatformEngineJob{
 		ID:          jobID,
 		EngineRunID: prepared.Record.ID,
@@ -137,6 +143,18 @@ func (h *MaclawRuntimeHandler) confirmPromptfooEnginePlan(c *gin.Context, sessio
 		StatusText:  "promptfoo 引擎评测执行中",
 		StartedAt:   now,
 	})
+
+	// U5: persist the pfj- ↔ engine_run link so a restart can recover.
+	if _, linkErr := h.engineRunService.LinkJob(c.Request.Context(), userID, prepared.Record.ID, jobID); linkErr != nil {
+		log.Printf("[ERROR] promptfoo engine job link failed (run=%s job=%s user=%s): %v",
+			prepared.Record.ID, jobID, userID, linkErr)
+		h.engineJobs.MarkPersistFailed(jobID, "engine_job_persist_failed")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to persist engine job",
+			"code":  "engine_job_persist_failed",
+		})
+		return
+	}
 
 	// Background wait + progress mirror.
 	go h.waitPromptfooEngineJob(userID, instanceID, jobID, prepared)

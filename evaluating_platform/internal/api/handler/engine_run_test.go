@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,8 +84,8 @@ func (f *fakeTargetConfigService) GetTargetWithSecret(_ context.Context, _ uuid.
 // platform default LLM config (first-provider fallback path of
 // selectJudgeProvider, same as production demo provider).
 type fakeGenerationProvider struct {
-	cfg  *maclaw.RuntimeAppConfig
-	err  error
+	cfg *maclaw.RuntimeAppConfig
+	err error
 }
 
 func (f *fakeGenerationProvider) GetDefaultRuntimeConfig(_ context.Context) (*maclaw.RuntimeAppConfig, error) {
@@ -106,7 +107,9 @@ func newFakeGenerationProvider() *fakeGenerationProvider {
 }
 
 type fakeRunStore struct {
-	records map[string]*maclaw.EngineRunRecord
+	records     map[string]*maclaw.EngineRunRecord
+	linkErr     error
+	getByJobErr error
 }
 
 func newFakeRunStore() *fakeRunStore {
@@ -122,8 +125,17 @@ func (s *fakeRunStore) Create(_ context.Context, r maclaw.EngineRunRecord) (*mac
 }
 
 func (s *fakeRunStore) Update(_ context.Context, r maclaw.EngineRunRecord) (*maclaw.EngineRunRecord, error) {
-	if _, ok := s.records[r.ID]; !ok {
+	stored, ok := s.records[r.ID]
+	if !ok {
 		return nil, context.Canceled
+	}
+	// Sticky job_id, mirroring the repository: a progress save must never
+	// erase the pfj- link (U5 restart recovery depends on it).
+	if r.JobID == "" {
+		r.JobID = stored.JobID
+	}
+	if r.JobID != "" {
+		r.Source = maclaw.EngineRunSourceChatConfirm
 	}
 	r.UpdatedAt = time.Now()
 	c := r
@@ -145,6 +157,41 @@ func (s *fakeRunStore) List(_ context.Context, _ uuid.UUID, _ string, _ int) ([]
 		out = append(out, *rec)
 	}
 	return out, nil
+}
+
+// LinkJob mirrors the repository's guarded UPDATE: idempotent for the same
+// (run, job) pair, and a job already bound elsewhere is refused rather than
+// silently rebound.
+func (s *fakeRunStore) LinkJob(_ context.Context, userID uuid.UUID, runID, jobID string) (*maclaw.EngineRunRecord, error) {
+	if s.linkErr != nil {
+		return nil, s.linkErr
+	}
+	rec, ok := s.records[runID]
+	if !ok || rec.PlatformUserID != userID {
+		return nil, errors.New("run not found")
+	}
+	for _, other := range s.records {
+		if other.ID != runID && other.JobID == jobID {
+			return nil, errors.New("job already bound to another run")
+		}
+	}
+	rec.JobID = jobID
+	rec.Source = maclaw.EngineRunSourceChatConfirm
+	c := *rec
+	return &c, nil
+}
+
+func (s *fakeRunStore) GetByJobID(_ context.Context, userID uuid.UUID, jobID string) (*maclaw.EngineRunRecord, error) {
+	if s.getByJobErr != nil {
+		return nil, s.getByJobErr
+	}
+	for _, rec := range s.records {
+		if rec.JobID != "" && rec.JobID == jobID && rec.PlatformUserID == userID {
+			c := *rec
+			return &c, nil
+		}
+	}
+	return nil, nil
 }
 
 // ---- helpers ----
