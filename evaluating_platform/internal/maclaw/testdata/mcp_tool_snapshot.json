@@ -1,0 +1,624 @@
+{
+  "tools": {
+    "call_evaluation_target": {
+      "description": "Call or prepare a controlled OpenAI-compatible LLM target interaction. Consumes payload_handle server-side and never returns target secret, raw payload, or full target response.",
+      "input_schema": {
+        "properties": {
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "payload_handle": {
+            "description": "Optional prepared payload handle.",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Confirmed target input to send. This value is consumed server-side and never returned.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Safe summary of the intended target call.",
+            "type": "string"
+          },
+          "target_id": {
+            "description": "Optional evaluation target id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "compile_redteam_report": {
+      "description": "Compile a fixed Chinese production-audit security evaluation report. Returns a schema report and evidence handles only.",
+      "input_schema": {
+        "properties": {
+          "evidence_handles": {
+            "description": "Evidence handles only, not evidence content.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "findings": {
+            "description": "Structured findings.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "risk_level": {
+            "description": "Chinese risk level label.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "safety_score": {
+            "description": "Optional safety score.",
+            "type": "number"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Chinese safe report summary.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Chinese report title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "compose_redteam_payloads": {
+      "description": "Compose confirmed expert samples/templates, directly use confirmed expert samples, or use composed attacks into server-side payload handles. Returns handles and safe summaries only, never raw prompt content.",
+      "input_schema": {
+        "properties": {
+          "composed_attack_refs": {
+            "description": "Ready-to-run composed attack refs selected in plan_confirm, for example composed_attack:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Maximum payload handles. Default 5, maximum 50.",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "sample_refs": {
+            "description": "Sample refs selected in plan_confirm, for example sample:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "strategy": {
+            "description": "Optional composition strategy label.",
+            "type": "string"
+          },
+          "template_refs": {
+            "description": "Template refs selected in plan_confirm, for example template:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "execute_redteam_evaluation_batch": {
+      "description": "Execute a confirmed security-evaluation batch in one platform-controlled tool call. Composes payload handles, calls the configured target with bounded concurrency, judges results, saves evidence, and compiles the fixed Chinese report. Never returns raw payloads, raw target responses, credentials, tokens, or local paths.",
+      "input_schema": {
+        "properties": {
+          "composed_attack_refs": {
+            "description": "Ready-to-run composed attack refs selected in plan_confirm, for example composed_attack:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "judge_mode": {
+            "description": "Optional judge mode: auto, rules, or llm.",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "payload_handles": {
+            "description": "Optional payload handles already prepared for this run.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "sample_refs": {
+            "description": "Sample refs selected in plan_confirm, for example sample:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "selected_skills": {
+            "description": "Skill names selected in plan_confirm. If provided, payload_handles must come from register_skill_payload_dataset.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "selection_strategy": {
+            "description": "Selection strategy from plan_confirm, for example random, sequential, risk_coverage, or maclaw_selected.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "template_refs": {
+            "description": "Template refs selected in plan_confirm, for example template:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "test_count": {
+            "description": "Maximum final payloads to execute. Default 5, maximum 50.",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "get_capability_detail": {
+      "description": "Get one safe security-evaluation capability card by ref.",
+      "input_schema": {
+        "properties": {
+          "capability_ref": {
+            "description": "Capability source_ref returned by search_platform_redteam_capabilities.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability_ref"
+        ],
+        "type": "object"
+      }
+    },
+    "get_promptfoo_evaluation_result": {
+      "description": "Get the safe status and sanitized result of one promptfoo-engine run owned by the caller. Returns counts, severity, and plugin statistics only.",
+      "input_schema": {
+        "properties": {
+          "engine_run_id": {
+            "description": "Engine run id returned by run_promptfoo_redteam_evaluation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "engine_run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "judge_attack_result": {
+      "description": "Judge whether a confirmed target interaction is attack success or attack failure. Returns binary success/failure only and never returns raw payload or target response.",
+      "input_schema": {
+        "properties": {
+          "attack_type": {
+            "description": "Attack type such as jailbreak or prompt_injection.",
+            "type": "string"
+          },
+          "call_handle": {
+            "description": "Alias for response_handle.",
+            "type": "string"
+          },
+          "expected_behavior": {
+            "description": "Safe description of the expected secure behavior.",
+            "type": "string"
+          },
+          "judge_mode": {
+            "description": "Optional judge mode: auto, rules, or llm. Default auto uses the configured judge model when available and falls back to rules.",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "payload_handle": {
+            "description": "Prepared payload handle.",
+            "type": "string"
+          },
+          "response_handle": {
+            "description": "Target response or call handle.",
+            "type": "string"
+          },
+          "response_summary": {
+            "description": "Safe response summary. Do not include full target response content.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Target call status such as called, failed, timeout, or error.",
+            "type": "string"
+          },
+          "target_summary": {
+            "description": "Safe target summary.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "prepare_redteam_capability": {
+      "description": "Declare selected capability refs for a confirmed run. Does not expose payloads or archives.",
+      "input_schema": {
+        "properties": {
+          "capability_refs": {
+            "description": "Capability refs selected in plan_confirm.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "capability_refs"
+        ],
+        "type": "object"
+      }
+    },
+    "prepare_skill_input_data": {
+      "description": "Prepare selected expert sample/composed-attack questions for a confirmed native Skill run. Requires an execution grant and returns only the selected data needed by the Skill; never exposes credentials, tokens, archives, target secrets, evidence content, or local paths.",
+      "input_schema": {
+        "properties": {
+          "composed_attack_refs": {
+            "description": "Composed attack refs selected in plan_confirm, for example composed_attack:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Maximum questions to prepare. Default 5, maximum 20.",
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "sample_refs": {
+            "description": "Sample refs selected in plan_confirm, for example sample:\u003cuuid\u003e.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "register_skill_payload_dataset": {
+      "description": "Register payload_dataset output from a confirmed MaClaw native Skill run as server-side payload handles for this run. Use before execute_redteam_evaluation_batch when plan_confirm selected a Skill. Never returns raw payload text.",
+      "input_schema": {
+        "properties": {
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "payload_dataset": {
+            "description": "Skill output payload_dataset object containing payloads[].payload_text.",
+            "type": "object"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "skill_name": {
+            "description": "Selected native Skill name, for example ccbos-classical-chinese-skill.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "skill_name",
+          "payload_dataset"
+        ],
+        "type": "object"
+      }
+    },
+    "run_promptfoo_redteam_evaluation": {
+      "description": "Execute a confirmed promptfoo-engine security evaluation in one platform-controlled tool call. Generates attack cases with the platform generation LLM, runs them against the configured target, judges with llm-rubric, saves safe evidence, and compiles the fixed Chinese report. Requires an execution grant. Never returns raw payloads, raw target responses, credentials, tokens, or local paths.",
+      "input_schema": {
+        "properties": {
+          "judge_mode": {
+            "description": "Optional judge mode: auto, promptfoo_native, or platform_rejudge.",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "num_tests": {
+            "description": "Number of attack cases to generate. Default 5, maximum 50.",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "plugins": {
+            "description": "Plugin ids from search_redteam_plugin_catalog, for example harmful, pii, prompt-injection, jailbreak.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "purpose": {
+            "description": "Chinese evaluation purpose describing the system under test.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "strategies": {
+            "description": "Optional strategy ids such as direct, role-play, encoding, multi-turn.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "purpose"
+        ],
+        "type": "object"
+      }
+    },
+    "save_redteam_evidence": {
+      "description": "Save security-evaluation evidence metadata and return a handle.",
+      "input_schema": {
+        "properties": {
+          "kind": {
+            "description": "Evidence kind, for example artifact or tool_call.",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Safe metadata only. Do not include secrets, tokens, credentials, payloads, evidence content, archives, or local paths.",
+            "type": "object"
+          },
+          "run_id": {
+            "description": "Runtime run id.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Runtime session id that received the execution confirmation grant.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Safe evidence summary without raw payload or response content.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Safe evidence title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      }
+    },
+    "search_platform_redteam_capabilities": {
+      "description": "Search safe platform security-evaluation data resources and expert MCP capability summaries. Use MaClaw native manage_skill for Skills.",
+      "input_schema": {
+        "properties": {
+          "languages": {
+            "description": "Optional language filters such as zh or classical_chinese.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Maximum results. Default 5, maximum 8.",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Natural-language search query, for example classical Chinese jailbreak.",
+            "type": "string"
+          },
+          "risk_types": {
+            "description": "Optional risk filters such as jailbreak or prompt_injection.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target_types": {
+            "description": "Optional target filters such as llm.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "search_redteam_capabilities": {
+      "description": "Compatibility alias for search_platform_redteam_capabilities. Does not execute or return Skill archives.",
+      "input_schema": {
+        "properties": {
+          "languages": {
+            "description": "Optional language filters such as zh or classical_chinese.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Maximum results. Default 5, maximum 8.",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Natural-language search query, for example classical Chinese jailbreak.",
+            "type": "string"
+          },
+          "risk_types": {
+            "description": "Optional risk filters such as jailbreak or prompt_injection.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target_types": {
+            "description": "Optional target filters such as llm.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "search_redteam_plugin_catalog": {
+      "description": "Search the built-in promptfoo-engine plugin and strategy catalog (harmful, pii, prompt-injection, jailbreak, bias, security-exploit and strategy wrappers). Returns safe cards with plugin ids for run_promptfoo_redteam_evaluation.",
+      "input_schema": {
+        "properties": {
+          "limit": {
+            "description": "Maximum results. Default 5, maximum 8.",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Natural-language search query such as harmful content, privacy leak, prompt injection, jailbreak, or promptfoo.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}
