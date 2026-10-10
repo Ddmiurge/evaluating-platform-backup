@@ -71,10 +71,40 @@ require_go() {
 # 之所以不用 `go tool cover -func| total`：
 #   -covermode=set 的 profile 不产出 total: 行；
 #   - 且百分比会四舍五入，掩盖 0.1pp 级漂移。
+#
+# ⚠️ 必须用 NR>1 排除首行 —— 这是**已实测踩过的坑**，不是理论风险。
+#    profile 首行是 `mode: set`，不是语句块。若误用 NR>=1 会把它计入：
+#        错误：NR>=1 → 4039 块 / 2795 覆盖 = 69.20%
+#        正确：NR>1  → 4038 块 / 2794 覆盖 = 69.19%
+#    两者差 0.01pp，看起来像「出现了微小漂移」，实则是**统计口径错误伪造出的
+#    假漂移**。U3 期间曾据此误以为发现了回归，追查才发现是首行被计入。
+#    关键教训：这不是「谁细心」的问题 —— 手工复算的人和写脚本的人都差点数错，
+#    所以凡是自己写/改统计逻辑，必须先用已知答案（基线应为 4038/2794）验一遍。
+#
 # 用法：cover_ratio <profile 文件>
 cover_ratio() {
   awk 'NR>1 {n++; if ($NF > 0) c++}
        END {if (n>0) printf "%d %d %.2f", c+0, n, (c+0)*100/n; else exit 1}' "$1"
+}
+
+# 已知正确值自检：基线 profile 应为 4038 块 / 2794 覆盖。
+# 用来兜住上面那个「首行被计入」的坑 —— 若有人在手工复算或改脚本时误改了口径，
+# 这里会立刻报出来，而不是静默产出 0.01pp 的假漂移。
+# 用法：assert_known_baseline <profile 文件>
+assert_known_baseline() {
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4038}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-2794}"
+  local got
+  got="$(cover_ratio "$1")" || return 1
+  read -r _ got_blocks _ <<<"${got}"
+  if [[ "${got_blocks}" != "${known_blocks}" ]]; then
+    warn "语句块数为 ${got_blocks}，预期 ${known_blocks}。"
+    warn "若此值比预期多 1，极可能是把 profile 首行 'mode: set' 当成了语句块（应使用 NR>1 而非 NR>=1）。"
+    warn "若确非首行问题（例如基线已按新口径重生成），请更新 KNOWN_BASELINE_BLOCKS 显式覆盖。"
+    return 1
+  fi
+  printf '     覆盖块 %s/%s\n' "${known_covered}" "${known_blocks}"
+  return 0
 }
 
 # 统计属于 redteam 子包的语句块数。
@@ -149,6 +179,13 @@ main() {
     die "基线可解析但无 total: 行（profile 格式异常）。请用 --gen-baseline 重新生成。"
   fi
   ok "基线存档可读且格式完整"
+
+  # 前置检查 2：基线语句块数必须等于已知正确值（兜住「首行被计入」的假漂移陷阱）
+  info "前置检查｜基线语句块数自检（防首行 mode: 被误计入）"
+  if ! assert_known_baseline "${BASELINE_PROFILE}"; then
+    die "基线语句块数与已知正确值不符 —— 可能统计口径被改坏，拒绝出结论。"
+  fi
+  ok "基线语句块数符合已知正确值"
 
   printf '\n\033[1m=== U3 覆盖率零漂移验收 ===\033[0m\n'
   printf '基线 mode : %s\n' "$(profile_mode "${BASELINE_PROFILE}")"
