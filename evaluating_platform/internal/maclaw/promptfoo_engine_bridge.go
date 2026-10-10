@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"evaluating_platform/internal/maclaw/redteam"
+	"github.com/google/uuid"
 )
 
 // PromptfooEngineRunner abstracts the engine REST client for bridge tests.
@@ -87,13 +87,13 @@ type PromptfooEngineRunOutput struct {
 
 // PromptfooEngineResultOutput is the get-result tool output (safe fields only).
 type PromptfooEngineResultOutput struct {
-	EngineRunID   string             `json:"engine_run_id"`
-	Phase         string             `json:"phase"`
-	ErrorCode     string             `json:"error_code,omitempty"`
-	PlannedCount  int                `json:"planned_count"`
-	ExecutedCount int                `json:"executed_count"`
-	DurationMs    int64              `json:"duration_ms"`
-	Result        *EngineSafeResult  `json:"result,omitempty"`
+	EngineRunID   string            `json:"engine_run_id"`
+	Phase         string            `json:"phase"`
+	ErrorCode     string            `json:"error_code,omitempty"`
+	PlannedCount  int               `json:"planned_count"`
+	ExecutedCount int               `json:"executed_count"`
+	DurationMs    int64             `json:"duration_ms"`
+	Result        *EngineSafeResult `json:"result,omitempty"`
 }
 
 // SetPromptfooEngine wires the engine dependencies into the bridge. All parts
@@ -130,8 +130,8 @@ func (b *RedteamToolBridge) SearchRedteamPluginCatalog(in SearchRedteamPluginCat
 // PreparedEngineRun is the synchronous part of a confirmed engine run: the
 // engine run record plus the normalized input, before polling starts.
 type PreparedEngineRun struct {
-	Record        *EngineRunRecord
-	NormalizedIn  PromptfooEngineRunInput
+	Record         *EngineRunRecord
+	NormalizedIn   PromptfooEngineRunInput
 	StageDurations map[string]int64
 }
 
@@ -164,13 +164,13 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	}
 	sessionID := firstNonEmptyString(in.ExecutionSessionID, in.SessionID, in.Metadata["session_id"])
 	normalized := PromptfooEngineRunInput{
-		RunID: strings.TrimSpace(in.RunID),
-		Purpose: purpose,
-		NumTests: numTests,
-		Plugins: engineRefIDs(plugins),
-		Strategies: engineRefIDs(strategies),
-		JudgeMode: string(judgeMode),
-		ExecutionUserID: userID,
+		RunID:              strings.TrimSpace(in.RunID),
+		Purpose:            purpose,
+		NumTests:           numTests,
+		Plugins:            engineRefIDs(plugins),
+		Strategies:         engineRefIDs(strategies),
+		JudgeMode:          string(judgeMode),
+		ExecutionUserID:    userID,
 		ExecutionSessionID: sessionID,
 	}
 
@@ -189,7 +189,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if generation == nil {
 		return nil, errors.New("platform generation model is not configured")
 	}
-	stageDurations["materialize_credentials"] = durationMillisSinceTime(credStarted)
+	stageDurations["materialize_credentials"] = redteam.DurationMillisSinceTime(credStarted)
 
 	record := b.engineRuns.NewRun(userID, instanceID, sessionID, EngineRunSourceChat, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), plugins, strategies)
 	saved, err := b.engineRuns.Save(ctx, record)
@@ -206,8 +206,8 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		Plugins:        plugins,
 		Strategies:     strategies,
 		JudgeMode:      judgeMode,
-		Credentials: derefOrEmptyEngineCreds(MaterializeEngineCredentialsWithGeneration(target, generation)),
-		Catalog:     PromptfooEngineCatalog(),
+		Credentials:    derefOrEmptyEngineCreds(MaterializeEngineCredentialsWithGeneration(target, generation)),
+		Catalog:        PromptfooEngineCatalog(),
 	}
 	if err := b.engineRunner.CreateRun(ctx, engineReq); err != nil {
 		saved.Status = EnginePhaseFailed
@@ -217,7 +217,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		}
 		return nil, fmt.Errorf("submit engine run: %s", engineRunnerErrorCode(err))
 	}
-	stageDurations["submit_engine_run"] = durationMillisSinceTime(submitStarted)
+	stageDurations["submit_engine_run"] = redteam.DurationMillisSinceTime(submitStarted)
 
 	return &PreparedEngineRun{Record: saved, NormalizedIn: normalized, StageDurations: stageDurations}, nil
 }
@@ -260,7 +260,7 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			saved = updated
 		}
 	}
-	stageDurations["engine_execution"] = durationMillisSinceTime(pollStarted)
+	stageDurations["engine_execution"] = redteam.DurationMillisSinceTime(pollStarted)
 	if err != nil {
 		return nil, err
 	}
@@ -273,15 +273,15 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			errorCode = string(EnginePhaseFailed)
 		}
 		return &PromptfooEngineRunOutput{
-			RunID:        strings.TrimSpace(in.RunID),
-			EngineRunID:  saved.ID,
-			Status:       "failed",
-			ErrorCode:    errorCode,
-			PlannedCount: saved.PlannedCount,
-			ExecutedCount: saved.ExecutedCount,
-			Counts:       map[string]int{"success": 0, "failure": 0},
+			RunID:          strings.TrimSpace(in.RunID),
+			EngineRunID:    saved.ID,
+			Status:         "failed",
+			ErrorCode:      errorCode,
+			PlannedCount:   saved.PlannedCount,
+			ExecutedCount:  saved.ExecutedCount,
+			Counts:         map[string]int{"success": 0, "failure": 0},
 			StageDurations: stageDurations,
-			Metadata:      engineRunOutputMetadata(saved, in.Metadata),
+			Metadata:       engineRunOutputMetadata(saved, in.Metadata),
 		}, nil
 	}
 
@@ -297,7 +297,7 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			Title:   "promptfoo 引擎评测安全摘要",
 			Summary: engineResultSummary(result),
 			Metadata: map[string]string{
-				"engine":       "promptfoo",
+				"engine":        "promptfoo",
 				"engine_run_id": saved.ID,
 			},
 		})
@@ -305,12 +305,12 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			evidenceHandles = append(evidenceHandles, evidence.Handle)
 		}
 
-		safetyScore := batchSafetyScore(counts, result.Totals.Probes)
+		safetyScore := redteam.BatchSafetyScore(counts, result.Totals.Probes)
 		report, err = b.CompileRedteamReport(ctx, userID, instanceID, CompileRedteamReportInput{
 			RunID:           strings.TrimSpace(in.RunID),
 			Title:           "大模型安全评估报告（promptfoo 引擎）",
 			Summary:         engineResultSummary(result),
-			RiskLevel:       batchRiskLevel(counts, result.Totals.Probes),
+			RiskLevel:       redteam.BatchRiskLevel(counts, result.Totals.Probes),
 			SafetyScore:     &safetyScore,
 			Findings:        EngineSafeResultFindings(result),
 			EvidenceHandles: evidenceHandles,
@@ -320,8 +320,8 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			return nil, fmt.Errorf("compile engine report: %w", err)
 		}
 	}
-	stageDurations["save_evidence_and_report"] = durationMillisSinceTime(saveStarted)
-	stageDurations["total"] = durationMillisSinceTime(batchStarted)
+	stageDurations["save_evidence_and_report"] = redteam.DurationMillisSinceTime(saveStarted)
+	stageDurations["total"] = redteam.DurationMillisSinceTime(batchStarted)
 
 	output := &PromptfooEngineRunOutput{
 		RunID:           strings.TrimSpace(in.RunID),
@@ -470,17 +470,17 @@ func engineResultSummary(result *EngineSafeResult) string {
 	if result == nil {
 		return "promptfoo 引擎评测未返回结果。"
 	}
-	return batchSummary(EngineSafeResultCounts(result), result.Totals.Probes)
+	return redteam.BatchSummary(EngineSafeResultCounts(result), result.Totals.Probes)
 }
 
 func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map[string]string {
 	metadata := map[string]string{
-		"engine":          "promptfoo",
-		"engine_run_id":   record.ID,
-		"judge_mode":      string(record.JudgeMode),
-		"planned_count":   redteam.IntString(record.PlannedCount),
-		"executed_count":  redteam.IntString(record.ExecutedCount),
-		"purpose":         record.Purpose,
+		"engine":         "promptfoo",
+		"engine_run_id":  record.ID,
+		"judge_mode":     string(record.JudgeMode),
+		"planned_count":  redteam.IntString(record.PlannedCount),
+		"executed_count": redteam.IntString(record.ExecutedCount),
+		"purpose":        record.Purpose,
 	}
 	if result != nil {
 		metadata["probes"] = redteam.IntString(result.Totals.Probes)

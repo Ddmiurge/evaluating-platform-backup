@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"evaluating_platform/internal/model"
 	"evaluating_platform/internal/maclaw/redteam"
+	"evaluating_platform/internal/model"
 )
 
 const (

@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 
 	appcrypto "evaluating_platform/internal/crypto"
-	"evaluating_platform/internal/model"
 	"evaluating_platform/internal/maclaw/redteam"
+	"evaluating_platform/internal/model"
 )
 
 type ResourceRecord = model.MaclawResourceRecord

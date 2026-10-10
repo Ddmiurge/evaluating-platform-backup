@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"evaluating_platform/internal/model"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 type samplePreviewer interface {
@@ -75,7 +76,7 @@ func (p *PlatformRedteamPayloadProvider) LoadSamplePayloads(ctx context.Context,
 	if err := p.requirePublishedSample(ctx, id); err != nil {
 		return nil, err
 	}
-	return p.samples.Preview(ctx, id, normalizePayloadLimit(limit))
+	return p.samples.Preview(ctx, id, redteam.NormalizePayloadLimit(limit))
 }
 
 func (p *PlatformRedteamPayloadProvider) LoadComposedPayloads(ctx context.Context, ref string, limit int) ([]model.AttackPayload, error) {
@@ -89,7 +90,7 @@ func (p *PlatformRedteamPayloadProvider) LoadComposedPayloads(ctx context.Contex
 	if err := p.requirePublishedComposedAttack(ctx, id); err != nil {
 		return nil, err
 	}
-	return p.composed.Preview(ctx, id, normalizePayloadLimit(limit))
+	return p.composed.Preview(ctx, id, redteam.NormalizePayloadLimit(limit))
 }
 
 func (p *PlatformRedteamPayloadProvider) GetTemplate(ctx context.Context, ref string) (*model.Template, error) {

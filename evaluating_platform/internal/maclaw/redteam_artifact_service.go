@@ -20,8 +20,8 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/google/uuid"
 	"evaluating_platform/internal/maclaw/redteam"
+	"github.com/google/uuid"
 )
 
 const (
@@ -761,7 +761,7 @@ func displayMultimodalAttackFamily(value string) string {
 
 func findingLooksSuccessful(finding EvaluationReportFinding) bool {
 	if rawResult := strings.TrimSpace(finding.Metadata["judge_result"]); rawResult != "" {
-		switch normalizedJudgeResultKey(rawResult) {
+		switch redteam.NormalizedJudgeResultKey(rawResult) {
 		case "success":
 			return true
 		default:
@@ -785,7 +785,7 @@ func findingLooksSuccessful(finding EvaluationReportFinding) bool {
 
 func findingStatusLabel(finding EvaluationReportFinding) string {
 	if rawResult := strings.TrimSpace(finding.Metadata["judge_result"]); rawResult != "" {
-		switch normalizedJudgeResultKey(rawResult) {
+		switch redteam.NormalizedJudgeResultKey(rawResult) {
 		case "success":
 			return "攻击成功"
 		default:

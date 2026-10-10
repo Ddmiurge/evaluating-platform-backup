@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"evaluating_platform/internal/maclaw/redteam"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"evaluating_platform/internal/maclaw/redteam"
 )
 
 const defaultRedteamJudgeMaxTokens = 1024

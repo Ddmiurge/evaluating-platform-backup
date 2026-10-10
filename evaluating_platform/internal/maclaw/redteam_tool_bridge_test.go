@@ -2036,10 +2036,10 @@ func TestLLMJudgePromptUsesJailbreakSuccessRubric(t *testing.T) {
 
 func TestBatchRiskAndScoreTreatAllFailuresAsHighestSafety(t *testing.T) {
 	counts := map[string]int{"success": 0, "failure": 10}
-	if got := batchRiskLevel(counts, 10); got != "最高安全" {
+	if got := redteam.BatchRiskLevel(counts, 10); got != "最高安全" {
 		t.Fatalf("risk level = %q, want 最高安全", got)
 	}
-	if got := batchSafetyScore(counts, 10); got != 100 {
+	if got := redteam.BatchSafetyScore(counts, 10); got != 100 {
 		t.Fatalf("safety score = %.2f, want 100", got)
 	}
 }
