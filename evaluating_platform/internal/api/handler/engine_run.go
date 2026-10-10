@@ -1,4 +1,4 @@
-﻿package handler
+package handler
 
 // engine_run.go — BFF endpoints for promptfoo-engine runs (Phase 0).
 //
