@@ -25,9 +25,13 @@ import (
 )
 
 const (
-	pdfContentBottomY = 310.0
-	pdfFooterLineY    = 44.0
-	pdfFooterTextY    = 26.0
+	pdfContentBottomY     = 310.0
+	pdfFooterLineY        = 44.0
+	pdfFooterCaptionTextY = 34.0
+	pdfFooterTextY        = 26.0
+	// pdfFooterFontSize 是页脚两行共用的字号（截断计算与渲染必须同值，
+	// 否则会算出「按8pt 放得下」但实际用别的字号渲染的错位）。
+	pdfFooterFontSize = 8.0
 )
 
 type RedteamEvidenceRecord struct {
@@ -58,9 +62,15 @@ type RedteamReportRecord struct {
 	SafetyScore     *float64
 	Findings        []EvaluationReportFinding
 	EvidenceHandles []string
-	Metadata        map[string]string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// Metadata 是 judge_track 的**唯一真源**（DD-5=A：复用同一 schema，不新增列）。
+	//
+	// 刻意不给本record 加 JudgeTrack 字段：那会造出一个「内存里有、DB 里没存」
+	// 的幽灵字段 —— 仓库层的 INSERT/SELECT 都不含它，一旦有人直接读record.JudgeTrack
+	// 就会拿到零值并误判为「未声明」。判定口径一律经由 Metadata["judge_track"] 读写，
+	// 对外暴露为 EvaluationReport.JudgeTrack（由 reportFromRecord 解析后回填）。
+	Metadata  map[string]string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type RedteamArtifactStore interface {
@@ -179,6 +189,19 @@ func (s *RedteamArtifactService) CompileReport(ctx context.Context, userID uuid.
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
+	// U4fail-closed：显式声明的 judge_track 非法时**拒绝写报告**。
+	// 静默接受非法口径 = 把一个没人能解释的分数口径写进报告并让它流通，
+	// 这比直接报错危险得多（用户看不出异常，只会当成正常结论）。
+	judgeTrack, err := ValidateReportJudgeTrackMetadata(metadata)
+	if err != nil {
+		return nil, err
+	}
+	if judgeTrack == "" {
+		// 未显式声明时按 metadata.engine 落库，保证新报告一律带口径，
+		// 读路径就不必再靠推断（推断逻辑保留给历史行）。
+		judgeTrack = RedteamJudgeTrackOf(metadata)
+	}
+	metadata[RedteamJudgeTrackMetadataKey] = string(judgeTrack)
 	metadata["schema_version"] = "redteam_report_zh_v1"
 	metadata["report_template"] = "redteam_report_pdf_layout_v2"
 	record := RedteamReportRecord{
@@ -479,18 +502,22 @@ func reportFromRecord(record *RedteamReportRecord) EvaluationReport {
 	if record == nil {
 		return EvaluationReport{}
 	}
+	metadata := redteam.SanitizeMetadata(record.Metadata)
 	return EvaluationReport{
-		ID:              record.ID,
-		InstanceID:      record.InstanceID,
-		SessionID:       record.SessionID,
-		RunID:           record.RunID,
-		Title:           record.Title,
-		Summary:         record.Summary,
-		RiskLevel:       record.RiskLevel,
+		ID:         record.ID,
+		InstanceID: record.InstanceID,
+		SessionID:  record.SessionID,
+		RunID:      record.RunID,
+		Title:      record.Title,
+		Summary:    record.Summary,
+		RiskLevel:  record.RiskLevel,
+		// U4向后兼容：judge_track 由metadata 解析（旧行缺该键时按 engine 推断），
+		// 因此**读**历史报告永远拿得到口径，且不需要数据回填。
+		JudgeTrack:      RedteamJudgeTrackOf(metadata),
 		SafetyScore:     record.SafetyScore,
 		Findings:        append([]EvaluationReportFinding(nil), record.Findings...),
 		EvidenceHandles: append([]string(nil), record.EvidenceHandles...),
-		Metadata:        redteam.SanitizeMetadata(record.Metadata),
+		Metadata:        metadata,
 		CreatedAt:       record.CreatedAt,
 		UpdatedAt:       record.UpdatedAt,
 	}
@@ -548,6 +575,9 @@ func reportSections(report *EvaluationReport) []reportSection {
 
 func reportInfoLines(report *EvaluationReport) []string {
 	lines := []string{"- 报告模板版本：" + firstNonEmptyString(report.Metadata["schema_version"], "redteam_report_zh_v1")}
+	// U4：判定口径进「报告基本信息」，属元数据而非结论段落 ——
+	// 摘要/评分/发现等结论段落一律不插口径说明，避免污染结论（DD-2=A）。
+	lines = append(lines, "- "+RedteamJudgeTrackCaptionOf(report.Metadata))
 	if target := strings.TrimSpace(firstNonEmptyString(report.Metadata["target_summary"], report.Metadata["target_model"], report.Metadata["target_name"])); target != "" {
 		lines = append(lines, "- 评估目标："+target)
 	}
@@ -954,9 +984,13 @@ func pdfCoverPageContent(report *EvaluationReport) pdfRenderedPage {
 
 func pdfBodyPageContents(report *EvaluationReport) []pdfRenderedPage {
 	pages := []pdfRenderedPage{}
+	// U4：口径说明由 reportSections 的「报告基本信息」段落统一派生，
+	// 页脚用同一解析结果的**短句**变体（页脚宽度放不下完整句，详见
+	// redteam_judge_track.go 的 judgeTrackFooter* 常量注释）。
+	judgeTrackCaption := RedteamJudgeTrackFooterCaptionOf(report.Metadata)
 	page := newPDFBodyPage()
 	appendPage := func() *pdfPageWriter {
-		page.footer()
+		page.footer(judgeTrackCaption)
 		pages = append(pages, page.rendered())
 		page = newPDFBodyPage()
 		return page
@@ -996,7 +1030,7 @@ func pdfBodyPageContents(report *EvaluationReport) []pdfRenderedPage {
 		page.y -= 20
 	}
 	if page.y < 770 {
-		page.footer()
+		page.footer(judgeTrackCaption)
 		pages = append(pages, page.rendered())
 	}
 	if len(pages) == 0 {
@@ -1004,7 +1038,7 @@ func pdfBodyPageContents(report *EvaluationReport) []pdfRenderedPage {
 		fallback.sectionHeading("1. 评估摘要")
 		fallback.y -= 26
 		fallback.text(70, fallback.y, "暂无报告内容。", 10.5, 0.16, 0.16, 0.16)
-		fallback.footer()
+		fallback.footer(judgeTrackCaption)
 		pages = append(pages, fallback.rendered())
 	}
 	return pages
@@ -1122,9 +1156,38 @@ func (p *pdfPageWriter) findingImage(index int, image pdfReportImage, appendPage
 	return p
 }
 
-func (p *pdfPageWriter) footer() {
+// footer 渲染页脚。judgeTrackCaption 为U4 判定口径说明。
+//
+// 口径说明放**页脚**而非正文（DD-2=A）：正文段落是用户读结论的地方，
+// 在那里插一句「本次分数由哪套口径算出」会被当成结论的一部分；
+// 页脚是元数据的天然位置，每页固定出现，又不打断阅读。
+//
+// 单行超宽时按可用宽度截断并加省略号 —— 不能换行（页脚只有 44→26 的
+// 18pt 纵向空间，换行会撞到正文安全区 pdfContentBottomY=310 之上的内容），
+// 也不能缩字号（可读性优先于完整性；完整口径在报告基本信息段落里有全句）。
+func (p *pdfPageWriter) footer(judgeTrackCaption string) {
 	p.line(70, pdfFooterLineY, 525, 0.86, 0.88, 0.92, 0.35)
+	if caption := truncatePDFText(cleanPDFText(judgeTrackCaption), 425); caption != "" {
+		p.text(70, pdfFooterCaptionTextY, caption, 8.0, 0.45, 0.48, 0.52)
+	}
 	p.text(70, pdfFooterTextY, "本报告由安全评估平台生成，仅展示安全摘要与结构化结论。", 8.0, 0.45, 0.48, 0.52)
+}
+
+// truncatePDFText 按可用宽度截断单行文本，超长时补省略号。
+func truncatePDFText(value string, maxWidth float64) string {
+	value = strings.TrimSpace(value)
+	if value == "" || pdfTextWidth(value, pdfFooterFontSize) <= maxWidth {
+		return value
+	}
+	runes := []rune(value)
+	for len(runes) > 0 {
+		candidate := strings.TrimRight(string(runes)+"…", " ")
+		if pdfTextWidth(candidate, pdfFooterFontSize) <= maxWidth {
+			return candidate
+		}
+		runes = runes[:len(runes)-1]
+	}
+	return ""
 }
 
 func (p *pdfPageWriter) rendered() pdfRenderedPage {

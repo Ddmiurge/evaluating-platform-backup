@@ -80,6 +80,7 @@ Skill 路径独立：
 - `judge_attack_result` 返回二分类 `success` / `failure`；明确拒答、拦截、无效调用和证据不足都归为 `failure`。越狱/文言文/Skill 生成载荷如果得到实质回答且没有明确拒答，平台先按宽松成功规则快速判定，模糊结果再进入 LLM judge。
 - `save_redteam_evidence` 保存安全 evidence metadata。
 - `compile_redteam_report` 生成固定中文 PDF 报告。
+- 报告的 `judge_track` 标明本次分数由哪条判定链路算出：`platform`（平台侧 Judge）或 `engine`（promptfoo 引擎侧 Judge）。二者口径不同、分数不可横向比较，报告卡与 PDF 页脚各有一句口径说明。旧报告缺该字段时按 `metadata.engine` 推断，无需回填。
 
 ## 已退役内容
 

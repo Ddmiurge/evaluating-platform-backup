@@ -419,6 +419,7 @@ type EvaluationReport struct {
 	Summary         string                    `json:"summary,omitempty"`
 	RiskLevel       string                    `json:"risk_level,omitempty"`
 	SafetyScore     *float64                  `json:"safety_score,omitempty"`
+	JudgeTrack      RedteamJudgeTrack         `json:"judge_track,omitempty"`
 	Findings        []EvaluationReportFinding `json:"findings,omitempty"`
 	EvidenceHandles []string                  `json:"evidence_handles,omitempty"`
 	RawContent      string                    `json:"raw_content,omitempty"`

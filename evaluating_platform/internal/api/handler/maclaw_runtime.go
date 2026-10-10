@@ -1066,7 +1066,7 @@ func normalizeRuntimeReportMessage(msg *maclaw.RuntimeMessage) {
 		msg.Metadata = map[string]string{}
 	}
 	if parsed := runtimeReportJSON(msg.Content); parsed != nil {
-		for _, key := range []string{"risk_level", "safety_score", "executed_count", "planned_count", "success_count", "failure_count"} {
+		for _, key := range []string{"risk_level", "safety_score", "executed_count", "planned_count", "success_count", "failure_count", maclaw.RedteamJudgeTrackMetadataKey} {
 			if value := strings.TrimSpace(fmtAnyString(parsed[key])); value != "" && strings.TrimSpace(msg.Metadata[key]) == "" {
 				msg.Metadata[key] = value
 			}
@@ -1149,6 +1149,14 @@ func applyRuntimeReportMetadata(msg *maclaw.RuntimeMessage, report *maclaw.Evalu
 	for _, key := range []string{"executed_count", "planned_count", "success_count", "failure_count", "total_cases", "attack_success_rate"} {
 		if strings.TrimSpace(msg.Metadata[key]) == "" && strings.TrimSpace(report.Metadata[key]) != "" {
 			msg.Metadata[key] = strings.TrimSpace(report.Metadata[key])
+		}
+	}
+	// U4：把判定口径透传到聊天卡片 metadata，报告卡才能显示「这份分数是哪套口径算出来的」。
+	// 用 report.JudgeTrack（已由后端从 metadata 解析、含旧报告推断）而非原始
+	// metadata["judge_track"]，这样历史报告的卡片也能显示推断出的口径。
+	if strings.TrimSpace(msg.Metadata[maclaw.RedteamJudgeTrackMetadataKey]) == "" {
+		if track := strings.TrimSpace(string(report.JudgeTrack)); track != "" {
+			msg.Metadata[maclaw.RedteamJudgeTrackMetadataKey] = track
 		}
 	}
 	if strings.TrimSpace(msg.Metadata["summary"]) == "" && strings.TrimSpace(report.Summary) != "" {

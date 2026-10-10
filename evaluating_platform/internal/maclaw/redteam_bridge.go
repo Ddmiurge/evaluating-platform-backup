@@ -1026,6 +1026,9 @@ func (b *RedteamToolBridge) ExecuteRedteamEvaluationBatch(ctx context.Context, u
 		"failure_count":        redteam.IntString(counts["failure"]),
 		"target_concurrency":   redteam.IntString(normalizeTargetConcurrency(b.targetConcurrency)),
 		"stage_durations_json": redteam.MustJSONMapStringInt64(stageDurations),
+		// U4 写入点 2/2：本链路在平台侧 Judge（judge_attack_result / LLM 复判），
+		// 分数口径与 promptfoo 引擎链路不同，显式标注（DD-2=A）。
+		RedteamJudgeTrackMetadataKey: string(RedteamJudgeTrackPlatform),
 	}
 	report, err := b.CompileRedteamReport(ctx, userID, instanceID, CompileRedteamReportInput{
 		RunID:           runID,
@@ -1702,6 +1705,17 @@ func (b *RedteamToolBridge) CompileRedteamReport(ctx context.Context, userID uui
 	}
 	report.Metadata["schema_version"] = "redteam_report_zh_v1"
 	report.Metadata["report_template"] = "redteam_report_pdf_layout_v2"
+	// U4：无 artifact store 的降级路径也要落口径，否则这条路径产出的报告
+	// 会成为「口径缺失」的第二类来源（比历史数据更难排查，因为它看起来是新的）。
+	judgeTrack, trackErr := ValidateReportJudgeTrackMetadata(report.Metadata)
+	if trackErr != nil {
+		return nil, trackErr
+	}
+	if judgeTrack == "" {
+		judgeTrack = RedteamJudgeTrackOf(report.Metadata)
+	}
+	report.Metadata[RedteamJudgeTrackMetadataKey] = string(judgeTrack)
+	report.JudgeTrack = judgeTrack
 	return report, nil
 }
 

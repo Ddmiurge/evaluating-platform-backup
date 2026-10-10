@@ -481,6 +481,9 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 		"planned_count":  redteam.IntString(record.PlannedCount),
 		"executed_count": redteam.IntString(record.ExecutedCount),
 		"purpose":        record.Purpose,
+		// U4 写入点 1/2：本报告的分数由promptfoo 引擎侧 rubric 算出，
+		// 与平台 Judge 口径不可比，必须显式标注（DD-2=A）。
+		RedteamJudgeTrackMetadataKey: string(RedteamJudgeTrackEngine),
 	}
 	if result != nil {
 		metadata["probes"] = redteam.IntString(result.Totals.Probes)

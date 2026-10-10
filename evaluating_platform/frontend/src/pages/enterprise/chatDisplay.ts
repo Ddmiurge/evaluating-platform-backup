@@ -161,6 +161,66 @@ export function safetyScoreFromRiskScore(value?: number) {
   return Math.round(100 - normalizeRiskScore(value))
 }
 
+/**
+ * U4 判定口径的 metadata 键名与取值。**必须与后端
+ * `internal/maclaw/redteam_judge_track.go` 的 `RedteamJudgeTrackMetadataKey` /
+ * `RedteamJudgeTrackPlatform` / `RedteamJudgeTrackEngine` 同名同值**——
+ * 这是一条跨语言契约，两侧任何一侧单独改名都会让报告卡显示错误口径。
+ */
+export const JUDGE_TRACK_METADATA_KEY = 'judge_track'
+export const JUDGE_TRACK_ENGINE_METADATA_KEY = 'engine'
+
+/**
+ * U4 判定口径文案。**必须与后端
+ * `internal/maclaw/redteam_judge_track.go` 的 judgeTrackCaption* 常量逐字一致**——
+ * 报告卡与 PDF 页脚是同一口径的两种呈现，措辞漂移会让用户以为是两个口径。
+ * 改动时两侧必须一起改。
+ */
+const JUDGE_TRACK_CAPTION_BODY: Record<'platform' | 'engine', string> = {
+  platform: '判定口径：平台 Judge（platform）—— 风险等级与安全评分由平台侧判定链路计算。',
+  engine: '判定口径：promptfoo 引擎（engine）—— 风险等级与安全评分由 promptfoo 引擎侧判定链路计算。',
+}
+const JUDGE_TRACK_CAPTION_SUFFIX = '两条链路的分数口径不同，不可直接横向比较。'
+
+/**
+ * resolveReportJudgeTrack 判定一份报告的判定口径。
+ *
+ * 优先级与后端 `ResolveRedteamJudgeTrack` 完全一致：
+ *   1. 显式 judge_track（合法值）；
+ *   2. metadata.engine 非空 → engine（引擎链路自第一天起就写该键，
+ *      平台 Judge 链路从不写，故等价于「报告来自引擎」）；
+ *   3. 都没有 → 'platform'（U4 之前的历史报告）。
+ *
+ * 返回 `null` 表示**元数据非法**：judge_track 存在但不是 platform/engine。
+ * 这种情况必须让用户看见，不能静默按 platform 显示——那等于给一份
+ * 来源不明的分数贴上确定的口径。
+ */
+export function resolveReportJudgeTrack({
+  judgeTrack,
+  metadata,
+}: {
+  judgeTrack?: string
+  metadata?: Record<string, string> | null
+}): 'platform' | 'engine' | null {
+  const raw = String(judgeTrack ?? metadata?.[JUDGE_TRACK_METADATA_KEY] ?? '').trim().toLowerCase()
+  if (raw === 'platform' || raw === 'engine') return raw
+  if (raw !== '') return null
+  return String(metadata?.[JUDGE_TRACK_ENGINE_METADATA_KEY] ?? '').trim() !== '' ? 'engine' : 'platform'
+}
+
+/**
+ * reportJudgeTrackCaption 生成一句话口径说明（报告卡用；PDF 页脚由后端渲染）。
+ * 返回空串表示口径不明，调用方应据此**不渲染**口径行，而不是渲染一句假的。
+ */
+export function reportJudgeTrackCaption(input: {
+  judgeTrack?: string
+  metadata?: Record<string, string> | null
+}): string {
+  const track = resolveReportJudgeTrack(input)
+  if (!track) return ''
+  return `${JUDGE_TRACK_CAPTION_BODY[track]}${JUDGE_TRACK_CAPTION_SUFFIX}`
+}
+
 export function resolveReportSafetyScore({
   cardType,
   directSafetyScore,

@@ -4,7 +4,7 @@ import { ApiOutlined, BugOutlined, CheckCircleOutlined, DownloadOutlined, Export
 
 import type { ChatMessage, PlanInfo, WelcomeCapability } from '../../services/chat'
 import { reportService, triggerBrowserDownload } from '../../services/report'
-import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, resolveReportSafetyScore } from './chatDisplay'
+import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
 import { parseChatMarkdown, type ChatMarkdownInline } from './chatMarkdown'
 
 const RISK_COLORS: Record<string, string> = {
@@ -258,6 +258,8 @@ function ReportCard({
   riskLevel,
   riskScore,
   safetyScore: directSafetyScore,
+  judgeTrack,
+  judgeTrackCaption,
   downloadFormat = 'pdf',
   downloadable = true,
   isRunning,
@@ -288,6 +290,10 @@ function ReportCard({
   riskLevel?: string
   riskScore?: number
   safetyScore?: number
+  /** U4 判定口径：platform=平台侧 Judge，engine=promptfoo 引擎侧 Judge。 */
+  judgeTrack?: string
+  /** U4 口径说明全文（由 reportJudgeTrackCaption 派生）；空串表示口径不明，不渲染该行。 */
+  judgeTrackCaption?: string
   downloadFormat?: 'pdf' | 'markdown' | 'json'
   downloadable?: boolean
   isRunning?: boolean
@@ -381,6 +387,9 @@ function ReportCard({
       ['成功', successCount],
       ['失败', resolvedFailureCount],
     ].filter(([, value]) => typeof value === 'number')
+    // U4：口径说明放在统计格**之后**、下载按钮之前 —— 紧贴分数（用户正在比较的那个数），
+    // 又在结论性文案之外。口径不明（非法元数据）时整行不渲染，不显示任何暗示。
+    const trackCaption = (judgeTrackCaption ?? reportJudgeTrackCaption({ judgeTrack })).trim()
     return (
       <div style={{ background: 'var(--bg-card)', border: `1px solid ${color}40`, borderRadius: 12, padding: '16px 20px', maxWidth: 420, marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -402,6 +411,11 @@ function ReportCard({
                 <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 2 }}>{labelText as string}</div>
               </div>
             ))}
+          </div>
+        )}
+        {trackCaption && (
+          <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6, marginBottom: 10 }}>
+            {trackCaption}
           </div>
         )}
         {(assessmentId || reportId) && downloadable && (
@@ -713,6 +727,7 @@ export function MessageBubble({
             riskLevel={msg.metadata?.risk_level as string | undefined}
             riskScore={msg.metadata?.risk_score as number | undefined}
             safetyScore={msg.metadata?.safety_score as number | undefined}
+            judgeTrack={msg.metadata?.judge_track as string | undefined}
             downloadFormat={msg.metadata?.download_format as 'pdf' | 'markdown' | 'json' | undefined}
             downloadable={msg.metadata?.downloadable as boolean | undefined}
             statusText={msg.metadata?.status_text as string | undefined}
