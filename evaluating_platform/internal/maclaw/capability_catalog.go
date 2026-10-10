@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"evaluating_platform/internal/model"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 const (
@@ -194,7 +195,7 @@ func sampleCapabilityCard(item model.AttackSample) CapabilityCard {
 		SafeMetadata: map[string]string{
 			"data_type":    CapabilitySourceSample,
 			"category":     strings.TrimSpace(item.SubType),
-			"sample_count": intString(item.SampleCount),
+			"sample_count": redteam.IntString(item.SampleCount),
 		},
 	}
 }
@@ -245,7 +246,7 @@ func composedAttackCapabilityCard(item model.ComposedAttack) CapabilityCard {
 		SafeMetadata: map[string]string{
 			"data_type":    CapabilitySourceComposed,
 			"category":     strings.TrimSpace(item.SubType),
-			"sample_count": intString(item.SampleCount),
+			"sample_count": redteam.IntString(item.SampleCount),
 		},
 	}
 }

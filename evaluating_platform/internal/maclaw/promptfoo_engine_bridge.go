@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 // PromptfooEngineRunner abstracts the engine REST client for bridge tests.
@@ -456,8 +457,8 @@ func EngineSafeResultFindings(result *EngineSafeResult) []EvaluationReportFindin
 			Metadata: map[string]string{
 				"engine":         "promptfoo",
 				"plugin_id":      stat.PluginID,
-				"probes":         intString(stat.Probes),
-				"attack_success": intString(stat.AttackSuccess),
+				"probes":         redteam.IntString(stat.Probes),
+				"attack_success": redteam.IntString(stat.AttackSuccess),
 				"success_rate":   fmt.Sprintf("%.2f", stat.SuccessRate),
 			},
 		})
@@ -477,20 +478,20 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 		"engine":          "promptfoo",
 		"engine_run_id":   record.ID,
 		"judge_mode":      string(record.JudgeMode),
-		"planned_count":   intString(record.PlannedCount),
-		"executed_count":  intString(record.ExecutedCount),
+		"planned_count":   redteam.IntString(record.PlannedCount),
+		"executed_count":  redteam.IntString(record.ExecutedCount),
 		"purpose":         record.Purpose,
 	}
 	if result != nil {
-		metadata["probes"] = intString(result.Totals.Probes)
-		metadata["attack_success"] = intString(result.Totals.AttackSuccess)
+		metadata["probes"] = redteam.IntString(result.Totals.Probes)
+		metadata["attack_success"] = redteam.IntString(result.Totals.AttackSuccess)
 		metadata["pass_rate"] = fmt.Sprintf("%.2f", result.Totals.PassRate)
 	}
 	return metadata
 }
 
 func engineRunOutputMetadata(record *EngineRunRecord, in map[string]string) map[string]string {
-	metadata := sanitizeMetadata(in)
+	metadata := redteam.SanitizeMetadata(in)
 	if metadata == nil {
 		metadata = map[string]string{}
 	}

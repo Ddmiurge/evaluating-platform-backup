@@ -39,9 +39,8 @@ const (
 	// 从 internal/api/handler 出发 `..` 只回到 internal/api，会把快照写进
 	// 不存在的 internal/api/maclaw/。正确前缀是 "../../maclaw/"。
 	//
-	// 另外 redteam/ 子包在 Step 2 才创建，所以 Step 1 先落在
-	// internal/maclaw/testdata/，等子包建好后由后续步骤迁移（只改这一行常量）。
-	mcpToolSnapshotPath = "../../maclaw/testdata/mcp_tool_snapshot.json"
+	// U3 Step 2 起，快照随 redteam/ 子包一起迁到 internal/maclaw/redteam/testdata/。
+	mcpToolSnapshotPath = "../../maclaw/redteam/testdata/mcp_tool_snapshot.json"
 
 	// wantRedteamMCPToolCount 是 tools/list 的工具数量（实测，见 U3 Step 1）。
 	wantRedteamMCPToolCount = 15

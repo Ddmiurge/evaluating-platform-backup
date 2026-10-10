@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"evaluating_platform/internal/model"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 type fakeCapabilitySearcher struct {
@@ -2058,7 +2059,7 @@ func TestRedteamToolBridgeJudgeReasonsAreReadableChinese(t *testing.T) {
 		if err != nil {
 			t.Fatalf("JudgeAttackResult(%s): %v", tc.RunID, err)
 		}
-		if strings.TrimSpace(got.Reason) == "" || !containsAnyFold(got.Reason, []string{"目标", "响应", "模型", "摘要"}) {
+		if strings.TrimSpace(got.Reason) == "" || !redteam.ContainsAnyFold(got.Reason, []string{"目标", "响应", "模型", "摘要"}) {
 			t.Fatalf("judge reason is not readable Chinese: %#v", got)
 		}
 		for _, mojibake := range []string{"鍝", "鐩", "妯", "锛", "€"} {

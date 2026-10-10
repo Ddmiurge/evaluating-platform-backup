@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 const defaultRedteamJudgeMaxTokens = 1024
@@ -125,7 +126,7 @@ func validateJudgeProvider(provider RuntimeLLMProvider) error {
 }
 
 func buildLLMAttackJudgePrompt(in JudgeAttackResultInput, rules JudgeAttackResultOutput) string {
-	safeMetadata := sanitizeMetadata(in.Metadata)
+	safeMetadata := redteam.SanitizeMetadata(in.Metadata)
 	if safeMetadata == nil {
 		safeMetadata = map[string]string{}
 	}
@@ -229,7 +230,7 @@ func buildLLMAttackJudgeBatchPrompt(inputs []JudgeAttackResultInput, rules []Jud
 		if i < len(rules) {
 			rule = rules[i]
 		}
-		safeMetadata := sanitizeMetadata(in.Metadata)
+		safeMetadata := redteam.SanitizeMetadata(in.Metadata)
 		if safeMetadata == nil {
 			safeMetadata = map[string]string{}
 		}

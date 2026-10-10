@@ -21,6 +21,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/google/uuid"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 const (
@@ -121,7 +122,7 @@ func (s *RedteamArtifactService) SaveEvidence(ctx context.Context, userID uuid.U
 		Kind:           kind,
 		Title:          sanitizeRedteamArtifactText(in.Title),
 		Summary:        sanitizeRedteamArtifactText(in.Summary),
-		Metadata:       sanitizeMetadata(in.Metadata),
+		Metadata:       redteam.SanitizeMetadata(in.Metadata),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -174,7 +175,7 @@ func (s *RedteamArtifactService) CompileReport(ctx context.Context, userID uuid.
 	}
 	now := s.nowUTC()
 	handle := s.safeHandle("redteam_report", userID.String(), in.RunID, in.Title, in.Summary)
-	metadata := sanitizeMetadata(in.Metadata)
+	metadata := redteam.SanitizeMetadata(in.Metadata)
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
@@ -218,7 +219,7 @@ func sanitizeRedteamReportFindings(in []EvaluationReportFinding) []EvaluationRep
 		item.Description = sanitizeRedteamArtifactText(item.Description)
 		item.Evidence = sanitizeRedteamArtifactText(item.Evidence)
 		item.Suggestion = sanitizeRedteamArtifactText(item.Suggestion)
-		item.Metadata = sanitizeMetadata(item.Metadata)
+		item.Metadata = redteam.SanitizeMetadata(item.Metadata)
 		out = append(out, item)
 	}
 	return out
@@ -370,7 +371,7 @@ func (s *RedteamArtifactService) reportWithPDFImages(report *EvaluationReport) *
 		if metadata == nil {
 			metadata = map[string]string{}
 		}
-		mergeStringMetadata(metadata, reportImageMetadataForPayload(images))
+		redteam.MergeStringMetadata(metadata, reportImageMetadataForPayload(images))
 		copied.Findings[idx].Metadata = metadata
 	}
 	return &copied
@@ -451,7 +452,7 @@ func evidenceOutputFromRecord(record *RedteamEvidenceRecord) *RedteamEvidenceOut
 		Kind:     record.Kind,
 		Title:    record.Title,
 		Summary:  record.Summary,
-		Metadata: sanitizeMetadata(record.Metadata),
+		Metadata: redteam.SanitizeMetadata(record.Metadata),
 	}
 }
 
@@ -468,7 +469,7 @@ func evidenceSummaryFromRecord(record *RedteamEvidenceRecord) EvaluationEvidence
 		Title:      record.Title,
 		Summary:    record.Summary,
 		Handle:     record.Handle,
-		Metadata:   sanitizeMetadata(record.Metadata),
+		Metadata:   redteam.SanitizeMetadata(record.Metadata),
 		CreatedAt:  record.CreatedAt,
 		UpdatedAt:  record.UpdatedAt,
 	}
@@ -489,7 +490,7 @@ func reportFromRecord(record *RedteamReportRecord) EvaluationReport {
 		SafetyScore:     record.SafetyScore,
 		Findings:        append([]EvaluationReportFinding(nil), record.Findings...),
 		EvidenceHandles: append([]string(nil), record.EvidenceHandles...),
-		Metadata:        sanitizeMetadata(record.Metadata),
+		Metadata:        redteam.SanitizeMetadata(record.Metadata),
 		CreatedAt:       record.CreatedAt,
 		UpdatedAt:       record.UpdatedAt,
 	}
@@ -519,7 +520,7 @@ func renderReportMarkdown(report *EvaluationReport) []byte {
 }
 
 func reportSections(report *EvaluationReport) []reportSection {
-	metadata := sanitizeMetadata(report.Metadata)
+	metadata := redteam.SanitizeMetadata(report.Metadata)
 	sections := []reportSection{{
 		Title: "报告基本信息",
 		Lines: reportInfoLines(report),
@@ -873,8 +874,8 @@ func renderReportPDF(report *EvaluationReport) []byte {
 		if len(imageObjectIDs[i]) > 0 {
 			parts := make([]string, 0, len(imageObjectIDs[i]))
 			for imageIndex, objectID := range imageObjectIDs[i] {
-				name := firstNonEmptyString(pages[i].Images[imageIndex].Name, "Im"+intString(imageIndex+1))
-				parts = append(parts, "/"+name+" "+intString(objectID)+" 0 R")
+				name := firstNonEmptyString(pages[i].Images[imageIndex].Name, "Im"+redteam.IntString(imageIndex+1))
+				parts = append(parts, "/"+name+" "+redteam.IntString(objectID)+" 0 R")
 			}
 			xobjects = " /XObject << " + strings.Join(parts, " ") + " >>"
 		}
@@ -1137,7 +1138,7 @@ func (p *pdfPageWriter) drawImage(x, y, width, height float64, image pdfReportIm
 	if len(image.Stream) == 0 || image.Width <= 0 || image.Height <= 0 {
 		return
 	}
-	image.Name = "Im" + intString(len(p.images)+1)
+	image.Name = "Im" + redteam.IntString(len(p.images)+1)
 	p.images = append(p.images, image)
 	fmt.Fprintf(&p.buf, "q\n%.1f 0 0 %.1f %.1f %.1f cm\n/%s Do\nQ\n", width, height, x, y, image.Name)
 }
@@ -1149,7 +1150,7 @@ func pdfFindingImages(finding EvaluationReportFinding) []pdfReportImage {
 	}
 	out := []pdfReportImage{}
 	for index := 1; index <= 3; index++ {
-		prefix := "report_image_" + intString(index) + "_"
+		prefix := "report_image_" + redteam.IntString(index) + "_"
 		raw := firstNonEmptyString(metadata[prefix+"base64"], metadata[prefix+"data_url"])
 		if raw == "" {
 			continue

@@ -13,6 +13,7 @@ import (
 
 	appcrypto "evaluating_platform/internal/crypto"
 	"evaluating_platform/internal/model"
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 type ResourceRecord = model.MaclawResourceRecord
@@ -94,7 +95,7 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 		Summary:             strings.TrimSpace(in.Summary),
 		EncryptedPayload:    encrypted,
 		PayloadKeyID:        keyID,
-		Metadata:            sanitizeMetadata(in.Metadata),
+		Metadata:            redteam.SanitizeMetadata(in.Metadata),
 	}
 	saved, err := s.store.UpsertResource(ctx, record)
 	if err != nil {
@@ -174,7 +175,7 @@ func (s *ResourceStoreService) materialize(ctx context.Context, userID uuid.UUID
 		Kind:       EvaluationResourceKind(record.Kind),
 		Version:    normalizeVersion(record.Version),
 		Payload:    string(plain),
-		Metadata:   sanitizeMetadata(record.Metadata),
+		Metadata:   redteam.SanitizeMetadata(record.Metadata),
 	}, summary, nil
 }
 
@@ -238,7 +239,7 @@ func resourceSummaryFromRecord(record *ResourceRecord) *EvaluationResourceSummar
 		AssessmentTypes: append([]string(nil), record.AssessmentTypes...),
 		Tags:            append([]string(nil), record.Tags...),
 		Summary:         record.Summary,
-		Metadata:        sanitizeMetadata(record.Metadata),
+		Metadata:        redteam.SanitizeMetadata(record.Metadata),
 		CreatedAt:       record.CreatedAt,
 		UpdatedAt:       record.UpdatedAt,
 	}
