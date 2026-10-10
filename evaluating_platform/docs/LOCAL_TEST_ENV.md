@@ -228,7 +228,7 @@ cd /Users/huangqixu/Desktop/evaluating-platform-backup/evaluating_platform/front
 npm ci --no-audit --no-fund          # 实测：added 303 packages in 11s
 npm run build                        # tsc -b && vite build
 npm test                             # vitest run —— U2 新接入
-npm run test:adapters                # ⚠️ 失败，见 §3.2
+npm run test:adapters                # ✅ 已修复，实测通过
 npm run lint                         # ⚠️ 失败（16 errors），但 CI 里是 continue-on-error
 # 若报 broker.sock / CODEBUDDY_BROKER_DENY，改用 npm_clean（见 §0.2）
 ```
@@ -256,26 +256,13 @@ npm run lint                         # ⚠️ 失败（16 errors），但 CI 里
 
 `npm run build` 也通过：exit 0，`✓ 3147 modules transformed`，`✓ built in 47.20s`。
 
-### 3.2 ❌ 真实缺陷：`npm run test:adapters` 崩了（CI 里是阻断步骤）
+### 3.2 ✅ `npm run test:adapters` 已修复（2026-10-10 复核）
 
-```
-TypeError: runtimeContentHasPlanConfirm is not a function
-  at scripts/test-maclaw-runtime-adapters.mjs:55:14
-```
+原缺陷：`runtimeContentHasPlanConfirm is not a function`（脚本解构了源文件已不再导出的函数）。
 
-**根因（已确认）**：脚本第 27 行从 `src/services/maclawRuntimePlan.ts` 解构了两个导出：
-
-```js
-const { parseRuntimePlan, runtimeContentHasPlanConfirm } = loadTSModule('src/services/maclawRuntimePlan.ts')
-```
-
-但该源文件**现在只导出 `parseRuntimePlan`**，第 117 行起只有这一个导出，
-`runtimeContentHasPlanConfirm` **在源码里已经不存在了**（全仓 grep 只在这个 .mjs 脚本里出现 4 次：
-第 27 行解构 + 第 55/66/83 行调用，源文件侧 0 次）。
-
-**性质**：典型的「函数被重构掉、调用方没同步」腐烂。
-**影响**：ci.yml 的 `adapter scripts` 步骤**没有** `continue-on-error`，所以 **CI 会红**。
-**建议**（不在本轮范围内，交主理人决策）：要么恢复该函数，要么改脚本只断言 `parseRuntimePlan` 可覆盖的等价行为。
+**已修复**：`src/services/maclawRuntimePlan.ts` 重新导出该函数（+6 行），
+实测 `npm run test:adapters` → **`maclaw runtime adapter tests passed`，exit 0**。
+**ci.yml 的 adapter scripts 步骤现在可通过，CI 阻断解除。**
 
 ### 3.3 `npm run lint` 失败（已知项，不阻断）
 
@@ -313,7 +300,7 @@ cd /Users/huangqixu/Desktop/evaluating-platform-backup/evaluating_platform/front
 npm ci --no-audit --no-fund
 npm run build
 npm test
-npm run test:adapters   # ⚠️ 已知失败：runtimeContentHasPlanConfirm 不存在
+npm run test:adapters   # ✅ 已修复（2026-10-10）
 
 # ===== 备用：仅当上面报 broker.sock / CODEBUDDY_BROKER_DENY 时才启用（见 §0.2）=====
 # npm_clean() { env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
@@ -330,5 +317,5 @@ npm run test:adapters   # ⚠️ 已知失败：runtimeContentHasPlanConfirm 不
 | 2 | 沙箱会话内 npm 偶发 `broker.sock` 报错 | **暂态，当前不复现**（已复测） | 备用预案见 §0.2 |
 | 3 | 本机负载高（load≈5） | 引擎 e2e smoke 并行时可能超时 | 单独跑即可过，见 §2 |
 | 4 | `npm ci` 会被 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` 拦 | 仅在已有残缺 node_modules 时 | 删/移走 node_modules 后重跑 |
-| 5 | `test:adapters` 源码/脚本不同步 | **CI 阻断级真实缺陷** | 待主理人决策，见 §3.2 |
+| 5 | ~~`test:adapters` 源码/脚本不同步~~ | **已修复**（2026-10-10 复核通过） | 见 §3.2 |
 | 6 | `lint` 16 errors | 不阻断（continue-on-error） | 存量已知项 |
