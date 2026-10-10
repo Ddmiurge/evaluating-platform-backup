@@ -2,7 +2,8 @@ package handler
 
 // redteam_mcp_snapshot_test.go — U3 护栏：MCP 工具清单（tools/list）快照。
 //
-// 背景：U3 结构治理要把 internal/maclaw/redteam_tool_bridge.go（3042 行、115 个函数）
+// 背景：U3 结构治理要把 internal/maclaw 的红队桥（原redteam_tool_bridge.go，
+// 3042 行、115 个函数；Step 3 已改名为 redteam_bridge.go）
 // 拆成 internal/maclaw/redteam/ 子包。工具清单是 MaClaw 与平台之间的**对外契约**，
 // 拆包时最容易发生的无意识回归是「顺手把某个 description 改通顺」——
 // 编译器发现不了，现有的 redteam_mcp_test.go 也发现不了（它只做 strings.Contains

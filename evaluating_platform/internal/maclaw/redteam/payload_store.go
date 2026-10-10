@@ -3,12 +3,13 @@ package redteam
 // payload_store.go — 通用小工具与元数据脱敏。
 //
 // 这里没有任何红队业务语义：它是 handle 生成、载荷存取、metadata 脱敏
-// 三类底层操作。sanitizeMetadata / isUnsafeMetadataKey 是安全边界
+// 三类底层操作。SanitizeMetadata / isUnsafeMetadataKey 是安全边界
 // （防止 secret/token/payload/path 外泄到浏览器与报告），改动前请先读
-// redteam_tool_bridge_test.go:266 TestRedteamToolBridgeReturnsHandlesWithoutSensitiveMetadata。
+// ../redteam_tool_bridge_test.go:267 TestRedteamToolBridgeReturnsHandlesWithoutSensitiveMetadata。
 //
-// 本文件由 U3 Step 2 从 redteam_tool_bridge.go 机械剪出，仅重命名导出面
-// （safeErrorSummary -> SafeErrorSummary），逻辑零改动。
+// 本文件由 U3 Step 2 从 redteam_tool_bridge.go 机械剪出（Step 3 该文件已改名为
+// redteam_bridge.go），仅重命名导出面（safeErrorSummary -> SafeErrorSummary 等），
+// 逻辑零改动。
 
 import (
 	"encoding/json"
