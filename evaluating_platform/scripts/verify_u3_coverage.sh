@@ -125,6 +125,31 @@ main() {
   [[ -f "${BASELINE_PROFILE}" ]] || \
     die "基线不存在：${BASELINE_PROFILE}（先跑 --gen-baseline）"
 
+  # ---------------------------------------------------------------------
+  # 前置断言：基线必须能被标准工具 go tool cover 直接读取。
+  #
+  # 为什么必须加这条（血的教训）：
+  #   本脚本的核心判定按「语句块统计」自行解析 profile，不依赖 go tool cover
+  #   去打开源文件。早期版本因此有盲区——若基线存档里的**文件名字段**是旧的
+  #   （例如Step 3 改名前的 redteam_tool_bridge.go），go tool cover 会报
+  #      cover: open .../redteam_tool_bridge.go: no such file or directory
+  #   而本脚本仍会一路 exit 0 报「通过」，因为块数口径完全没受影响。
+  #   也就是说：**存档已损坏，但验收脚本报绿** —— 这是最危险的一类假阴性。
+  #   该问题由u3-implementer 在 Step 6 前人工发现并修复（926 处旧文件名）。
+  #
+  # 现在把「可读性」作为前置门禁：坏存档必须在第一步就暴露，而不是靠人发现。
+  # ---------------------------------------------------------------------
+  info "前置检查｜基线可被 go tool cover 读取（存档完整性）"
+  local probe
+  if ! probe="$(run_go tool cover -func="${BASELINE_PROFILE}" 2>&1)"; then
+    printf '%s\n' "${probe}" >&2
+    die "基线存档无法被 go tool cover 解析（通常是文件名字段过期，见脚本头注释）。请用 --gen-baseline 重新生成。"
+  fi
+  if ! printf '%s\n' "${probe}" | grep -q '^total:'; then
+    die "基线可解析但无 total: 行（profile 格式异常）。请用 --gen-baseline 重新生成。"
+  fi
+  ok "基线存档可读且格式完整"
+
   printf '\n\033[1m=== U3 覆盖率零漂移验收 ===\033[0m\n'
   printf '基线 mode : %s\n' "$(profile_mode "${BASELINE_PROFILE}")"
 
