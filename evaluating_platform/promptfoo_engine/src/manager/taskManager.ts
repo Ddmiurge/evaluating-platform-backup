@@ -27,6 +27,17 @@ export interface TaskManagerOptions {
   workdirs: WorkdirManager;
   /** Execute one run. Resolves with a safe summary; throws on failure. */
   execute: (run: RunRecord, emit: (event: RunProgressEvent) => void) => Promise<void>;
+  /**
+   * U7 · optional terminal hook, awaited on **every** terminal path (success,
+   * failure and cancellation) after the workdir is gone.
+   *
+   * Exists so cleanup of state the library writes *outside* the workdir can be
+   * driven from the one place all three paths converge. A rejection here marks
+   * the run failed rather than being swallowed: leaving raw prompts on disk is
+   * precisely the silent-residue failure U6 was created to eliminate. The hook
+   * must not log payload content.
+   */
+  onTerminal?: (run: RunRecord) => Promise<void>;
 }
 
 interface QueuedItem {
@@ -41,6 +52,7 @@ export class TaskManager extends EventEmitter {
   private readonly workers: Array<Promise<void>> = [];
   private readonly workdirs: WorkdirManager;
   private readonly execute: TaskManagerOptions['execute'];
+  private readonly onTerminal: TaskManagerOptions['onTerminal'];
   private readonly maxQueueDepth: number;
   private shutdownRequested = false;
 
@@ -50,6 +62,7 @@ export class TaskManager extends EventEmitter {
     this.maxQueueDepth = opts.maxQueueDepth;
     this.workdirs = opts.workdirs;
     this.execute = opts.execute;
+    this.onTerminal = opts.onTerminal;
     for (let i = 0; i < opts.workerCount; i++) {
       this.workers.push(this.workerLoop(i));
     }
@@ -145,7 +158,14 @@ export class TaskManager extends EventEmitter {
     const emit = (event: RunProgressEvent): void => this.emitProgress(run, event);
     try {
       await this.execute(run, emit);
-      if (!TERMINAL_PHASES.has(run.status.phase)) {
+      // An aborted run must never be reported as succeeded, even when execute()
+      // returns normally instead of throwing: a runner that swallows the abort
+      // (or finishes at the same instant) would otherwise turn a cancellation
+      // into a green run. Cheap to check, and a false "succeeded" is the exact
+      // shape of silent failure this engine keeps working to eliminate.
+      if (run.controller.signal.aborted) {
+        this.terminate(run, 'canceled', 'canceled by user');
+      } else if (!TERMINAL_PHASES.has(run.status.phase)) {
         this.terminate(run, 'succeeded');
       }
     } catch (err) {
@@ -156,8 +176,37 @@ export class TaskManager extends EventEmitter {
         this.terminate(run, 'failed', code);
       }
     } finally {
-      await this.workdirs.cleanup(run.request.run_id).catch(() => undefined);
+      await this.cleanupTerminal(run);
       this.emit('run-terminal', run.status);
+    }
+  }
+
+  /**
+   * Terminal cleanup: workdir first, then the caller's hook.
+   *
+   * Workdir cleanup is best-effort (it is `rm -rf` on a path we created) while
+   * hook failures are *not* swallowed — a run that reports success while its
+   * raw prompts are still on disk is the exact failure shape U6 exists to
+   * prevent, so it is downgraded to `failed` with a readable code.
+   *
+   * Only a still-successful run is downgraded. A run that already failed or was
+   * canceled keeps its original phase and error code: the cleanup problem is
+   * additional context, not a replacement for the real cause, and overwriting a
+   * meaningful error code with a housekeeping one would hide it.
+   */
+  private async cleanupTerminal(run: RunRecord): Promise<void> {
+    await this.workdirs.cleanup(run.request.run_id).catch(() => undefined);
+    if (!this.onTerminal) return;
+    try {
+      await this.onTerminal(run);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      // Path/errno only — the hook is responsible for never putting payload
+      // content in the message it throws.
+      console.error(`[engine] terminal cleanup failed for run ${run.request.run_id}: ${detail}`);
+      if (run.status.phase === 'succeeded') {
+        this.terminate(run, 'failed', 'terminal_cleanup_failed');
+      }
     }
   }
 

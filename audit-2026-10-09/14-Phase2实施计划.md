@@ -470,6 +470,30 @@ U1 建的是 `internal/maclaw/gen_frontend_options_test.go` 的**双向 id 集�
 | `injectVar` 在 `EngineRunRequest` | 成立，但 `RedteamConfigSchema.injectVar` 描述称"默认从 prompt 模板推断" | 显式下发，默认 `prompt`（与引擎单变量模板一致） |
 | 策略映射表由 U6 交付、U7 消费，**不另建一份** | **部分不成立**：U6 表的 `remote_gated_strategies` 只有 4 条（它只回答"是否需远程"），且平台 8 个自造维度 U6 根本没有记录 | 另建 `nativeStrategyMap.ts`（回答"原生 id 是什么/能否本地生成"）。**两表交集为空**并有断言钉死：4 个远程门控项**不得**出现在原生映射里 |
 
+> **关于最后一行 —— 这不是第二份映射。** 两表回答的是**不同问题**：
+> U6 表 =「这个能力是否依赖远程生成」（门控判据）；`nativeStrategyMap.ts` =
+> 「平台 id 对应的 promptfoo 原生 id 是什么、能否本地生成」（词汇表）。
+> U6 表策略维度只有 4 条，因为它只登记被门控的那几个；平台另外 8 个自造维度
+> （`direct` / `role-play` / `encoding` / `multi-turn` / `assumed-knowledge` /
+> `few-shot` / `many-shot` / `translate`）与 `otherEncodings`，U6 从未记录过。
+> 为免后人误当成重复实现，`nativeRedteam.test.ts` 断言
+> **4 个远程门控项不得出现在原生映射中**（`bestOfN` / `likert` / `citation` /
+> `singleTurnComposite`），且原生表内唯一允许的一对多折叠是
+> `iterative` + `iterative:tree` → `jailbreak:tree`。
+
+> **⚠️ 沉淀一条判据：库入口与 CLI 入口消费的字段集不同；配置类字段必须实测是否被
+> 消费，不能照文档或类型定义假设。**
+> `applicationDefinition` 在 promptfoo 的类型定义与文档里都存在，但**只在 CLI
+> 路径（`dist/src/main.js`）被读取**；库入口 `redteam.run` 走的
+> `RedteamConfigSchema` **没有声明这个键**，而 zod 对未知键的默认行为是
+> **静默剥离** —— 不报错、不警告，字段就消失了。
+> **危害等级比崩溃更高**：崩溃会被发现；静默剥离会让"我明明配了应用描述"变成
+> "攻击载荷依然泛化"，而排查方向会错误地指向模型能力，浪费大量时间。
+> **做法**：接入任何第三方库的**配置类**字段前，先在**实际调用的那个入口**上验证
+> 该字段真的被消费 —— 读该入口的 schema，并跑一次真实调用观察行为。
+> 同类判据见 §3.4.1（远程依赖清单：唯一可靠法是解析具名 import 再取值，
+> 禁止按字面量或「形状」推断）。
+
 #### 4.8.2 实测发现的**第三个静默失败**（U6 形态在上层复现）
 
 只填 `target` 不填 `provider` 时，promptfoo **不报错**：
@@ -504,6 +528,19 @@ make business commitments or agree to contractual terms.
 
 该文本由 `graders-*.js` 的 `ContractPlugin.getTemplate()` 按 `plugins:[{id:'contracts'}]` 选出，平台侧不含任何对应字符串。
 
+**验证边界（如实登记，勿夸大）**：
+
+| 已验证 | 未验证 |
+|---|---|
+| 生成提示词的**文本作者身份**是 promptfoo（实体抽取 + 插件模板，平台侧无对应字符串） | **真实模型下的生成质量**（攻击载荷是否真的有用、是否有针对性） |
+| `target` / `provider` **两插槽独立生效**（缺任一 → 明确失败，不静默走另一条路） | **多轮策略**（`crescendo` / `goat` / `jailbreak:tree` 等）是否真能跑通 |
+| **无出网**（厂商域名拒绝 + fail-closed 断言 + 本地端点观测） | **29 个本地可生成插件的逐个实测覆盖** |
+| Plan A 回退、U6 护栏、清理钩子（三路径端到端） | §4.4 真实环境能力矩阵（本机无 Docker、无模型端点） |
+
+验证用的是**假 LLM 端点**：能证明「谁在写提示词」「插槽怎么解析」「数据去哪了」，
+**不能**证明「生成的攻击好不好使」。§4.4 能力矩阵因此仍待补齐 —— 按其自身纪律，
+必须在 U7 验收前完成。
+
 #### 4.8.4 实测结论
 
 - **回退**：开关关闭 → `generation_failed / attack generation failed: fetch failed`（Plan A 自己的错误码），全程未触达 `runRedteam`
@@ -511,14 +548,61 @@ make business commitments or agree to contractual terms.
 - **覆盖率**：`3018` 块（U6 收尾 `2981`，**+37**）；语句块 `4262`（`4223`）
 - **凭据**：新模块零日志语句；含密钥的配置文档以 `0600` 写入 **per-run workdir**（终态 `rm -rf`），**不用 `liveRedteamConfig`**（它会 `yaml.dump` 进共享 `os.tmpdir()`）；三项新字段不进 `engine_runs`
 
-#### 4.8.5 ⚠️ 未解决项：Plan C 会写 promptfoo 的 SQLite（需在开启开关前决策）
+#### 4.8.5 ✅ SQLite 落盘：已裁定为**方案 A**（容器内接受 + run 后显式清理）
 
-Plan A 明确承诺「不写 promptfoo 的 SQLite」（`redteamRun.ts` 头注释）。**Plan C 无法遵守**：`doRedteamRun()` 内部硬编码 `doEval({ cache: true, write: true })`，而 redteam 判定只在这条 eval 里接线。
+**已确认的事实**（主理人独立核实 + 本批实测，两边一致）：
+`doRedteamRun()` 内部 `doEval({ ...evalOptions, config:[redteamPath], cache:true, write:true })`，
+`write: true` 与 `cache: true` **硬编码，无参数可关**。故 Plan C 必然落盘，
+Plan A「不写 promptfoo 数据库」的承诺在 Plan C 下**无法遵守**。
 
-- **落点**：`getDbPath()` = `PROMPTFOO_CONFIG_DIR ?? '~/.promptfoo'` + `promptfoo.db` —— **在 per-run workdir 之外**，且 `WorkdirManager.cleanup()` **不会**清理它。
-- **为何本批不自行修**：唯一可用杠杆是 `PROMPTFOO_CONFIG_DIR`，而 promptfoo 只在模块加载时读一次进 module-global。指向 workdir 需在 run 内改 `process.env`，而 `TaskManager` 在单进程内并发多个 worker —— run A 的结果可能落进 run B 的目录。要安全就得串行化所有 run，那是比本批大得多的行为变更。
-- **当前影响面**：文件在引擎容器内、**不涉及出网**、开关默认关闭。**一旦在生产打开开关即成为真实的数据留存问题。**
-- **建议**：开开关前先定方案（二选一：串行化 + workdir 隔离 `PROMPTFOO_CONFIG_DIR`；或接受并在容器销毁时清理该卷）。代码内已在 `nativeRedteam.ts` 头注释显著标注。
+**裁定（2026-10-10）**：采纳**方案 A**。安全契约边界同时补齐 ——
+`AGENTS.md:23` 禁止的是「回浏览器」与「进报告/证据」，**未禁止引擎侧本地文件**；
+本裁定明确：引擎侧可写本地文件，但**必须在 run 终态显式清理**。
+
+**落地**：`promptfoo_engine/src/runner/promptfooStateCleanup.ts` +
+`TaskManager` 新增 `onTerminal` 钩子（挂在 `runSafe` 的 `finally` —— 三条终态
+路径唯一汇合处）。清理目标仅限本次 run 产生的产物：`promptfoo.db` /
+`promptfoo.db-wal` / `promptfoo.db-shm`（WAL 兄弟文件，因
+`configureConnection()` 执行 `PRAGMA journal_mode = WAL`）/ `evalLastWritten` /
+`cache/`。**刻意不删 `auth.json` 与用户自写的 `promptfoo.yaml`** —— 那不是我们
+建的，删掉是 nasty surprise。
+
+**清理失败的处理**：抛 `PromptfooStateCleanupError`（只含路径与 errno，
+**绝不含 payload**）；`runSafe` 把**仍处于 succeeded 的 run 降级为 `failed` +
+`terminal_cleanup_failed`**，绝不静默留残留。但**已失败/已中止的 run 保留原
+错误码** —— 清理问题是附加信息，用它覆盖真实原因（如
+`native_generation_no_test_cases`）等于把问题藏起来。
+
+**A-1 为什么不能把落盘限定在 per-run 目录**（实测，非推断）：两处 module-level
+状态决定落盘位置，都改不动：
+1. `getConfigDirectoryPath()` = `environmentConfigDirectoryPath || ~/.promptfoo`，
+   而 `environmentConfigDirectoryPath` 是**模块级 `let`**，import 时取一次
+   `PROMPTFOO_CONFIG_DIR`；
+2. `getDb()` **记忆化连接**（`if (dbInstance) return dbInstance;`），首次调用即把
+   文件固定到进程终结。
+
+且 `TaskManager` 单进程并发多 worker，运行期改 `process.env` 会让 run A 的产物
+落进 run B 的目录；串行化所有 run 是比本清理大得多的行为变更。
+**故明确不改 `PROMPTFOO_CONFIG_DIR`。**
+这两条不是读代码得出的 —— 是本批端到端验证时**自己踩到**的：ESM 把 import
+提升到赋值之前，`PROMPTFOO_CONFIG_DIR` 在 promptfoo 捕获之后才被设置，产物落到了
+真实的 `~/.promptfoo`。该误操作已清理（`-wal` / `-shm` 已删）。
+
+**端到端实测**（真跑 promptfoo 原生生成，三条路径各一次）：
+
+| 路径 | phase / error_code | 清理前有残留 | 清理后 | 剩余产物 |
+|---|---|---|---|---|
+| 成功 | `failed` / `engine_error`（strict 拦下 0 用例） | **true** | **false** | `[]` |
+| 失败 | `failed` / `forced_failure` | **true** | **false** | `[]` |
+| 中止 | `canceled` / `canceled by user` | **true** | **false** | `[]` |
+
+「**清理前有残留 = true**」是关键：证明 promptfoo **真的写了**，清理不是空转。
+
+**顺带修掉的一个真 bug**：`runSafe` 原先只在 `execute()` **抛错**时才把中止的
+run 标为 `canceled`；若 `execute()` 在 abort 后**正常返回**（runner 吞掉 abort，
+或恰好同时完成），会被标成 **succeeded** —— 一次被取消的运行显示为绿色成功。
+已加 `if (run.controller.signal.aborted)` 前置判断，并做了反证（去掉该判断 →
+`expected 'succeeded' to be 'canceled'`，已还原）。
 
 ---
 

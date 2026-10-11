@@ -20,15 +20,27 @@
 # ── 口径对照（务必同口径比）────────────────────────────────────────
 #   基线（u3_baseline_coverage_maclaw.txt）= go test ./internal/maclaw/
 #       -coverpkg=./internal/maclaw/... -covermode=set
-#   → 含父包 + 子包 4038 个语句块，其中子包 207 块
+#   → 含父包 + 子包 4262 个语句块，其中子包 207 块
 #
 #   口径 A 父包 vs 父包    回归判定依据（子包 0% 不影响它）
 #   口径 B -coverpkg 全量  子包真实覆盖率，证明「间接覆盖成立」
 #   口径 C per-package 全量  仅参考，禁止用于回归判定（见陷阱 1）
 #
+# ── 基线何时重建（U7 裁定）────────────────────────────────────────
+#   U3 的「零漂移」验收断言的是**纯重构不改语句总数**。该使命**已完成**：
+#   结论已由 `audit-2026-10-09/12-U3独立验收报告.md`、
+#   `13-U3验收报告.md` 两份文档 + CI 快照护栏固化，不再依赖本文件。
+#   U4~U7 都在真实增删代码（加字段、加模块），语句总数必然增长 ——
+#   4038 → 4262 是**正常演进**，不是口径被改坏。
+#   故基线随每次结构性变更重建，**同时必须同步下面的
+#   KNOWN_BASELINE_BLOCKS / KNOWN_BASELINE_COVERED 两个常数**，
+#   否则脚本会因「语句块数与已知正确值不符」永久拒绝出结论（U4~U7 期间
+#   该守卫一直误报，已作为遗留登记四个批次）。
+#   重建命令：./scripts/verify_u3_coverage.sh --gen-baseline
+#
 # 用法：
 #   ./scripts/verify_u3_coverage.sh                  # 对比基线 vs 当前
-#   ./scripts/verify_u3_coverage.sh --gen-baseline   # 重新生成基线（行号稳定后用）
+#   ./scripts/verify_u3_coverage.sh --gen-baseline   # 重新生成基线 + 下方两个常数
 #
 # 可覆盖的环境变量：
 #   GO_BIN=/path/to/go   指定未加入 PATH 的 go（本机为 /Users/<user>/sdk/go/bin/go）
@@ -91,9 +103,12 @@ cover_ratio() {
 # 用来兜住上面那个「首行被计入」的坑 —— 若有人在手工复算或改脚本时误改了口径，
 # 这里会立刻报出来，而不是静默产出 0.01pp 的假漂移。
 # 用法：assert_known_baseline <profile 文件>
+# 这两个常数与基线 profile **必须成对更新**（U7 裁定，见脚本头「基线何时重建」）：
+# 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
+# 永久拒绝出结论。当前值对应 U7 收尾（4262 块 / 3019 覆盖）。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4038}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-2794}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4262}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3019}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

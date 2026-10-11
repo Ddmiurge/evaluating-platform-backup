@@ -83,3 +83,70 @@ U7 收尾: 3019 / 4262        → +38 块 (只升不降)
 含密钥的配置文档以 mode 0600 写入 per-run workdir (终态 taskManager rm -rf)
   → 刻意不用 liveRedteamConfig (它会把 yaml.dump 写进共享 os.tmpdir())
 三项新字段不进入 engine_runs 落库
+
+================================================================
+U7 收尾（SQLite 方案 A + 覆盖率基线重建）—— 2026-10-11
+================================================================
+
+== A-1: per-run 落盘是否可行？—— 结论：不可行 ==
+落盘位置由两处 module-level 状态决定，都改不动：
+  1) getConfigDirectoryPath() = environmentConfigDirectoryPath || ~/.promptfoo
+     environmentConfigDirectoryPath 是模块级 let，import 时取一次 PROMPTFOO_CONFIG_DIR
+     (logger-*.js:152 `let environmentConfigDirectoryPath = process.env.PROMPTFOO_CONFIG_DIR;`)
+  2) getDb() 记忆化连接 (tables-*.js:3819 `if (dbInstance) return dbInstance;`)
+     首次调用即把文件固定到进程终结
+且无 XDG_CONFIG_HOME / PROMPTFOO_DATA_DIR 等替代env（已 grep 确认）。
+=> 并发 worker 下改 process.env 会让 run A 落进 run B 目录；串行化属更大行为变更。
+=> 按裁定：不改 PROMPTFOO_CONFIG_DIR，改为显式清理（A-2）。
+
+【这不是读代码得出的，是本批自己踩到的】
+第一版端到端脚本用 ESM 静态 import 引入 promptfoo，再给 process.env 赋值 ——
+ESM 把 import 提升到赋值之前，于是 PROMPTFOO_CONFIG_DIR 在 promptfoo 捕获之后
+才被设置，产物落到了真实的 ~/.promptfoo（residue 读成 false 的假阴性）。
+改为「先赋值 + 动态 import」后才拿到可信读数。误操作已清理（-wal/-shm 已删）。
+
+== A-2: 清理钩子三路径端到端（真跑 promptfoo 原生生成）==
+落地: src/runner/promptfooStateCleanup.ts + TaskManager.onTerminal
+      （挂在 runSafe 的 finally —— 三条终态路径唯一汇合处）
+清理目标: promptfoo.db / -wal / -shm / evalLastWritten / cache/
+刻意不删: auth.json、用户自写的 promptfoo.yaml（不是我们建的）
+
+路径            phase / error_code                     清理前有残留  清理后  剩余产物
+成功            failed / engine_error(strict 拦 0 用例)   true        false   []
+失败            failed / forced_failure                 true        false   []
+中止            canceled / canceled by user            true        false   []
+（「清理前有残留=true」是关键：证明 promptfoo 真的写了，清理不是空转）
+
+清理失败 -> PromptfooStateCleanupError（只含路径与 errno，绝不含 payload）
+  * 仍 succeeded 的 run -> 降级 failed + terminal_cleanup_failed（不静默留残留）
+  * 已 failed/canceled  -> 保留原错误码（别用清理问题覆盖真实原因）
+反证：hook 去掉 -> expected 'succeeded' to be 'canceled'；已还原
+
+== 顺带修掉的真 bug ==
+runSafe 原先只在 execute() 抛错时才把中止的 run 标 canceled；若 execute() 在
+abort 后正常返回（runner 吞掉 abort / 恰好同时完成），会被标 succeeded ——
+被取消的运行显示为绿色成功。已加 signal.aborted 前置判断 + 反证。
+
+== ③ 覆盖率基线重建：已执行 ==
+理由: U3 的「零漂移」断言的是纯重构不改语句总数，该使命已完成 ——
+      结论已由 12-U3独立验收报告.md / 13-U3验收报告.md 两份文档 + CI 快照护栏固化。
+      U4~U7 真实增删代码，4038 -> 4262 是正常演进，不是口径被改坏。
+旧: 8eb11aadf6ff6bbb0e1c399821dc7fe5  4039 行  (2794/4038)
+新: 451fdfc8282864248024f86398e383fe  4263 行  (3019/4262)
+注意: 只重建 profile 不够 —— 脚本里硬编码的 KNOWN_BASELINE_BLOCKS=4038 /
+      KNOWN_BASELINE_COVERED=2794 也必须同步，否则脚本会永久拒绝出结论
+      （这正是 U4~U7 连续四个批次登记同一条遗留的根因）。
+结果: 脚本首次 exit 0（自 U4 以来第一次）：
+      [ OK ] 被覆盖语句块数零漂移：基线 3019 -> 当前 3019
+      [ OK ] 口径一致：两侧语句块总数均为 4262
+      [ OK ] 覆盖率零漂移：|0.00|pp <= 阈值 0.5pp（70.84% -> 70.84%）
+
+== 四条命令自验 ==
+go build ./internal/... ./cmd/... ./pkg/...          exit 0
+go vet   ./internal/... ./cmd/... ./pkg/...          exit 0
+go test  ./internal/... ./cmd/... ./pkg/...          全绿
+go test ./internal/api/handler -run TestRedteamMCPTool  ok（MCP 快照仍一致）
+引擎 tsc --noEmit                                   OK
+引擎 vitest                              12 files / 148 tests passed（本批前 131）
+前端 npm run build                                    built
+前端 npm test                            6 files / 11 tests passed

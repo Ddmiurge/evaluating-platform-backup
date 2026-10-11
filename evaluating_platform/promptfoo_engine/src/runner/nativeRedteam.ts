@@ -53,30 +53,36 @@
  *    logs a warning unless `strict` is set. We always set `strict: true`, which
  *    turns it into a thrown `PartialGenerationError`.
  *
- * # ⚠️ KNOWN, DELIBERATE, UNRESOLVED: Plan C persists to promptfoo's SQLite
+ * # ✅ SQLite 落盘裁定（2026-10-10，方案 A）
  *
  * Plan A is explicit that it keeps everything off promptfoo's database ("NO
  * writeLatestResults and NO redteam config"). Plan C cannot honour that:
  * `doRedteamRun()` calls `doEval({... cache: true, write: true})` with both
- * values **hardcoded**, and redteam grading is only wired through that eval. So
- * raw prompts and target responses are persisted.
+ * values **hardcoded** — there is no option to turn it off. So raw prompts and
+ * target responses are persisted to `promptfoo.db`.
  *
- * Where: `getDbPath()` resolves to
- * `path.resolve(process.env.PROMPTFOO_CONFIG_DIR ?? '~/.promptfoo', 'promptfoo.db')`
- * — i.e. **outside** the per-run workdir this module writes its config into, and
- * not removed by `WorkdirManager.cleanup()`.
+ * **裁定：方案 A —— 容器内接受 + run 后显式清理。** 落地为
+ * `promptfooStateCleanup.ts` + `TaskManager` 的 `onTerminal` 钩子，覆盖
+ * 成功 / 失败 / 中止三条路径，清理失败会把 run 降级为 `failed`
+ * （`terminal_cleanup_failed`）而不是静默留残留。
  *
- * Why it is not fixed here: the only lever is `PROMPTFOO_CONFIG_DIR`, which
- * promptfoo reads once into a module-global. Pointing it at the per-run workdir
- * would mean mutating `process.env` from inside a run, and TaskManager runs
- * several workers concurrently in one process — so run A could land its results
- * in run B's directory. Serialising all runs to make that safe would be a much
- * larger behavioural change than this batch should make unilaterally.
+ * **为什么不把落盘限定在 per-run 目录**（A-1 的实测结论）：promptfoo 的落盘
+ * 位置由两处 module-level 状态决定，改不动 ——
+ *  1. `getConfigDirectoryPath()` 返回 `environmentConfigDirectoryPath || ~/.promptfoo`，
+ *     而 `environmentConfigDirectoryPath` 是**模块级 `let`**，在 import 时从
+ *     `PROMPTFOO_CONFIG_DIR` 取一次；
+ *  2. `getDb()` **记忆化连接**（`if (dbInstance) return dbInstance;`），首次调用
+ *     即把文件固定到进程终结。
+ * 且 `TaskManager` 在单进程内并发多个 worker，运行期改 `process.env` 会让
+ * run A 的结果落进 run B 的目录。要安全就得串行化所有 run —— 那是比本清理
+ * 大得多的行为变更。**故明确不改 `PROMPTFOO_CONFIG_DIR`。**
+ * （这两个事实不是读代码得出的，是本批端到端验证时**自己踩到**的：ESM 会把
+ * import 提升到赋值之前，导致 `PROMPTFOO_CONFIG_DIR` 在 promptfoo 捕获之后才
+ * 被设置，于是产物落到了真实的 `~/.promptfoo`。）
  *
- * Blast radius today is bounded: the file lives inside the engine container, no
- * network egress is involved, and the switch is off by default. It becomes a real
- * data-retention question the moment native generation is switched on in
- * production. **Flagged for an explicit decision before enabling the switch.**
+ * **安全契约边界澄清**：`AGENTS.md:23` 禁止的是「回浏览器」与「进报告/证据」，
+ * **未禁止引擎侧本地文件**；本裁定补齐该边界 —— 引擎侧可写本地文件，但必须在
+ * run 终态显式清理。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';

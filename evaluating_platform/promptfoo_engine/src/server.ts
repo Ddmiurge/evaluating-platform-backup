@@ -13,6 +13,7 @@ import { TaskManager } from './manager/taskManager.js';
 import { WorkdirManager } from './manager/workdir.js';
 import { createRunsRouter } from './routes/runs.js';
 import { executeRedteamRun } from './runner/redteamRun.js';
+import { cleanupPromptfooRunArtifacts } from './runner/promptfooStateCleanup.js';
 import { version } from './version.js';
 
 async function main(): Promise<void> {
@@ -35,6 +36,18 @@ async function main(): Promise<void> {
       });
       run.status.result = result;
     },
+    // U7 · Plan C makes promptfoo persist the run to its own SQLite database —
+    // `doRedteamRun()` hardcodes `doEval({ write: true })`, so it cannot be
+    // turned off. The destination is a module-level decision inside promptfoo
+    // (see promptfooStateCleanup.ts for why it cannot be confined per run), so
+    // the artifacts are removed here instead, on every terminal path.
+    //
+    // Only wired when the native path is selected: Plan A keeps its original
+    // promise of writing nothing, and deleting a developer's `~/.promptfoo`
+    // state that this service never created would be wrong.
+    ...(env.nativeGeneration
+      ? { onTerminal: async (): Promise<void> => void (await cleanupPromptfooRunArtifacts()) }
+      : {}),
   });
 
   const app = express();
