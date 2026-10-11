@@ -208,6 +208,209 @@ if (neverGenerateRemote()) {
 | **回滚方式** | rubric 为数据而非代码，回滚 = 目录字段置空即回落 `SAFETY_RUBRIC` |
 | **DoD** | - [ ] `go build ./... && go test ./...` 全绿<br/>- [ ] `npm run typecheck && npm test`（引擎）全绿<br/>- [ ] 每个 `category` 至少 1 条族级 rubric + 高危插件单独覆盖<br/>- [ ] 未知插件 → 兜底 rubric，**不报错、不产出空判定**（反证测试已做）<br/>- [ ] `judge_source` 在报告可见<br/>- [ ] 覆盖率只升不降<br/>- [ ] 一个语义化 commit 已推送，CI 5 job 全绿 |
 
+**U8 落地结果见 §2.9**（分组实测枚举、显式兜底链、字段消费实测、双路径 E2E、两处失效登记）。
+
+### 2.9 U8 落地结果（2026-10-11 实测；与 §2 U8 有出入之处以本节为准）
+
+**分组依据 = 实测枚举，不是命名猜测。** 用临时探针遍历 `promptfooPluginCatalog`
+统计 `Category` 字段，得 **119 插件 / 12 个 category**（设计文档猜的「11~12 条」
+与实测值吻合）：
+
+| category | 插件数 | category | 插件数 |
+|---|---|---|---|
+| `industry` | 54 | `sensitive` | 3 |
+| `harmful` | 26 | `hallucination` | 3 |
+| `injection` | 9 | `brand` | 2 |
+| `privacy` | 6 | `off-topic` | 2 |
+| `dataset` | 6 | `security-exploit` | 2 |
+| `bias` | 5 | `jailbreak` | 1 |
+
+该分布被 `TestPromptfooCatalogCategoryTaxonomyIsMeasured` 钉死——新增/删除分类
+或改动某条目分类时 CI 先红，提示补族级 rubric。**为什么按 category 分族**：
+同category 内插件的判定尺度本就应相同（`ecommerce:pci-dss` 与 `medical:hipaa`
+同属 `industry`，都判「有没有泄露受监管数据」）；逐插件写只会得到 119 份互相
+漂移、无法 review 的文本。高危插件的差异用**显式覆盖**表达
+（`promptfooJudgeRubricOverrides`，现有 3 条：`prompt-injection` / `pii` /
+`hallucination`），收录标准是「族级判据会给出错误结论」，而非「危险就写」。
+
+**§2 ③「保留 SAFETY_RUBRIC 作为兜底」已改写。** 设计文档只写了「不报错、
+不产出空判定」，没写另一半——**可观测**。落地为三档，每一档都可数：
+
+| 档 | 条件 | `judge_source` |
+|---|---|---|
+| 插件覆盖 | 命中 `promptfooJudgeRubricOverrides` | `plugin:<id>` |
+| 族级 | 命中 `promptfooCategoryJudgeRubrics` | `category:<key>` |
+| **显式兜底** | 目录不认识的 id / 未映射分类 | `fallback:unmapped` |
+| **上游自带** | 平台标准注入不了（见 §2.9.4 ①） | `promptfoo:<id>` |
+
+**第4 档与第3 档必须分开**：兜底档是「平台没有对应标准」，上游自带档是「平台**有**标准、
+但上游缺陷导致注入不了」。成因不同 → 排查方向不同 → 措辞不能混。若让 `policy` 继续显示
+`category:industry`（与 `contracts` 完全同形），用户会以为平台族标准生效了—— 那是关于
+**评分基础**的不实陈述，正是本项目最忌讳的「口径混读」。
+
+**第 3 档是例外路径，不是常态（正当性依据）**：目录里每个 category 都有族级 rubric，
+由 `TestEveryCatalogCategoryHasJudgeRubric` 断言；且实测**目录内 119 个插件落兜底数
+= 0**（`TestPromptfooEngineCatalogCarriesJudgeRubricForEveryPlugin` 把「落兜底数 > 0」
+直接判为失败并提示「这是缺口而非合法降级」）。**所以正常路径不该出现第 3 档**，它只是
+给「目录新增条目忘写 rubric」「运行时 id 不在目录」留的显式出口。读到这里若发现报告里
+出现 `fallback:unmapped`，应当作**待修的缺口**处理，而不是「设计如此」。
+
+兜底档**不是**旧的通用 `SAFETY_RUBRIC`：它是独立命名、正文自报「未匹配到插件族标准」的
+`judgeRubricUnmapped`，每次使用都计入 `SafeRunResult.judge_sources`（带
+`is_fallback: true`）、落到每个插件条目的 `judge_source`、再经报告 metadata 的
+`judge_source` / `judge_sources` 暴露，并驱动报告卡 ⚠️ 提示与 PDF 页脚降级警告。
+**用了兜底的 run 一定看得见**——这正是「不静默」的含义。
+
+**为什么仍不 fail-closed**：U2 已定「目录不认识的 id 一律如实报 other/medium，
+绝不从 id 正则猜」。改成 fail-closed 会让一个未知 id 直接 abort 整次评测——
+把「口径降级」变成「评测不可用」，代价更大且与 U2 冲突。防悄悄降级靠**源头
+断言**：`TestEveryCatalogCategoryHasJudgeRubric` 要求目录里出现的每个 category
+都有族级 rubric，故第3 档在正常路径上**不应触发**，它只是给「目录新增条目忘写
+rubric」「运行时 id 不在目录」留的显式出口。
+
+#### 2.9.1 「哪个字段真的被 promptfoo 消费」——实测，不是照文档
+
+按 §4.8.1 的判据，先在**实际调用的入口**上验证。起本地假 LLM 记录每个请求体，
+真跑 `promptfoo.redteam.run()`：
+
+| 字段 | schema 是否声明 | 实测 |
+|---|---|---|
+| `config.graderGuidance` | ✅ `PluginConfigSchema.graderGuidance` | **CONSUMED**（出现在 grading prompt 里） |
+| `config.judgeRubric` | ❌ 未声明 | **ABSENT**（zod 静默剥离） |
+| `config.rubric` | ❌ 两个 schema 均未声明 | **ABSENT**（zod 静默剥离） |
+
+消费链：`PluginConfigSchema.graderGuidance` → `metadata.pluginConfig` →
+`RedteamGraderBase.getResult` 拼进 rubric（`tables-*.js:2518` /
+`graders-*.js:2958`）。**U7 那条「必须实测」的判据又一次生效**：直觉上该叫
+`rubric` 的字段，恰恰是被静默剥离的那个。
+
+#### 2.9.2 两条路径的判定都按插件走（E2E 实测输出）
+
+`promptfoo_engine/tests/u8BothPaths.e2e.test.ts` 用假 target + 假生成/判定 LLM，
+真调 Plan A 的 `executePlanARedteamRun` 与 `promptfoo.redteam.run()`，从
+**grading 请求体**里数两条 marker rubric 各自出现几次：
+
+```
+[[U8 PROOF PlanA]] grading calls=2 | with RUBRIC_INJECTION=1 | with RUBRIC_HARMFUL=1
+[[U8 PROOF PlanC]] grading calls=2 | with RUBRIC_INJECTION=1 | with RUBRIC_HARMFUL=1
+```
+
+即：**两条路径各 2 次判定，两个不同族的插件各拿到自己那条 rubric**，不是共用一条。
+
+> **Plan C 与 Plan A 的语义差异（如实登记，不含糊）**：Plan A 的 rubric **就是**
+> 判定标准（`llm-rubric` 的 value）；Plan C 里它以 `graderGuidance` 叠加在
+> promptfoo **自己的** per-plugin grader 之上，promptfoo 原文是「guidance 与通用
+> 评估标准冲突时**以 guidance 为准**」。这是有意保留的：DD-1=C 下生成范式与判定
+> 范式同源，平台提供的是「按什么尺度判」这层信息。
+
+#### 2.9.3 与 U4 `judge_track` 的关系（刻意不合并）
+
+`judge_track` = **谁判的**（platform|engine，U4）；`judge_source` =
+**按什么标准判**（U8）。两者正交：合并后「换了链路」会覆盖「换了标准」——
+从 engine切回 platform 时标准的变化被链路的同一个值吃掉，报告上看不出来。
+落库同样复用 `report.metadata`（不新增列、不新增 migration），非法值
+**fail-closed 拒绝写报告**（合法值集合 = 前缀 + 已知族名/插件名，故可校验形状）。
+
+#### 2.9.4 本批实测发现的失效（登记与处置）
+
+**① `policy` 不能注入 `graderGuidance`—— U8 会引入的真实崩溃**
+
+promptfoo `dist/src/index.js:16762`：
+```js
+if (p.config) { if (p.id === "policy") { const policy = p.config?.policy;
+  if (isValidPolicyObject(policy)) { … policy.text.trim() … }
+  else { const policyText = policy.trim()   // ← policy 是 undefined → TypeError
+```
+`else` 分支假定「只要 `config` 存在，`config.policy` 就必为字符串」。U8 注入
+`graderGuidance` 使 `p.config` 成立而 `config.policy` 不存在 → **在生成第一条用例之前
+就抛**。`policy` 是真实目录插件（`promptfoo_plugin_catalog.go:169`），生产可触达。
+
+- **为什么跳过后仍然安全**：`policy` 的 config 保持 promptfoo 期望的形状（无 config），
+  它自带的 PolicyPlugin grader 正常生效 —— **不是「无 rubric」，而是「rubric 由
+  promptfoo 提供而非平台提供」**。该判据已写成代码注释并用测试钉死。
+- **代价必须让用户看得见**：故新增 `promptfoo:<id>` 档（见 §2.9正文四档表）。
+  引擎侧 `nativeJudgeSourceOverrides` 产出该档，`NormalizeJudgeSource` 只对**确实
+  受影响**的插件开放它（否则任何插件都能声称「我这条是上游判的」来绕过平台标准
+  —— 防后门断言）。
+- **两处清单一致性**：Go `promptfooJudgeRubricInjectedByPromptfoo` 与引擎
+  `PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS` 各有一条同名断言钉住「恰为 policy 一个」。
+- **未验证的残余缺口（如实登记）**：`policy` 在 Plan C 上**无法在无头环境跑通**——
+  其代码路径调用 `promptForEmailUnverified()`，非 CI 下**阻塞在交互式 stdin**
+  （`? Work email:`），CI 下则产出 0 条用例。因此 E2E **无法**断言该档；改由确定性
+  单测覆盖。**未覆盖的缺口**是「`executeNativeRedteamRun` 若忘传 overrides」这一条接线，
+  已上报而非掩盖。彻底修需上游补丁或 promptfoo 升级。
+
+**② Plan C 的 `Eval.results` 运行时为空（U7 既有缺口 → U8 内必修）**
+
+`Eval` 用 `_resultsLoaded` 标志管理结果（`dist/src/index.js:11495`），`setResults()`
+**只在 server / CLI 路径被调用**（实测：`grep '\.setResults('` 仅命中
+`server/index.js:15354` 与 `main.js:7095`）。原生路径走 `doEval({ write: true })`，
+行已落库而内存数组仍空；`getResults()` → `loadResults()` → `EvalResult.findManyByEvalId()`
+把行读回来。
+
+实测（假本地 LLM，真跑 `redteam.run()`）：
+```
+eval.id                = eval-cSn-2026-10-11T06:36:38
+_resultsLoaded         = false
+results.length         = 0        ← U7 当时 reduce 的就是这个
+await getResults()     = 2        ← 真实行数
+rows with gradingResult.pass : 2/2     ← DB 往返不丢 reduce 需要的字段
+rows with metadata.pluginId  : 2/2
+```
+**「往返 SQLite 不丢字段」是实测的，不是假设的** —— 这类说法看上去安全，实际会静默丢字段。
+
+- **影响**：不修则 Plan C 对**所有插件**报 0 覆盖，U8 的 per-plugin rubric 在该路径上
+  一条都没真正跑到（只在 grading 请求体里验到），**U8 的价值归零**。
+- **修法**：`loadEvalResults()`（`nativeRedteam.ts`）—— 先用已填充的 `results`，
+  为空才 `await getResults()`；并**加第二道 fail-closed 闸**：rehydration 后仍 0 探针
+  即抛 `native_generation_no_test_cases`，而不是报一个 0 覆盖的绿色成功。
+- **反证**：摘掉 rehydration 后，用例以
+  `promptfoo native generation produced no gradable results after rehydration; refusing to report a zero-coverage success`
+  变红 —— 顺带证明第二道闸生效。
+
+**③ 一处设计文档表述已改写**：§2 U8 ③「保留 `SAFETY_RUBRIC` 作为兜底」——原设计只写了
+「不报错、不产出空判定」，没写另一半——**可观测**。已改为四档制（§2.9 正文）。
+
+---
+
+## 2.10 U8 沉淀的两条判据（超出本批，但适用于后续所有批次）
+
+### 2.10.1 护栏必须扎在「唯一出口」上，测试要打出口而不是打实现
+
+**来源**：U8 自己的反证第一次**失败**了。初版把 rubric 注入写在
+`executeNativeRedteamRun` 里，而测试直接调 `withPluginJudgeRubrics` / `buildNativeRedteamConfig`
+—— **删掉调用点的接线后 43 个测试全绿**。护栏存在、也有测试，但它守的不是真正接线的那一段。
+
+**判据**：
+1. 一段逻辑若有**唯一出口**（如「唯一产出配置文档的函数」「唯一写报告的入口」），
+   护栏必须扎在那个出口上，**而不是**扎在它调用的helper 上；
+2. 测试要**打穿出口**（经生产入口断言最终产物），不要绕过出口直接测实现；
+3. 「conditional 断言」是这条判据的常见破口：断言写在 `if (x !== undefined)` 里，
+   条件不成立时静默通过 —— **U8 第二次又踩了一次**（想用 E2E 断言 `policy`，但该插件
+   在无头环境产不出用例，于是断言被 `if` 跳过，反证照样全绿）。宁可**不写**这条断言
+   并把缺口登记上报，也不要留一个永不执行的假绿断言。
+
+**为什么这条值得单列**：本项目已多次出现同类形态 —— U3 的 `go fmt ./...`、
+§3.4.3 的类型注解解析陷阱、U6 的静默 0 覆盖。「全绿但护栏没接线」比「护栏不存在」
+更危险，因为它会让 review 误以为该处已被覆盖。
+
+### 2.10.2 配置类字段必须实测是否被消费（本批第三次验证）
+
+U7 已立此判据（§4.8.1），U8 在两个新字段上再次验证：
+
+| 字段 | 声明 | 实测 |
+|---|---|---|
+| `config.graderGuidance` | ✅ | **CONSUMED** |
+| `config.rubric` / `config.judgeRubric` | ❌ | **ABSENT**（zod 静默剥离） |
+
+**直觉上该叫 `rubric` 的字段，恰恰是被静默剥离的那个。** 命名合理 ≠ 会被消费。
+
+### 2.10.3 报告里的「判定基础」必须与实际一致，哪怕它不好看
+
+跳过注入保住了 run，但若报告仍按目录解析成族级档，就会声称一个**本次运行并未使用**的
+评分基础。凡是「实际用了 A、报告说成 B」的地方，A 都必须单独成档可见 —— 即使 A 是
+上游的、即使这让报告看起来更复杂。**复杂度是诚实的价格**。
+
 ---
 
 ### U9 · Agent 多轮（Dify + `conversation_id`）

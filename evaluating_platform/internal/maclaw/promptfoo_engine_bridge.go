@@ -485,6 +485,9 @@ func EngineSafeResultFindings(result *EngineSafeResult) []EvaluationReportFindin
 				"probes":         redteam.IntString(stat.Probes),
 				"attack_success": redteam.IntString(stat.AttackSuccess),
 				"success_rate":   fmt.Sprintf("%.2f", stat.SuccessRate),
+				// U8：这条 finding 的判定标准。逐插件带上，才看得出同一份报告里
+				// 不同插件是按不同尺度判的（U4 的 judge_track 回答不了这个问题）。
+				RedteamJudgeSourceMetadataKey: stat.JudgeSource,
 			},
 		})
 	}
@@ -510,6 +513,19 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 		// 与平台 Judge 口径不可比，必须显式标注（DD-2=A）。
 		RedteamJudgeTrackMetadataKey: string(RedteamJudgeTrackEngine),
 	}
+	// U8：判定**标准**的溯源，与上面的 judge_track（判定链路）正交、互不覆盖。
+	// 单值键给「主要按哪档判」，计数键给「有没有哪部分其实没标准」——
+	// 只有单值键时，99 条按族判 + 1 条落兜底会显示成「按族判」，退化被抹掉了。
+	summary := SummarizeEngineJudgeSources(result)
+	if summary.Distinct > 0 {
+		if histogram := formatJudgeSourceHistogram(summary); histogram != "" {
+			metadata[RedteamJudgeSourcesMetadataKey] = histogram
+		}
+		metadata[RedteamJudgeSourceMetadataKey] = dominantJudgeSource(summary)
+		if summary.HasFallback() {
+			metadata[redteamJudgeSourceFallbackMetadataKey] = RedteamJudgeSourceFallback
+		}
+	}
 	if result != nil {
 		metadata["probes"] = redteam.IntString(result.Totals.Probes)
 		metadata["attack_success"] = redteam.IntString(result.Totals.AttackSuccess)
@@ -517,6 +533,11 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 	}
 	return metadata
 }
+
+// redteamJudgeSourceFallbackMetadataKey 标记本次运行存在落兜底档的探测。
+// 单值键/计数键已经能推出这个结论，单列一个键是为了让渲染层不必解析
+// histogram 就能决定是否显示警告。
+const redteamJudgeSourceFallbackMetadataKey = "judge_source_fallback"
 
 func engineRunOutputMetadata(record *EngineRunRecord, in map[string]string) map[string]string {
 	metadata := redteam.SanitizeMetadata(in)

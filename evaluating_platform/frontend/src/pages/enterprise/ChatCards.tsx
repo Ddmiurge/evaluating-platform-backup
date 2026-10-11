@@ -4,7 +4,7 @@ import { ApiOutlined, BugOutlined, CheckCircleOutlined, DownloadOutlined, Export
 
 import type { ChatMessage, PlanInfo, WelcomeCapability } from '../../services/chat'
 import { reportService, triggerBrowserDownload } from '../../services/report'
-import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
+import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportJudgeSourceCaption, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
 import { parseChatMarkdown, type ChatMarkdownInline } from './chatMarkdown'
 
 const RISK_COLORS: Record<string, string> = {
@@ -260,6 +260,9 @@ function ReportCard({
   safetyScore: directSafetyScore,
   judgeTrack,
   judgeTrackCaption,
+  judgeSource,
+  judgeSourceCaption,
+  reportMetadata,
   downloadFormat = 'pdf',
   downloadable = true,
   isRunning,
@@ -294,6 +297,18 @@ function ReportCard({
   judgeTrack?: string
   /** U4 口径说明全文（由 reportJudgeTrackCaption 派生）；空串表示口径不明，不渲染该行。 */
   judgeTrackCaption?: string
+  /**
+   * U8 判定标准档位（plugin:<id> / category:<key> / fallback:unmapped）。
+   * 与 judgeTrack 正交：前者是「按什么标准判」，后者是「谁判的」。
+   */
+  judgeSource?: string
+  /** U8 判定标准说明全文；空串表示未记录或不合法，整行不渲染。 */
+  judgeSourceCaption?: string
+  /**
+   * U8 判定标准分布的原始 metadata（`judge_sources` 直方图在里面）。
+   * 没有它就只能显示单值档位，多档与兜底计数会丢——而那正是 U8 要让人看见的。
+   */
+  reportMetadata?: Record<string, string> | undefined
   downloadFormat?: 'pdf' | 'markdown' | 'json'
   downloadable?: boolean
   isRunning?: boolean
@@ -390,6 +405,9 @@ function ReportCard({
     // U4：口径说明放在统计格**之后**、下载按钮之前 —— 紧贴分数（用户正在比较的那个数），
     // 又在结论性文案之外。口径不明（非法元数据）时整行不渲染，不显示任何暗示。
     const trackCaption = (judgeTrackCaption ?? reportJudgeTrackCaption({ judgeTrack })).trim()
+    // U8：判定标准与判定链路是两件事，必须都出现。只显示链路的话，用户会以为
+    // 同一份报告里所有插件都按同一把尺子判 —— 而 U8 恰恰让它们不再如此。
+    const sourceCaption = (judgeSourceCaption ?? reportJudgeSourceCaption({ judgeSource, metadata: reportMetadata })).trim()
     return (
       <div style={{ background: 'var(--bg-card)', border: `1px solid ${color}40`, borderRadius: 12, padding: '16px 20px', maxWidth: 420, marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -416,6 +434,14 @@ function ReportCard({
         {trackCaption && (
           <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6, marginBottom: 10 }}>
             {trackCaption}
+          </div>
+        )}
+        {/* U8：判定标准单独一行，且在判定链路**之后** —— 链路是「谁判的」，
+            标准是「按什么标准判」。两者都要出现，缺一都会让人把不同口径的
+            分数当成同一把尺子量出来的。空串整行不渲染，不显示任何暗示。 */}
+        {sourceCaption && (
+          <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6, marginBottom: 10 }}>
+            {sourceCaption}
           </div>
         )}
         {(assessmentId || reportId) && downloadable && (
@@ -728,6 +754,14 @@ export function MessageBubble({
             riskScore={msg.metadata?.risk_score as number | undefined}
             safetyScore={msg.metadata?.safety_score as number | undefined}
             judgeTrack={msg.metadata?.judge_track as string | undefined}
+            judgeSource={msg.metadata?.judge_source as string | undefined}
+            // ChatMessage.metadata 是 Record<string, unknown>，而判定标准解析
+            // 需要 string 值。这里只挑出字符串项而不是把整个对象断言成
+            // Record<string, string> —— 后者会把非字符串值带进解析器。
+            // 显式标注返回类型，因为 Object.fromEntries 会把值放宽成 unknown。
+            reportMetadata={Object.fromEntries(
+              Object.entries(msg.metadata ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+            )}
             downloadFormat={msg.metadata?.download_format as 'pdf' | 'markdown' | 'json' | undefined}
             downloadable={msg.metadata?.downloadable as boolean | undefined}
             statusText={msg.metadata?.status_text as string | undefined}

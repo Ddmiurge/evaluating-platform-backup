@@ -8,6 +8,9 @@ import {
   NATIVE_ERR_INVALID_PROVIDER,
   NATIVE_ERR_MISSING_PROVIDER,
   resolveNativeStrategies,
+  withPluginJudgeRubrics,
+  loadEvalResults,
+  nativeJudgeSourceOverrides,
 } from '../src/runner/nativeRedteam.js';
 import {
   assertNativeStrategyMapIsCurrent,
@@ -17,7 +20,9 @@ import {
   planAOnlyStrategyIds,
 } from '../src/runner/nativeStrategyMap.js';
 import { EngineRunError } from '../src/runner/generateTests.js';
-import type { OneShotCredentials } from '../src/types.js';
+import { reduceEvalToSafeResult } from '../src/runner/redteamRun.js';
+import type { EngineCatalog, OneShotCredentials } from '../src/types.js';
+import { buildJudgeRubricMap, UNMAPPED_JUDGE_CRITERIA } from '../src/runner/judgeRubric.js';
 
 /** Credentials with both slots filled — the shape a real U7 run has. */
 function creds(overrides: Partial<OneShotCredentials> = {}): OneShotCredentials {
@@ -312,11 +317,293 @@ describe('buildNativeRedteamConfig — the document handed to promptfoo', () => 
     expect(withText.redteam.testGenerationInstructions).toBe('只用中文');
   });
 
+  // U8 adds one more key: graderGuidance. The caller-supplied config must still
+  // survive alongside it, which is why this asserts per-key rather than by
+  // whole-object equality (the rubric text is asserted in the U8 suite).
   it('preserves per-plugin config', () => {
     const cfg = buildNativeRedteamConfig({
       ...base,
       plugins: [{ id: 'policy', config: { policy: { text: 'no refunds' } } }],
     });
-    expect(cfg.redteam.plugins[0]?.config).toEqual({ policy: { text: 'no refunds' } });
+    expect(cfg.redteam.plugins[0]?.config?.policy).toEqual({ text: 'no refunds' });
+  });
+});
+// ---------------------------------------------------------------------------
+// U8 · Plan C must judge by the same per-plugin standards as Plan A.
+//
+// Counter-requirement: if only Plan A were wired, turning on native generation
+// would silently regress judging to promptfoo's one-size rubric. That is the
+// exact degradation U8 exists to remove, and it would only show up as "the
+// numbers changed after the upgrade" — which nobody attributes to judging.
+// ---------------------------------------------------------------------------
+describe('withPluginJudgeRubrics — Plan C carries the per-plugin rubric', () => {
+  const catalog: EngineCatalog = {
+    plugins: [
+      { id: 'contracts', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: 'RUBRIC_CONTRACTS', judge_source: 'category:industry' },
+      { id: 'harmful:hate', category: 'harmful', category_label: '有害内容', severity: 'high', judge_criteria: 'RUBRIC_HARMFUL', judge_source: 'category:harmful' },
+    ],
+    strategies: [],
+  };
+
+  it('writes each plugin its own rubric into the field promptfoo reads', () => {
+    // graderGuidance is the ONLY rubric-ish field promptfoo's
+    // RedteamConfigSchema/PluginConfigSchema declares and then consumes
+    // (metadata.pluginConfig → RedteamGraderBase.getResult). Verified
+    // end-to-end against promptfoo 0.123.0 dist with a fake local LLM:
+    // graderGuidance reaches the grading prompt; `rubric` and `judgeRubric`
+    const out = withPluginJudgeRubrics([{ id: 'contracts' }, { id: 'harmful:hate' }], buildJudgeRubricMap(catalog));
+    expect(out[0]?.config?.graderGuidance).toBe('RUBRIC_CONTRACTS');
+    expect(out[1]?.config?.graderGuidance).toBe('RUBRIC_HARMFUL');
+  });
+
+  it('gives two plugins in one run two different rubrics', () => {
+    const out = withPluginJudgeRubrics([{ id: 'contracts' }, { id: 'harmful:hate' }], buildJudgeRubricMap(catalog));
+    expect(out[0]?.config?.graderGuidance).not.toBe(out[1]?.config?.graderGuidance);
+  });
+
+  // Guardrail counter-proof: a plugin with no rubric must not silently lose
+  // its standard — it gets the named fallback, which promptfoo will still read.
+  it('falls back to the named unmapped rubric rather than omitting the field', () => {
+    const out = withPluginJudgeRubrics([{ id: 'not-in-catalog' }], buildJudgeRubricMap(catalog));
+    expect(out[0]?.config?.graderGuidance).toBe(UNMAPPED_JUDGE_CRITERIA);
+  });
+
+  it('preserves other plugin config and never drops a caller-supplied override', () => {
+    const out = withPluginJudgeRubrics(
+      [
+        { id: 'contracts', config: { modifiers: { language: 'zh' } } },
+        { id: 'harmful:hate', config: { graderGuidance: 'OPERATOR_OVERRIDE' } },
+      ],
+      buildJudgeRubricMap(catalog),
+    );
+    expect(out[0]?.config?.modifiers).toEqual({ language: 'zh' });
+    expect(out[0]?.config?.graderGuidance).toBe('RUBRIC_CONTRACTS');
+    // An explicit operator override wins: silently replacing it would make the
+    // report claim a standard the run did not actually use.
+    expect(out[1]?.config?.graderGuidance).toBe('OPERATOR_OVERRIDE');
+  });
+
+  // This is the assertion that matters. It goes through
+  // buildNativeRedteamConfig — the function that produces the document
+  // promptfoo actually reads — rather than through the helper. An earlier
+  // version of this test only exercised withPluginJudgeRubrics, and the
+  // counter-proof (delete the rubric attachment from the run path) still
+  // passed: the tests were green while Plan C judged by promptfoo's one-size
+  // rubric. Testing the seam that emits the config is what closes that hole.
+  it('attaches each plugin rubric inside the config document promptfoo reads', () => {
+    const cfg = buildNativeRedteamConfig({
+      runId: 'run-u8',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 1,
+      plugins: [{ id: 'contracts' }, { id: 'harmful:hate' }],
+      strategies: [],
+      credentials: creds(),
+      catalog,
+    });
+    expect(cfg.redteam.plugins[0]?.config?.graderGuidance).toBe('RUBRIC_CONTRACTS');
+    expect(cfg.redteam.plugins[1]?.config?.graderGuidance).toBe('RUBRIC_HARMFUL');
+  });
+
+  it('still attaches the named fallback for a plugin missing from the catalog', () => {
+    const cfg = buildNativeRedteamConfig({
+      runId: 'run-u8-fallback',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 1,
+      plugins: [{ id: 'not-in-catalog' }],
+      strategies: [],
+      credentials: creds(),
+      catalog,
+    });
+    expect(cfg.redteam.plugins[0]?.config?.graderGuidance).toBe(UNMAPPED_JUDGE_CRITERIA);
+  });
+
+  // Pre-U8 BFF: no catalog at all. The run must still be rubric-bearing rather
+  // than emitting a document with no standard per plugin.
+  it('degrades to the named fallback when no catalog is supplied', () => {
+    const cfg = buildNativeRedteamConfig({
+      runId: 'run-u8-nocatalog',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 1,
+      plugins: [{ id: 'contracts' }],
+      strategies: [],
+      credentials: creds(),
+    });
+    expect(cfg.redteam.plugins[0]?.config?.graderGuidance).toBe(UNMAPPED_JUDGE_CRITERIA);
+  });
+
+  // Regression guard for an upstream defect that U8's injection would trigger.
+  //
+  // promptfoo 0.123.0 (dist/src/index.js:16762) does, while logging plugin
+  // config summaries during synthesis:
+  //     if (p.config) { if (p.id === "policy") { const policy = p.config?.policy;
+  //       if (isValidPolicyObject(policy)) {...} else { policy.trim() } } }
+  // The `else` assumes `config.policy` is a string whenever `config` exists.
+  // U8 attaches `graderGuidance`, which makes `config` exist — so injecting
+  // unconditionally turns every Plan C run containing `policy` into
+  // "TypeError: Cannot read properties of undefined (reading 'trim')", thrown
+  // before a single probe runs.
+  //
+  // `policy` is a real catalog plugin (internal/maclaw/promptfoo_plugin_catalog.go
+  // p("policy", "政策违规", "industry", …)), so this is reachable in production.
+  //
+  // KNOWN GAP, pinned here on purpose: `policy` is therefore NOT given the
+  // platform rubric on the Plan C path. It is still graded — by promptfoo's own
+  // PolicyPlugin grader — so the run stays correct, but not by our family
+  // standard. Fixing it properly needs an upstream patch or a promptfoo upgrade.
+  it('does not attach a config to plugins whose config promptfoo misinterprets', () => {
+    const out = withPluginJudgeRubrics([{ id: 'policy' }, { id: 'contracts' }], buildJudgeRubricMap(catalog));
+    // policy: no config at all, so promptfoo's `if (p.config)` branch is skipped.
+    expect(out[0]?.config).toBeUndefined();
+    // Every other plugin still gets its rubric — the guard is narrow on purpose.
+    expect(out[1]?.config?.graderGuidance).toBe('RUBRIC_CONTRACTS');
+  });
+
+  it('leaves a caller-supplied policy config untouched', () => {
+    // The operator's own `config.policy` is what promptfoo needs; we must not
+    // strip it, and must not add anything that would re-trigger the bug.
+    const out = withPluginJudgeRubrics(
+      [{ id: 'policy', config: { policy: { text: 'no refunds' } } }],
+      buildJudgeRubricMap(catalog),
+    );
+    expect(out[0]?.config).toEqual({ policy: { text: 'no refunds' } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U8 ②：`Eval.results` 在 Plan C 上是空的，必须经 getResults() 取回。
+//
+// 为什么这些用例必须是确定性的、而不能只靠 E2E：E2E 跑在「同一进程已
+// evaluate 过」的状态下，库可能已经把 results 填上了（实测：独立进程里
+// `results.length`=0，同进程 E2E 里=2）。也就是说 **E2E 单独不足以钉住这个
+// 回归** —— 它在某些执行顺序下会假绿。这里用构造输入把三种形态都固定下来。
+// ---------------------------------------------------------------------------
+describe('loadEvalResults — Plan C 的结果必须重新水合（U8 ②）', () => {
+  const rows = [
+    { gradingResult: { pass: false }, testCase: { metadata: { pluginId: 'contracts' } } },
+    { gradingResult: { pass: false }, testCase: { metadata: { pluginId: 'hallucination' } } },
+  ];
+
+  it('results 为空时经 getResults() 取回（U7 报 0 覆盖的根因）', async () => {
+    let called = 0;
+    const loaded = await loadEvalResults({
+      id: 'eval-1',
+      results: [],
+      getResults: async () => {
+        called++;
+        return rows;
+      },
+    });
+    expect(called).toBe(1);
+    expect(loaded.results).toHaveLength(2);
+  });
+
+  it('results 已填充时不再付一次 DB 往返', async () => {
+    let called = 0;
+    const loaded = await loadEvalResults({
+      id: 'eval-2',
+      results: rows,
+      getResults: async () => {
+        called++;
+        return [];
+      },
+    });
+    expect(called).toBe(0);
+    expect(loaded.results).toHaveLength(2);
+  });
+
+  it('保留 id，供rawEvalId 继续回传', async () => {
+    const loaded = await loadEvalResults({ id: 'eval-3', results: [], getResults: async () => rows });
+    expect(loaded.id).toBe('eval-3');
+  });
+
+  it('没有 getResults 时不抛，退化为空数组交给调用方的 fail-closed 判定', async () => {
+    // 刻意不抛：抛在这里会把「库没有这个入口」变成一个看不懂的错误，
+    // 而调用方（executeNativeRedteamRun）已有 0 探针即fail-closed 的闸。
+    const loaded = await loadEvalResults({ id: 'eval-4', results: [] });
+    expect(loaded.results).toEqual([]);
+  });
+
+  it('getResults 返回非数组时安全退化为空数组', async () => {
+    const loaded = await loadEvalResults({ results: [], getResults: async () => undefined as never });
+    expect(loaded.results).toEqual([]);
+  });
+
+  it.each([[null], [undefined], ['not-an-eval']])('输入 %p 返回空结果而非抛错', async (input) => {
+    expect((await loadEvalResults(input)).results).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U8 ①：`policy` 的判定基础必须可见，不能显示成 category:industry。
+//
+// 跳过注入保住了 run，但若报告仍按目录解析成族级档，policy 就与 contracts
+// 完全同形 —— 用户以为平台族标准生效了，而实际是promptfoo 自带 grader 判的。
+// ---------------------------------------------------------------------------
+describe('nativeJudgeSourceOverrides — policy 的判定基础要单独成档', () => {
+  it('把注入不了的插件标成 promptfoo:<id>，其余不动', () => {
+    const overrides = nativeJudgeSourceOverrides([{ id: 'policy' }, { id: 'contracts' }]);
+    expect(overrides.get('policy')).toBe('promptfoo:policy');
+    expect(overrides.has('contracts')).toBe(false);
+  });
+
+  // 与 Go 侧 TestPromptfooConfigUnsafePluginsAreExactlyPolicy 成对：任一侧改动
+  // 而另一方未改，报告就会声称一个本次运行并未使用的判定基础。
+  it('清单与后端一致：恰为 policy 一个', () => {
+    const all = ['policy', 'contracts', 'harmful:hate', 'hallucination', 'pii', 'bias'];
+    const affected = all.filter((id) => nativeJudgeSourceOverrides([{ id }]).has(id));
+    expect(affected).toEqual(['policy']);
+  });
+
+  it('reduction 用它把 policy 记成 promptfoo 档，而非族级档', () => {
+    const catalog: EngineCatalog = {
+      plugins: [
+        { id: 'policy', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: 'RUBRIC_POLICY', judge_source: 'category:industry' },
+        { id: 'contracts', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: 'RUBRIC_CONTRACTS', judge_source: 'category:industry' },
+      ],
+      strategies: [],
+    };
+    const evalLike = {
+      results: [
+        { gradingResult: { pass: false }, testCase: { metadata: { pluginId: 'policy' } } },
+        { gradingResult: { pass: false }, testCase: { metadata: { pluginId: 'contracts' } } },
+      ],
+    };
+    // 不带 override：两者同形，正是要避免的误导形态。
+    const naive = reduceEvalToSafeResult(evalLike, catalog);
+    expect(naive.plugin_stats.find((s) => s.plugin_id === 'policy')?.judge_source).toBe('category:industry');
+
+    // 带 override：policy 被如实标出。
+    const fixed = reduceEvalToSafeResult(evalLike, catalog, {
+      judgeSourceOverrides: nativeJudgeSourceOverrides([{ id: 'policy' }]),
+    });
+    expect(fixed.plugin_stats.find((s) => s.plugin_id === 'policy')?.judge_source).toBe('promptfoo:policy');
+    expect(fixed.plugin_stats.find((s) => s.plugin_id === 'contracts')?.judge_source).toBe('category:industry');
+    // 这一档不是兜底：平台有标准，只是注入不了。
+    expect(fixed.judge_sources?.every((s) => !s.is_fallback)).toBe(true);
+    expect(fixed.judge_sources?.map((s) => s.source).sort()).toEqual(['category:industry', 'promptfoo:policy']);
+  });
+
+  it('Plan A 的 metadata 标记优先于 override（Plan A 确实用了平台标准）', () => {
+    const catalog: EngineCatalog = {
+      plugins: [{ id: 'policy', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: 'R', judge_source: 'category:industry' }],
+      strategies: [],
+    };
+    const result = reduceEvalToSafeResult(
+      {
+        results: [
+          {
+            gradingResult: { pass: false },
+            testCase: { metadata: { pluginId: 'policy', judgeSource: 'category:industry' } },
+          },
+        ],
+      },
+      catalog,
+      { judgeSourceOverrides: nativeJudgeSourceOverrides([{ id: 'policy' }]) },
+    );
+    // override 只补 Plan C 缺标记时的缺口，不得推翻 Plan A 明确写入的值。
+    expect(result.plugin_stats[0]?.judge_source).toBe('category:industry');
   });
 });

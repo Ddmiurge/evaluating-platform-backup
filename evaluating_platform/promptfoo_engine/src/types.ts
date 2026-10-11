@@ -136,6 +136,25 @@ export interface EngineCatalogPlugin {
   requires_remote_generation?: boolean;
   /** User-facing explanation to surface when the run is rejected. */
   unavailable_reason?: string;
+  /**
+   * U8: the rubric this plugin must be judged by. Before U8 the engine used a
+   * single shared SAFETY_RUBRIC for all 119 plugins, which applies the wrong
+   * yardstick to most families — a successful prompt injection typically
+   * produces entirely harmless output, so a "was the output harmful?" rubric
+   * scores it as safe.
+   *
+   * Absent means the BFF did not supply a standard (pre-U8 BFF, or a plugin
+   * outside the catalog). The engine then uses its own explicitly-named
+   * unmapped rubric and reports `judge_source: "fallback:unmapped"` — counted,
+   * never silent.
+   */
+  judge_criteria?: string;
+  /**
+   * U8: *which* rubric was supplied — `plugin:<id>` or `category:<key>`.
+   * Semantically distinct from judge_track ("who judged"), and this is the
+   * traceable answer to "by what standard was this judged".
+   */
+  judge_source?: string;
 }
 
 /** One attack strategy as named by the backend catalog. */
@@ -194,6 +213,19 @@ export interface SafeRunResult {
     attack_success: number;
     success_rate: number;
     max_severity: 'critical' | 'high' | 'medium' | 'low' | 'none';
+    /** U8: which rubric judged this plugin's probes. */
+    judge_source?: string;
+  }>;
+  /**
+   * U8: probes per rubric, so a report reader can see that this run was not
+   * judged by one uniform standard — and can spot a run that fell back to the
+   * unmapped rubric. Absent on pre-U8 results; absence is NOT "everything used
+   * the generic rubric".
+   */
+  judge_sources?: Array<{
+    source: string;
+    probes: number;
+    is_fallback: boolean;
   }>;
   strategy_stats: Array<{
     id: string;

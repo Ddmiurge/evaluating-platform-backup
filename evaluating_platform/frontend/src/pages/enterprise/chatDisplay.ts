@@ -221,6 +221,131 @@ export function reportJudgeTrackCaption(input: {
   return `${JUDGE_TRACK_CAPTION_BODY[track]}${JUDGE_TRACK_CAPTION_SUFFIX}`
 }
 
+/**
+ * U8 判定**标准**的 metadata 键名与取值档位。
+ *
+ * 与 `JUDGE_TRACK_METADATA_KEY` 语义正交，**刻意不合并**：
+ * `judge_track`回答「谁判的」（platform|engine），`judge_source` 回答
+ * 「按什么标准判」（plugin:<id> | category:<key> | fallback:unmapped）。
+ * 合成一个字段会出现「换了链路」覆盖「换了标准」的情况 —— 例如从 engine
+ * 切回 platform 时标准的变化被链路的同一个值吃掉，报告上看不出来。
+ *
+ * 取值与后端 `internal/maclaw/promptfoo_judge_rubric.go` 的
+ * `JudgeSourcePrefix*` / `JudgeSourceFallbackUnmapped` 同名同值。
+ */
+export const JUDGE_SOURCE_METADATA_KEY = 'judge_source'
+export const JUDGE_SOURCES_METADATA_KEY = 'judge_sources'
+export const JUDGE_SOURCE_FALLBACK = 'fallback:unmapped'
+export const JUDGE_SOURCE_PREFIX_PROMPTFOO = 'promptfoo:'
+
+/** 一份报告的判定标准分布（从 `judge_sources` 直方图解析）。 */
+export interface ReportJudgeSources {
+  /** 档位标识 → 探测数。 */
+  bySource: Record<string, number>
+  /** 落在未映射兜底档的探测数。 */
+  fallbackProbes: number
+  /** 落在「由 promptfoo 自带标准判定」档的探测数。 */
+  promptfooOwnedProbes: number
+  /** 出现过的档位数；0 表示「未记录」。 */
+  distinct: number
+}
+
+/**
+ * resolveReportJudgeSources 解析报告 metadata 里的判定标准分布。
+ *
+ * `judge_sources` 的格式是后端写下的 `档位=条数,档位=条笔` 稳定排序串
+ * （见 `formatJudgeSourceHistogram`）。解析失败时返回 null 而非猜测值：
+ * 分布读不出来时**不能**显示「按族判定」—— 那等于凭空给一份口径不明的
+ * 报告贴上确定的标准。
+ */
+export function resolveReportJudgeSources(
+  metadata?: Record<string, string> | null,
+): ReportJudgeSources | null {
+  const raw = String(metadata?.[JUDGE_SOURCES_METADATA_KEY] ?? '').trim()
+  if (!raw) return null
+  const bySource: Record<string, number> = {}
+  for (const segment of raw.split(',')) {
+    const eq = segment.indexOf('=')
+    if (eq <= 0) return null
+    const source = segment.slice(0, eq).trim()
+    const count = Number(segment.slice(eq + 1).trim())
+    if (!source || !Number.isInteger(count) || count < 0) return null
+    bySource[source] = count
+  }
+  const keys = Object.keys(bySource)
+  if (keys.length === 0) return null
+  const promptfooOwnedProbes = keys
+    .filter((key) => key.startsWith(JUDGE_SOURCE_PREFIX_PROMPTFOO))
+    .reduce((sum, key) => sum + bySource[key], 0)
+  return {
+    bySource,
+    fallbackProbes: bySource[JUDGE_SOURCE_FALLBACK] ?? 0,
+    promptfooOwnedProbes,
+    distinct: keys.length,
+  }
+}
+
+/**
+ * reportJudgeSourceCaption 生成判定标准说明（报告卡用）。
+ *
+ * 返回空串表示**没有可显示的标准**，调用方据此整行不渲染 —— 而不是渲染
+ * 一句假的。三种非空形态：
+ *   - 有兜底探测 → 以 ⚠️ 开头并给出条数（这是最该被看见的一种）；
+ *   - 多档 → 说明同一报告内不同插件按不同尺度判（U8 生效的标志）；
+ *   - 单档 → 直接给出该档。
+ */
+/**
+ * reportJudgeSourceCaption 生成判定标准说明（报告卡用）。
+ *
+ * 返回空串表示**没有可显示的标准**，调用方据此整行不渲染 —— 而不是渲染
+ * 一句假的。四种非空形态，按「口径偏离平台标准的程度」排列：
+ *   - 落兜底 → ⚠️ + 条数（平台无对应标准，最需警惕）；
+ *   - 有 promptfoo 自带标准档 → 明确说明「这部分不是平台族标准判的」；
+ *   - 多档 → 说明同一报告内按不同尺度判（U8 生效的标志）；
+ *   - 单档 → 直接给出该档。
+ */
+export function reportJudgeSourceCaption(input: {
+  judgeSource?: string
+  metadata?: Record<string, string> | null
+}): string {
+  const sources = resolveReportJudgeSources(input.metadata)
+  const single = String(input.judgeSource ?? input.metadata?.[JUDGE_SOURCE_METADATA_KEY] ?? '').trim()
+  const histogram =
+    sources && sources.distinct > 0
+      ? Object.keys(sources.bySource)
+          .sort()
+          .map((key) => `${key}=${sources.bySource[key]}`)
+          .join('，')
+      : ''
+  // 两档的成因不同（平台缺标准 / 平台有标准但注入不了），因此**可以同时出现**，
+  // 此时两条提示都要说。只按 fallback 早退会让 promptfoo 那一档在混合 run 里
+  // 悄悄消失 —— 与后端 RedteamJudgeSourceCaption 的组合行为不一致。
+  if (sources && (sources.fallbackProbes > 0 || sources.promptfooOwnedProbes > 0)) {
+    const detail =
+      sources.distinct > 1
+        ? `本次运行按 ${sources.distinct} 档标准判定（${histogram}）`
+        : `本次运行按 ${single || JUDGE_SOURCE_FALLBACK} 判定`
+    const notes: string[] = []
+    if (sources.fallbackProbes > 0) {
+      notes.push(
+        `⚠️ 其中 ${sources.fallbackProbes} 条探测未匹配到插件族标准，已回落到通用兜底标准，该部分结论口径更弱，不宜与其他 run 直接比较。`,
+      )
+    }
+    if (sources.promptfooOwnedProbes > 0) {
+      notes.push(
+        `其中 ${sources.promptfooOwnedProbes} 条探测由 promptfoo 自带的判定标准作出（平台标准未能注入），该部分与平台族标准口径不同，横向比较时请注意。`,
+      )
+    }
+    return `判定标准：${detail}。${notes.join('')}`
+  }
+  // 多档：以陈述而非警告呈现 —— 同一报告内按不同尺度判是 U8 生效的标志。
+  if (sources && sources.distinct > 1) {
+    return `判定标准：本次运行按 ${sources.distinct} 档标准判定（${histogram}）—— 同一报告内不同插件的判定尺度不同，跨插件比较攻击成功率时须注意。`
+  }
+  if (!single) return ''
+  return `判定标准：${single} —— 本报告的判定按此标准执行。`
+}
+
 export function resolveReportSafetyScore({
   cardType,
   directSafetyScore,

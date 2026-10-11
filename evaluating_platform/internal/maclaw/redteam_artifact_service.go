@@ -202,6 +202,17 @@ func (s *RedteamArtifactService) CompileReport(ctx context.Context, userID uuid.
 		judgeTrack = RedteamJudgeTrackOf(metadata)
 	}
 	metadata[RedteamJudgeTrackMetadataKey] = string(judgeTrack)
+	// U8 fail-closed：judge_source 非法时同样**拒绝写报告**。
+	// 它是一个可枚举的溯源标识（档位前缀 + 已知族名/插件名），不在枚举内说明
+	// 写报告的一侧算错了族或数据被改过；静默接受等于把一个没人能解释的
+	// 「按什么标准判」写进报告。注意这**不覆盖**上面的 judge_track：
+	// 两者正交，判定链路与判定标准各自独立校验。
+	// 「未声明」（历史报告 / 平台链路）一律放行，不推断——
+	// U8 之前只有一条 rubric，但那是不是「通用档」取决于当时的代码版本，
+	// 猜出来的答案不可信，宁可显示「未记录」。
+	if _, err := ValidateReportJudgeSourceMetadata(metadata); err != nil {
+		return nil, err
+	}
 	metadata["schema_version"] = "redteam_report_zh_v1"
 	metadata["report_template"] = "redteam_report_pdf_layout_v2"
 	record := RedteamReportRecord{
@@ -578,6 +589,10 @@ func reportInfoLines(report *EvaluationReport) []string {
 	// U4：判定口径进「报告基本信息」，属元数据而非结论段落 ——
 	// 摘要/评分/发现等结论段落一律不插口径说明，避免污染结论（DD-2=A）。
 	lines = append(lines, "- "+RedteamJudgeTrackCaptionOf(report.Metadata))
+	// U8：判定标准（按什么标准判）与判定链路（谁判的）正交，两行都要出现。
+	// 出现在「报告基本信息」而非结论段落，与 U4 同理——口径是元数据，
+	// 插进摘要/评分会污染结论。
+	lines = append(lines, "- "+RedteamJudgeSourceCaption(report.Metadata, parseJudgeSourceHistogramMetadata(report.Metadata)))
 	if target := strings.TrimSpace(firstNonEmptyString(report.Metadata["target_summary"], report.Metadata["target_model"], report.Metadata["target_name"])); target != "" {
 		lines = append(lines, "- 评估目标："+target)
 	}
@@ -988,9 +1003,16 @@ func pdfBodyPageContents(report *EvaluationReport) []pdfRenderedPage {
 	// 页脚用同一解析结果的**短句**变体（页脚宽度放不下完整句，详见
 	// redteam_judge_track.go 的 judgeTrackFooter* 常量注释）。
 	judgeTrackCaption := RedteamJudgeTrackFooterCaptionOf(report.Metadata)
+	// U8：只有存在兜底档探测时，页脚才让位给判定标准的降级警告。
+	// 正常运行的完整标准清单在「报告基本信息」段落，页脚重复没有新增信息。
+	summary := parseJudgeSourceHistogramMetadata(report.Metadata)
+	judgeSourceWarning := ""
+	if summary.HasFallback() {
+		judgeSourceWarning = RedteamJudgeSourceFooterCaption(report.Metadata, summary)
+	}
 	page := newPDFBodyPage()
 	appendPage := func() *pdfPageWriter {
-		page.footer(judgeTrackCaption)
+		page.footer(judgeTrackCaption, judgeSourceWarning)
 		pages = append(pages, page.rendered())
 		page = newPDFBodyPage()
 		return page
@@ -1030,7 +1052,7 @@ func pdfBodyPageContents(report *EvaluationReport) []pdfRenderedPage {
 		page.y -= 20
 	}
 	if page.y < 770 {
-		page.footer(judgeTrackCaption)
+		page.footer(judgeTrackCaption, judgeSourceWarning)
 		pages = append(pages, page.rendered())
 	}
 	if len(pages) == 0 {
@@ -1038,7 +1060,7 @@ func pdfBodyPageContents(report *EvaluationReport) []pdfRenderedPage {
 		fallback.sectionHeading("1. 评估摘要")
 		fallback.y -= 26
 		fallback.text(70, fallback.y, "暂无报告内容。", 10.5, 0.16, 0.16, 0.16)
-		fallback.footer(judgeTrackCaption)
+		fallback.footer(judgeTrackCaption, judgeSourceWarning)
 		pages = append(pages, fallback.rendered())
 	}
 	return pages
@@ -1165,10 +1187,21 @@ func (p *pdfPageWriter) findingImage(index int, image pdfReportImage, appendPage
 // 单行超宽时按可用宽度截断并加省略号 —— 不能换行（页脚只有 44→26 的
 // 18pt 纵向空间，换行会撞到正文安全区 pdfContentBottomY=310 之上的内容），
 // 也不能缩字号（可读性优先于完整性；完整口径在报告基本信息段落里有全句）。
-func (p *pdfPageWriter) footer(judgeTrackCaption string) {
+//
+// judgeSourceCaption 是 U8 的判定**标准**短句，与 judgeTrackCaption（判定
+// **链路**）语义正交。它**只在本次运行有探测落兜底档时才占用第二行**，
+// 正常情况下让位给固定声明 —— 理由：完整标准清单在「报告基本信息」段落里
+// 已经逐条列出，每页重复只会挤掉真正需要被看见的东西；而「有探测没有标准」
+// 是一个**必须在每一页都看得见**的降级信号，漏看一页就可能把弱口径的分数
+// 当成正常口径用。页脚是每页都在的位置，所以警告放这里。
+func (p *pdfPageWriter) footer(judgeTrackCaption string, judgeSourceWarning string) {
 	p.line(70, pdfFooterLineY, 525, 0.86, 0.88, 0.92, 0.35)
 	if caption := truncatePDFText(cleanPDFText(judgeTrackCaption), 425); caption != "" {
 		p.text(70, pdfFooterCaptionTextY, caption, 8.0, 0.45, 0.48, 0.52)
+	}
+	if warning := truncatePDFText(cleanPDFText(judgeSourceWarning), 425); warning != "" {
+		p.text(70, pdfFooterTextY, warning, 8.0, 0.45, 0.48, 0.52)
+		return
 	}
 	p.text(70, pdfFooterTextY, "本报告由安全评估平台生成，仅展示安全摘要与结构化结论。", 8.0, 0.45, 0.48, 0.52)
 }

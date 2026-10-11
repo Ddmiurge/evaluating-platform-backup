@@ -105,10 +105,14 @@ cover_ratio() {
 # 用法：assert_known_baseline <profile 文件>
 # 这两个常数与基线 profile **必须成对更新**（U7 裁定，见脚本头「基线何时重建」）：
 # 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
-# 永久拒绝出结论。当前值对应 U7 收尾（4262 块 / 3019 覆盖）。
+# 永久拒绝出结论。当前值对应 U8 收尾（4407 块 / 3140 覆盖）：
+# U8 新增 promptfoo_judge_rubric.go（族级/覆盖/兜底 rubric 表）与
+# redteam_judge_source.go（judge_source 溯源与 caption），并给既有文件加了
+# 下发与渲染的接线，故语句块与覆盖块同步上升
+# （U7 收尾 4262/3019 → 4396/3130 → 4407/3140）。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4262}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3019}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4407}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3140}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

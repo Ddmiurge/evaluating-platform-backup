@@ -158,6 +158,19 @@ type EngineCatalogPlugin struct {
 	// UnavailableReason is the user-facing explanation to surface when a run is
 	// rejected. Safe to display: it is a static platform-authored string.
 	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	// JudgeCriteria is the rubric this plugin is judged by (U8). Before U8 the
+	// engine used one shared SAFETY_RUBRIC for every plugin, which applies the
+	// wrong yardstick to most plugin families (a successful prompt injection
+	// often produces entirely harmless output). Empty means "no criteria
+	// supplied" — the engine then falls back to its explicit unmapped rubric and
+	// records judge_source=fallback:unmapped, so the downgrade is countable
+	// rather than silent. omitempty keeps pre-U8 BFF payloads byte-identical.
+	JudgeCriteria string `json:"judge_criteria,omitempty"`
+	// JudgeSource identifies WHICH rubric was supplied: "plugin:<id>" for a
+	// high-risk plugin's own rubric, "category:<key>" for a family rubric. It is
+	// the traceable answer to "by what standard was this judged", and is
+	// semantically distinct from judge_track ("who judged": platform|engine).
+	JudgeSource string `json:"judge_source,omitempty"`
 }
 
 // EngineCatalogStrategy is one attack strategy as the engine names it. The
@@ -196,6 +209,21 @@ type EngineSafeResult struct {
 	PluginStats    []EnginePluginStat   `json:"plugin_stats"`
 	StrategyStats  []EngineStrategyStat `json:"strategy_stats"`
 	TokenUsage     EngineTokenUsage     `json:"token_usage"`
+	// JudgeSources counts how many probes were judged by each rubric (U8).
+	// This is the observability half of the fallback chain: a run that fell
+	// back to the unmapped rubric for some probes says so here, per rubric,
+	// instead of the whole run looking uniformly judged. Empty means the run
+	// predates U8 — absence is not "everything used the generic rubric".
+	JudgeSources []EngineJudgeSourceCount `json:"judge_sources,omitempty"`
+}
+
+// EngineJudgeSourceCount is one rubric's share of a run's judgements.
+type EngineJudgeSourceCount struct {
+	Source string `json:"source"`
+	Probes int    `json:"probes"`
+	// IsFallback marks the explicit unmapped tier so consumers do not have to
+	// string-match "fallback:unmapped" to decide whether to warn the user.
+	IsFallback bool `json:"is_fallback"`
 }
 
 type EngineRunTotals struct {
@@ -226,6 +254,10 @@ type EnginePluginStat struct {
 	AttackSuccess int     `json:"attack_success"`
 	SuccessRate   float64 `json:"success_rate"`
 	MaxSeverity   string  `json:"max_severity"`
+	// JudgeSource (U8): which rubric judged this plugin's probes. Per-plugin
+	// rather than per-run so a report reader can see that two plugins in the
+	// same run were judged by different standards.
+	JudgeSource string `json:"judge_source,omitempty"`
 }
 
 type EngineStrategyStat struct {

@@ -28,6 +28,22 @@ export interface MaclawReport {
    * 取值须与后端 `RedteamJudgeTrackPlatform` / `RedteamJudgeTrackEngine` 一致。
    */
   judge_track?: typeof JUDGE_TRACK_PLATFORM | typeof JUDGE_TRACK_ENGINE
+  /**
+   * U8 判定**标准**：本份报告的分数是按哪条 rubric 算出的。
+   * `plugin:<id>` = 高危插件的专属标准，`category:<key>` = 族级标准，
+   * `fallback:unmapped` = 未匹配到插件族标准、已回落到通用兜底标准。
+   *
+   * 与 `judge_track` **正交且不可合并**：track 回答「谁判的」，
+   * source 回答「按什么标准判」。合并后「换了链路」会覆盖「换了标准」。
+   * 旧报告无此字段（undefined），此时应显示「未记录」而不是替它选一个标准。
+   */
+  judge_source?: string
+  /**
+   * U8 判定标准分布，格式 `档位=条数,档位=条数`（后端稳定排序）。
+   * 只有单值键时，「99 条按族判 + 1 条落兜底」会显示成「按族判」，
+   * 降级就被抹掉了 —— 所以两个字段并存。
+   */
+  judge_sources?: string
   findings?: MaclawReportFinding[]
   metadata?: Record<string, string>
 }

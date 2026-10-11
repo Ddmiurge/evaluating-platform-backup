@@ -19,19 +19,19 @@ import (
 )
 
 const (
-	CapabilitySourcePromptfooPlugin  = "promptfoo_plugin"
+	CapabilitySourcePromptfooPlugin   = "promptfoo_plugin"
 	CapabilitySourcePromptfooStrategy = "promptfoo_strategy"
 )
 
 // promptfooPluginCatalogEntry describes one built-in engine plugin family.
 type promptfooPluginCatalogEntry struct {
-	ID             string
-	Name           string
-	Category       string
-	Summary        string
-	RiskTypes      []string
-	DefaultSev     string
-	UseWhen        string
+	ID         string
+	Name       string
+	Category   string
+	Summary    string
+	RiskTypes  []string
+	DefaultSev string
+	UseWhen    string
 	// RequiresRemoteGeneration mirrors promptfoo's own remote-dependency
 	// tables (U6). It is derived from the embedded mapping table rather than
 	// hand-set per entry, so the flag cannot drift from upstream. Purely
@@ -298,10 +298,15 @@ func promptfooPluginCard(entry promptfooPluginCatalogEntry) CapabilityCard {
 		Enabled:        true,
 		Status:         "published",
 		SafeMetadata: map[string]string{
-			"engine":         "promptfoo",
-			"plugin_id":      entry.ID,
-			"category":       entry.Category,
+			"engine":           "promptfoo",
+			"plugin_id":        entry.ID,
+			"category":         entry.Category,
 			"default_severity": entry.DefaultSev,
+			// U8: which rubric this plugin is judged by. The id only — the
+			// criteria text stays out of the capability card so the catalog
+			// payload does not grow by ~12KB and so nobody mistakes the card
+			// for the authoritative copy of the standard.
+			"judge_source": PromptfooJudgeRubricForPlugin(entry.ID).Source,
 		},
 	}
 	// U6: remote-dependent plugins stay visible but are marked unavailable, so
@@ -330,7 +335,7 @@ func promptfooStrategyCard(entry promptfooStrategyCatalogEntry) CapabilityCard {
 		Enabled:        true,
 		Status:         "published",
 		SafeMetadata: map[string]string{
-			"engine":     "promptfoo",
+			"engine":      "promptfoo",
 			"strategy_id": entry.ID,
 		},
 	}
@@ -483,14 +488,22 @@ func PromptfooCategoryLabel(category string) string {
 // every plugin_id — the engine no longer keeps its own regex/mapping tables.
 // U6 adds the remote-generation flag so the engine can refuse a gated run
 // before promptfoo silently produces 0 cases for it.
+// U8 adds judge_criteria + judge_source so the engine judges each plugin by its
+// own family standard instead of one shared rubric. Both are derived from
+// promptfoo_judge_rubric.go — the catalog never carries its own rubric table,
+// so there is exactly one place where "what standard applies to this plugin" is
+// decided.
 func PromptfooEngineCatalog() *EngineCatalog {
 	plugins := make([]EngineCatalogPlugin, 0, len(promptfooPluginCatalog))
 	for _, entry := range promptfooPluginCatalog {
+		criteria, judgeSource := PromptfooJudgeRubricCriteriaForPlugin(entry.ID)
 		plugin := EngineCatalogPlugin{
 			ID:            entry.ID,
 			Category:      entry.Category,
 			CategoryLabel: PromptfooCategoryLabel(entry.Category),
 			Severity:      entry.DefaultSev,
+			JudgeCriteria: criteria,
+			JudgeSource:   judgeSource,
 		}
 		if entry.RequiresRemoteGeneration {
 			plugin.RequiresRemoteGeneration = true

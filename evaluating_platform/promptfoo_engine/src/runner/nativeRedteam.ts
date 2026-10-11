@@ -91,8 +91,9 @@ import { stringify } from 'yaml';
 import type { ApplicationDefinition, EngineCatalog, OneShotCredentials, RunProgressEvent } from '../types.js';
 import type { RunRecord } from '../manager/taskManager.js';
 import { EngineRunError } from './generateTests.js';
-import { buildTargetProvider, reduceEvalToSafeResult, type RunnerResult } from './redteamRun.js';
+import { buildTargetProvider, reduceEvalToSafeResult, type EvalLike, type RunnerResult } from './redteamRun.js';
 import { assertNativeStrategyMapIsCurrent, nativeStrategyMapping } from './nativeStrategyMap.js';
+import { buildJudgeRubricMap, resolveJudgeRubric, type JudgeRubric } from './judgeRubric.js';
 
 type Emit = (event: RunProgressEvent) => void;
 
@@ -231,6 +232,145 @@ export function resolveNativeStrategies(
 }
 
 /**
+ * Plugins whose `config` object promptfoo interprets as something other than a
+ * bag of plugin options — attaching an unrelated key to them crashes the run.
+ *
+ * # `policy` — measured, not assumed (promptfoo 0.123.0 dist/src/index.js:16762)
+ *
+ * ```
+ * if (p.config) {
+ *   if (p.id === "policy") {
+ *     const policy = p.config?.policy;
+ *     if (isValidPolicyObject(policy)) { ... policy.text.trim() ... }
+ *     else { const policyText = policy.trim()   // ← policy is undefined here
+ * ```
+ *
+ * The `else` branch assumes `config.policy` is a string whenever `config` exists
+ * at all. U8 attaches `graderGuidance`, which makes `config` exist — so blindly
+ * injecting would turn every Plan C run that includes `policy` into
+ * `TypeError: Cannot read properties of undefined (reading 'trim')`, thrown
+ * during synthesis, before a single probe is generated.
+ *
+ * This is an upstream bug (the branch should guard on `typeof policy ===
+ * 'string'`), not something the platform can configure its way out of: there is
+ * no `graderGuidance`-shaped value that is also a valid policy, and inventing a
+ * `policy` text would change what the plugin *attacks*, not just how it is
+ * judged.
+ *
+ * So for `policy` we do not attach the rubric on the Plan C path. The plugin is
+ * still graded — by promptfoo's own PolicyPlugin grader, which is a real and
+ * specific rubric, not "no rubric" — so the run stays correct, it just is not
+ * judged by the platform's family standard on this one path.
+ *
+ * **This asymmetry is a known, measured gap, not an oversight.** It is called
+ * out in the U8 report and pinned by a test so it cannot be forgotten. Fixing
+ * it properly means either an upstream patch or a promptfoo upgrade — both
+ * outside U8's scope, and neither may be done silently.
+ */
+const PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS = new Set(['policy']);
+
+/**
+ * Plugins whose judging standard on the Plan C path comes from promptfoo itself
+ * rather than from the platform rubric, keyed to the source id the report shows.
+ *
+ * **Why this exists**: skipping the injection keeps the run alive, but it would
+ * otherwise be *invisible* — `policy` would be reported as
+ * `category:industry`, exactly like `contracts`, even though on this path it was
+ * judged by promptfoo's own PolicyPlugin grader. That is a false statement about
+ * the scoring basis, and mixing two bases under one label is the failure mode
+ * this whole layer exists to prevent. So the skip is recorded, and the report
+ * says `promptfoo:<id>` instead.
+ *
+ * This is distinct from `fallback:unmapped`: there the platform has no matching
+ * standard; here the platform *has* one and cannot deliver it. Different cause,
+ * different remedy.
+ *
+ * The engine and the backend keep one list each and pin them to the same content
+ * from both sides (Go: `TestPromptfooConfigUnsafePluginsAreExactlyPolicy`;
+ * TS: the test below) — if either drifts, the report would claim a basis the run
+ * did not use.
+ */
+function promptfooOwnedJudgeSource(pluginId: string): string | undefined {
+  return PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS.has(pluginId)
+    ? `promptfoo:${pluginId}`
+    : undefined;
+}
+
+/**
+ * Per-plugin judge-source overrides for the Plan C path.
+ *
+ * Plan C results carry no per-test metadata stamp, so the reducer would resolve
+ * every plugin straight from the catalog — correct for Plan A, wrong for the
+ * plugins listed above. These overrides are the only way the difference reaches
+ * the report, so they are computed here, at the point where the skip happens.
+ */
+export function nativeJudgeSourceOverrides(
+  plugins: Array<{ id: string }>,
+): Map<string, string> {
+  const overrides = new Map<string, string>();
+  for (const plugin of plugins) {
+    const source = promptfooOwnedJudgeSource(plugin.id);
+    if (source) overrides.set(plugin.id, source);
+  }
+  return overrides;
+}
+
+/**
+ * Attach each plugin's own judging standard to its redteam plugin config (U8).
+ *
+ * # Which promptfoo field actually carries a rubric — measured, not assumed
+ *
+ * `RedteamConfigSchema` declares **no** `rubric` key, and neither does
+ * `PluginConfigSchema`; a `rubric` field would be silently stripped by zod,
+ * exactly like `applicationDefinition` did in U7. The field promptfoo *does*
+ * read is `graderGuidance`, declared at `PluginConfigSchema.graderGuidance`
+ * (`tables-*.js`), forwarded into `metadata.pluginConfig`, and consumed in
+ * `RedteamGraderBase.getResult`:
+ *
+ *   const gradingGuidance = test.metadata?.pluginConfig?.graderGuidance
+ *     || test.metadata?.pluginConfig?.gradingGuidance;
+ *
+ * which is appended to the rubric as "IMPORTANT PLUGIN-SPECIFIC GRADING
+ * GUIDANCE … When the above guidance conflicts with general evaluation
+ * criteria, prioritize this guidance."
+ *
+ * **End-to-end proof** (fake local generation+grading LLM, real
+ * `promptfoo.redteam.run()`, marker strings recorded from every request body):
+ *
+ *   config.graderGuidance  → CONSUMED (present in the grading prompt)
+ *   config.judgeRubric     → ABSENT   (undeclared key, silently stripped)
+ *   config.rubric          → ABSENT   (undeclared key, silently stripped)
+ *
+ * So the standard is delivered as *guidance on top of* promptfoo's own
+ * per-plugin rubric, not as a replacement for it. That is a deliberate
+ * difference from Plan A and is documented rather than papered over: Plan C
+ * keeps promptfoo's grader (the generation paradigm and the grading paradigm
+ * travel together), with the platform's family standard taking precedence on
+ * conflict — which is what the "prioritize this guidance" clause means.
+ *
+ * A caller-supplied `config` is preserved; `graderGuidance` is only written when
+ * the caller did not set it, so an explicit operator override still wins.
+ */
+export function withPluginJudgeRubrics(
+  plugins: Array<{ id: string; config?: Record<string, unknown> }>,
+  rubrics: Map<string, JudgeRubric>,
+): Array<{ id: string; config?: Record<string, unknown> }> {
+  return plugins.map((plugin) => {
+    const existing = plugin.config ?? {};
+    if (typeof existing.graderGuidance === 'string' && existing.graderGuidance.trim()) {
+      return plugin; // operator override wins; do not silently replace it
+    }
+    // See PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS: attaching any config to these
+    // plugins makes promptfoo throw. Skipping keeps the run alive.
+    if (PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS.has(plugin.id)) {
+      return plugin.config ? plugin : { id: plugin.id };
+    }
+    const rubric = resolveJudgeRubric(plugin.id, rubrics);
+    return { id: plugin.id, config: { ...existing, graderGuidance: rubric.criteria } };
+  });
+}
+
+/**
  * Compose the promptfoo `purpose` string.
  *
  * promptfoo's library entrypoint does not read `applicationDefinition` — that
@@ -320,6 +460,18 @@ export function buildNativeRedteamConfig(input: {
   plugins: Array<{ id: string; config?: Record<string, unknown> }>;
   strategies: Array<{ id: string }>;
   credentials: OneShotCredentials;
+  /**
+   * U8 · Plugin/strategy catalog carrying each plugin's judging standard.
+   *
+   * The rubric is attached **here**, inside the config builder, rather than at
+   * the call site in executeNativeRedteamRun. That placement is load-bearing:
+   * when the attachment lived at the call site, a counter-proof test that
+   * removed the call-site wiring still passed, because every test exercised
+   * `buildNativeRedteamConfig` / `withPluginJudgeRubrics` directly. Putting it
+   * inside the builder makes the config document the single seam — there is no
+   * second path that can produce a rubric-less document.
+   */
+  catalog?: EngineCatalog;
 }): NativeRedteamConfig {
   const target = buildTargetProvider(input.credentials.target);
   const provider = buildGenerationProviderOptions(input.credentials.generation!);
@@ -338,7 +490,12 @@ export function buildNativeRedteamConfig(input: {
         applicationDefinition: input.applicationDefinition,
       }),
       numTests: input.numTests,
-      plugins: input.plugins,
+      // U8: Plan C judges by the same per-plugin standards as Plan A. Without
+      // this, turning on native generation would silently regress judging to
+      // promptfoo's one-size rubric — the exact degradation U8 exists to remove,
+      // and one that would only surface as "the numbers changed after the
+      // upgrade".
+      plugins: withPluginJudgeRubrics(input.plugins, buildJudgeRubricMap(input.catalog)),
       strategies: input.strategies,
       injectVar: input.injectVar,
       provider,
@@ -353,6 +510,64 @@ export function buildNativeRedteamConfig(input: {
  * The returned SafeRunResult is produced by the *same* reducer Plan A uses, so
  * downstream reporting, severity handling and redaction are unchanged.
  */
+/**
+ * Load an Eval's result rows so the reducer has something to reduce.
+ *
+ * # Why this exists (U8 — the per-plugin rubric was reaching the grader but not
+ * the report)
+ *
+ * `promptfoo.redteam.run()` returns an `Eval` whose `results` array is **empty**,
+ * even for a run that generated and graded probes. `Eval` keeps a
+ * `_resultsLoaded` flag (dist `index.js:11495`) and only fills `results` via
+ * `setResults()`; the native path goes through `doEval({ write: true })`, which
+ * persists rows and leaves the in-memory array bare. `getResults()` calls
+ * `loadResults()` → `EvalResult.findManyByEvalId()` to read them back.
+ *
+ * Measured on promptfoo 0.123.0 (fake local generation+grading LLM, real
+ * `redteam.run()`):
+ *
+ * ```
+ * eval.id                = eval-cSn-2026-10-11T06:36:38
+ * _resultsLoaded         = false
+ * results.length         = 0        ← what U7 was reducing
+ * await getResults()     = 2        ← the real rows
+ * rows with gradingResult.pass : 2/2
+ * rows with metadata.pluginId  : 2/2
+ * ```
+ *
+ * **The DB round-trip preserves exactly what `reduceEvalToSafeResult` reads**
+ * (`gradingResult.pass` and `testCase.metadata.pluginId`), so loading is
+ * lossless for our purposes — that was verified rather than assumed, because
+ * "it round-trips through SQLite" is exactly the kind of claim that looks safe
+ * and silently drops a field.
+ *
+ * Without this, Plan C reported **0 probes / 0 coverage for every plugin** —
+ * i.e. U8's per-plugin rubric reached the grader (verifiable in the grading
+ * request body) but never reached the report, which made U8 worth nothing on
+ * that path. U7's own smoke test never caught it because it exercises Plan A,
+ * where `evaluate()` returns a populated Eval.
+ *
+ * # Why this lives here and not inline at the call site
+ *
+ * It is the *only* place that turns an `Eval` into reducible rows, so it is the
+ * single exit worth guarding. Tests assert this function (and
+ * `executeNativeRedteamRun` through it), not the internals — see the U8 note
+ * in the design doc: a guard must be pinned to the unique exit, otherwise
+ * deleting the wiring leaves the suite green.
+ */
+export async function loadEvalResults(evalResult: unknown): Promise<EvalLike> {
+  if (!evalResult || typeof evalResult !== 'object') return { results: [] };
+  const evalLike = evalResult as EvalLike & {
+    getResults?: () => Promise<unknown[]>;
+  };
+  // Already populated (Plan A, or a caller that pre-loaded): use as-is rather
+  // than paying for a DB round-trip.
+  if (Array.isArray(evalLike.results) && evalLike.results.length > 0) return evalLike;
+  if (typeof evalLike.getResults !== 'function') return { ...evalLike, results: [] };
+  const rows = await evalLike.getResults();
+  return { ...evalLike, results: Array.isArray(rows) ? (rows as EvalLike['results']) : [] };
+}
+
 export async function executeNativeRedteamRun(
   record: RunRecord,
   emit: Emit,
@@ -386,9 +601,18 @@ export async function executeNativeRedteamRun(
     testGenerationInstructions: request.test_generation_instructions,
     injectVar,
     numTests,
+    // U8: Plan C judges by the same per-plugin standards as Plan A. Without
+    // this, turning the native-generation switch on would silently regress
+    // judging back to promptfoo's one-size rubric — the exact degradation U8
+    // exists to remove, and one that would only show up as "the numbers
+    // changed after the upgrade".
     plugins: request.plugins.map((p) => ({ id: p.id, ...(p.config ? { config: p.config } : {}) })),
     strategies: native,
     credentials,
+    // U8: the per-plugin rubric is attached by buildNativeRedteamConfig from
+    // this catalog — see the note on that function's `catalog` parameter for
+    // why the attachment lives there and not here.
+    catalog: request.catalog,
   });
 
   // Written into the per-run workdir (wiped on terminal state), never into a
@@ -440,7 +664,26 @@ export async function executeNativeRedteamRun(
   }
 
   emit({ run_id: request.run_id, phase: 'engine_judging', status_text: '引擎判定' });
-  const result = reduceEvalToSafeResult(evalResult as never, request.catalog as EngineCatalog | undefined);
+  // U8: `Eval.results` is empty on this path (promptfoo persists the rows and
+  // leaves the in-memory array bare), so it MUST be rehydrated before reducing —
+  // otherwise Plan C reports 0 probes / 0 coverage for every plugin and U8's
+  // per-plugin rubric never reaches the report. See loadEvalResults.
+  const loaded = await loadEvalResults(evalResult);
+  // U8: plugins whose platform rubric could not be injected on this path are
+  // judged by promptfoo's own grader; tell the reducer so the report says so
+  // instead of crediting a platform standard that was never applied.
+  const result = reduceEvalToSafeResult(loaded, request.catalog as EngineCatalog | undefined, {
+    judgeSourceOverrides: nativeJudgeSourceOverrides(request.plugins),
+  });
+  // Second fail-closed gate: rows existed but none survived reduction. Reporting
+  // that as a 0-coverage success is the same green-run-zero-coverage shape U7
+  // closed for `undefined`, one layer later.
+  if (result.totals.probes === 0) {
+    throw new EngineRunError(
+      NATIVE_ERR_NO_TEST_CASES,
+      'promptfoo native generation produced no gradable results after rehydration; refusing to report a zero-coverage success',
+    );
+  }
   emit({ run_id: request.run_id, phase: 'compiling_report', status_text: '生成报告' });
 
   return { result, rawEvalId: (evalResult as { id?: string }).id };
