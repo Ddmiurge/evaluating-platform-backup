@@ -21,6 +21,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -157,6 +158,32 @@ func parseEngineCapabilityRefs(c *gin.Context, in []engineCapabilityInput, empty
 	return out, true
 }
 
+// writeRemoteDepRejection renders the U6 pre-flight rejection.
+//
+// 409 rather than 400: the request is well-formed and the caller may retry it
+// successfully by choosing a different capability. The body carries the
+// machine-readable `code`, the blocked ids, and a `local_only_plugins` hint so
+// the UI can offer a working alternative instead of a dead end. No run record is
+// created and no engine call is made.
+func writeRemoteDepRejection(c *gin.Context, err error) {
+	var guard *maclaw.EngineRemoteDepGuardError
+	if !errors.As(err, &guard) {
+		// Not a guard error — fail closed without leaking internals.
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "remote generation required",
+			"code":  maclaw.EngineErrPluginRequiresRemoteGeneration,
+		})
+		return
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"error":               guard.Error(),
+		"code":                guard.Code,
+		"blocked_plugins":     guard.GatedPlugins,
+		"blocked_strategies":  guard.GatedStrategies,
+		"local_only_plugins":  guard.LocalOnlyHint,
+	})
+}
+
 func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	userID, ok := h.requireEngineContext(c)
 	if !ok {
@@ -224,6 +251,17 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	}
 	strategies, ok := parseEngineCapabilityRefs(c, in.Strategies, "strategy id is required")
 	if !ok {
+		return
+	}
+
+	// U6 pre-flight guard: reject remote-generation-gated capabilities BEFORE
+	// any credential materialization, persistence or engine dispatch. Without
+	// this, promptfoo accepts the plugin, `return []`s mid-run under
+	// fail-closed, and the user gets a green run with 0 coverage for the
+	// plugin they selected. Failing here also means a rejected request leaves
+	// no orphaned engine_runs row.
+	if err := maclaw.ValidateEngineRunRemoteGeneration(plugins, strategies); err != nil {
+		writeRemoteDepRejection(c, err)
 		return
 	}
 

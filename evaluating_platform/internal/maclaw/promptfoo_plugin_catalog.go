@@ -32,24 +32,41 @@ type promptfooPluginCatalogEntry struct {
 	RiskTypes      []string
 	DefaultSev     string
 	UseWhen        string
+	// RequiresRemoteGeneration mirrors promptfoo's own remote-dependency
+	// tables (U6). It is derived from the embedded mapping table rather than
+	// hand-set per entry, so the flag cannot drift from upstream. Purely
+	// descriptive metadata: nothing in the generation or judging path reads
+	// it. The pre-flight guard (ValidateEngineRunRemoteGeneration) and the
+	// frontend greying are its only consumers.
+	RequiresRemoteGeneration bool
 }
 
 type promptfooStrategyCatalogEntry struct {
 	ID      string
 	Name    string
 	Summary string
+	// RequiresRemoteGeneration mirrors promptfoo's strategy-side gating
+	// (U6). Same contract as the plugin field: derived, descriptive, and
+	// consumed only by the pre-flight guard and the frontend.
+	RequiresRemoteGeneration bool
 }
 
 // p is a compact constructor for plugin entries; risk types follow category.
+// RequiresRemoteGeneration is looked up from the embedded mapping table so the
+// catalog and the guardrail can never disagree.
 func p(id, name, category, summary, sev string) promptfooPluginCatalogEntry {
 	return promptfooPluginCatalogEntry{
 		ID: id, Name: name, Category: category, Summary: summary,
 		RiskTypes: []string{category}, DefaultSev: sev, UseWhen: categoryUseWhen(category),
+		RequiresRemoteGeneration: PluginRequiresRemoteGeneration(id),
 	}
 }
 
 func s(id, name, summary string) promptfooStrategyCatalogEntry {
-	return promptfooStrategyCatalogEntry{ID: id, Name: name, Summary: summary}
+	return promptfooStrategyCatalogEntry{
+		ID: id, Name: name, Summary: summary,
+		RequiresRemoteGeneration: StrategyRequiresRemoteGeneration(id),
+	}
 }
 
 func categoryUseWhen(category string) string {
@@ -266,7 +283,7 @@ func PromptfooPluginCatalogCards() []CapabilityCard {
 }
 
 func promptfooPluginCard(entry promptfooPluginCatalogEntry) CapabilityCard {
-	return CapabilityCard{
+	card := CapabilityCard{
 		SourceType:     CapabilitySourcePromptfooPlugin,
 		SourceRef:      "promptfoo_plugin:" + entry.ID,
 		Name:           entry.Name,
@@ -287,10 +304,19 @@ func promptfooPluginCard(entry promptfooPluginCatalogEntry) CapabilityCard {
 			"default_severity": entry.DefaultSev,
 		},
 	}
+	// U6: remote-dependent plugins stay visible but are marked unavailable, so
+	// users learn "this capability exists and is blocked here" rather than
+	// concluding the platform does not have it. Enabled stays true — the flag
+	// is advisory for the selector, not a removal from the catalog.
+	if entry.RequiresRemoteGeneration {
+		card.SafeMetadata["requires_remote_generation"] = "true"
+		card.SafeMetadata["unavailable_reason"] = RemoteGenerationUnavailableMessage
+	}
+	return card
 }
 
 func promptfooStrategyCard(entry promptfooStrategyCatalogEntry) CapabilityCard {
-	return CapabilityCard{
+	card := CapabilityCard{
 		SourceType:     CapabilitySourcePromptfooStrategy,
 		SourceRef:      "promptfoo_strategy:" + entry.ID,
 		Name:           entry.Name,
@@ -308,6 +334,17 @@ func promptfooStrategyCard(entry promptfooStrategyCatalogEntry) CapabilityCard {
 			"strategy_id": entry.ID,
 		},
 	}
+	if entry.RequiresRemoteGeneration {
+		card.SafeMetadata["requires_remote_generation"] = "true"
+		card.SafeMetadata["unavailable_reason"] = RemoteGenerationUnavailableMessage
+		// The platform and promptfoo strategy vocabularies differ for some
+		// gated entries; ship the mapping so the engine and the error message
+		// can speak promptfoo's id.
+		if native := PromptfooRemoteDepStrategyID(entry.ID); native != "" {
+			card.SafeMetadata["promptfoo_strategy_id"] = native
+		}
+	}
+	return card
 }
 
 // SearchPromptfooPluginCatalog searches the static plugin/strategy catalog by
@@ -444,19 +481,32 @@ func PromptfooCategoryLabel(category string) string {
 // engine run (U2/T2.2). It is derived from the static plugin/strategy catalogs
 // so the engine and the backend agree on category, label, and severity for
 // every plugin_id — the engine no longer keeps its own regex/mapping tables.
+// U6 adds the remote-generation flag so the engine can refuse a gated run
+// before promptfoo silently produces 0 cases for it.
 func PromptfooEngineCatalog() *EngineCatalog {
 	plugins := make([]EngineCatalogPlugin, 0, len(promptfooPluginCatalog))
 	for _, entry := range promptfooPluginCatalog {
-		plugins = append(plugins, EngineCatalogPlugin{
+		plugin := EngineCatalogPlugin{
 			ID:            entry.ID,
 			Category:      entry.Category,
 			CategoryLabel: PromptfooCategoryLabel(entry.Category),
 			Severity:      entry.DefaultSev,
-		})
+		}
+		if entry.RequiresRemoteGeneration {
+			plugin.RequiresRemoteGeneration = true
+			plugin.UnavailableReason = RemoteGenerationUnavailableMessage
+		}
+		plugins = append(plugins, plugin)
 	}
 	strategies := make([]EngineCatalogStrategy, 0, len(promptfooStrategyCatalog))
 	for _, entry := range promptfooStrategyCatalog {
-		strategies = append(strategies, EngineCatalogStrategy{ID: entry.ID, Name: entry.Name})
+		strategy := EngineCatalogStrategy{ID: entry.ID, Name: entry.Name}
+		if entry.RequiresRemoteGeneration {
+			strategy.RequiresRemoteGeneration = true
+			strategy.UnavailableReason = RemoteGenerationUnavailableMessage
+			strategy.PromptfooID = PromptfooRemoteDepStrategyID(entry.ID)
+		}
+		strategies = append(strategies, strategy)
 	}
 	return &EngineCatalog{Plugins: plugins, Strategies: strategies}
 }

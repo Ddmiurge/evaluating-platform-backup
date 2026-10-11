@@ -247,3 +247,91 @@ DeepSeek（key 失效，官方 401）切换为：
 - 引擎 fail-closed 开关全程未动：`PROMPTFOO_DISABLE_REMOTE_GENERATION=1`、
   `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=1`、telemetry/share 禁用，
   未设置 `PROMPTFOO_REMOTE_GENERATION_URL`。
+
+---
+
+## 六、U6 · 远程依赖能力护栏（2026-10-11）
+
+> 本文第一节第 3 条记录了那个静默失败：`return []`。U6 不改生成方案（仍是方案 A），
+> **只把那层静默变成显式可见的护栏**，为 U7（方案 C）预铺。
+
+### 6.1 问题：fail-closed 下「跑完了」不等于「覆盖到了」
+
+第一节第 3 条的代码在 plan A 下不构成问题——**方案 A 根本不调用 promptfoo 的远程插件**
+（`generateTests.ts` 自己合成攻击 prompt，promptfoo 只在 evaluate 模式消费）。
+但它是一颗定时炸弹：**U7 一旦接入 promptfoo 原生生成（`runRedteam`），
+`createRemotePlugin` 就会走到这条分支**，于是「评测跑完、报告出来、该插件覆盖 0」，
+用户完全无从得知。
+
+### 6.2 数字（promptfoo 0.123.0 运行时求值）
+
+| 来源（上游常量） | 运行时长度 | 命中平台 119 目录 |
+|---|---|---|
+| `REMOTE_ONLY_PLUGIN_IDS` | 93 | **65** |
+| `UNALIGNED_PROVIDER_HARM_PLUGINS` | 22 | **21**（1 条不在平台目录内） |
+| `BIAS_PLUGINS` | 4 | **4** |
+| **合计去重** | | **90 / 119** |
+
+→ **仅 29 个插件可纯本地生成**（清单见 `internal/maclaw/promptfoo_remote_dep.json`
+的 `catalog_marked_plugins`，其补集被 `TestLocalOnlyPluginIDsAreTheDocumentedList` 硬钉住）。
+
+策略侧被屏蔽 4 个：`bestOfN` / `likert` / `citation` / `singleTurnComposite`
+（promptfoo 原生 id 分别是 `best-of-n` / `jailbreak:likert` / `citation` /
+`jailbreak:composite`，**平台 id 与上游 id 不一致**，映射表里一并记录）。
+
+### 6.3 三层护栏
+
+| 层 | 落点 | 行为 |
+|---|---|---|
+| **目录标记** | `internal/maclaw/promptfoo_plugin_catalog.go` | 条目增 `RequiresRemoteGeneration`，经`p()`/`s()` 构造器**从映射表派生**（不逐条手写，无法漂移）；随 `EngineCatalog` 下发给引擎 |
+| **前端可见** | `engineEval.ts` + `EngineEvalPage.tsx` | 被标记项**置灰但保留可见**，并**就地写出屏蔽原因**（不依赖悬停）；页面底部说明置灰数量与原因 |
+| **运行前拒绝** | `promptfoo_remote_dep.go` + 引擎 `remoteDepGuard.ts` | 请求含被标记项 → **409** + `plugin_requires_remote_generation` / `strategy_requires_remote_generation` + 受阻 id + 可用替代提示 |
+
+**为什么 BFF 与引擎各有一道闸**：引擎是可独立部署的服务，有自己的 REST 面。
+绕过 BFF 直连引擎的请求（老 BFF、重放的抓包、未来新调用方）同样会产出静默 0 覆盖的run。
+两道闸共享同一真相源——标记由 BFF 随 catalog 下发，**引擎侧不复制映射表**；
+无 catalog 时引擎不拒绝（避免出现第二份会腐烂的清单），由 BFF 那道门兜底。
+
+### 6.4 防漂移：映射表是生成物，不是手维护物
+
+```
+scripts/gen_remote_dep.mjs  ──运行时求值──>  internal/maclaw/testdata/promptfoo_remote_dep.json
+                                                              │
+                                                        go:embed│
+                                                              ▼
+                                    internal/maclaw/promptfoo_remote_dep.go
+```
+
+**升级 promptfoo 后必须重跑并review diff**：
+
+```bash
+cd promptfoo_engine && npm ci
+cd .. && node scripts/gen_remote_dep.mjs
+cd .. && git diff --exit-code internal/maclaw/testdata/promptfoo_remote_dep.json
+```
+
+**禁止按源码字面量或「形状」数清单**（详细原因与实测见 `audit-2026-10-09/14` §3.4.1）：
+
+- `REMOTE_ONLY_PLUGIN_IDS` 含 **8 个 `...spread`**，字面量 26 vs 运行时 **93**（差 67）；
+- 同chunk 内有 **171 键的 plugin→severity map** 与26 键 `HARM_PLUGINS`，形状启发式会误认
+  （U6 第一版据此跑出 **116 marked / 3 local** 的错数）；
+- chunk 文件名是**内容哈希**（本机 3 个变体），导出名是压缩后的（`zt`/`Ut`/`St`），**都不可硬编码**。
+
+唯一可靠法：**解析 `dist/src/index.js` 里 `import { zt as REMOTE_ONLY_PLUGIN_IDS, ... } from "./tables-XXXX.js"`
+这行**，得到「哪个 chunk 的哪个导出 = 哪个常量」，再 `import()` 取值。
+生成器是 **fail-loud**：上游常量改名即 **exit 1**（勿改成静默兜底）。
+
+`promptfoo_remote_dep_test.go` 的 7 个断言把这条链钉住，其中
+`TestRemoteDepProvenanceMatchesInstalledPromptfoo` 把表里的 `promptfoo_version`
+与 `package.json` / `package-lock.json` 三方对照——**升级不重生成就会红**。
+
+### 6.5 边界与已知局限
+
+- **本批零生成/判定逻辑变更**：`generateTests.ts` / `redteamRun.ts` / `env.ts` 均未改动，
+  四个 fail-closed 开关未动。运行**前**行为有变更（原本静默跑 0 条 → 现在 409），这正是本批目的。
+- **静态求值无法穷尽**：插件内部可能存在未登记的远程触发路径
+  （例：`memoryPoisoning-*.js` 直接调 `getRemoteGenerationUrl()`，**不经 `neverGenerateRemote()` 守卫**）。
+  本表是「已知的已知」，**最终以 U7 Step 0 真实环境实测为准**。
+- **多轮策略不在屏蔽之列**：`crescendo` / `goat` / `hydra` / `iterative` /
+  `iterative:tree` / `iterative:meta` 用 `shouldGenerateRemote()` **条件性**选择远程 provider，
+  在方案 C 下可走本地 provider——**这正是 U7 的主要收益来源**。

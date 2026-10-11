@@ -11,6 +11,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { RunRequest, RunProgressEvent } from '../types.js';
 import type { TaskManager } from '../manager/taskManager.js';
+import { assertNoRemoteGenerationRequired } from '../remoteDepGuard.js';
 
 export function createRunsRouter(manager: TaskManager): Router {
   const router = Router();
@@ -44,6 +45,23 @@ export function createRunsRouter(manager: TaskManager): Router {
     }
     if (manager.getStatus(body.run_id)) {
       res.status(409).json({ error: 'run_already_exists' });
+      return;
+    }
+    // U6: refuse a run whose plugins/strategies need promptfoo's remote
+    // generation service. Without this the run would be accepted and then
+    // promptfoo would `return []` per gated plugin mid-run — exit code 0, a
+    // report, and 0 coverage for the capability the user selected. Rejecting
+    // here means nothing is enqueued, so no queued job and no report can exist
+    // for a run that was never really executed.
+    const remoteDep = assertNoRemoteGenerationRequired(body.plugins, body.strategies, body.catalog);
+    if (remoteDep) {
+      res.status(409).json({
+        error: 'remote_generation_required',
+        error_code: remoteDep.code,
+        message: remoteDep.message,
+        blocked_plugins: remoteDep.blockedPlugins,
+        blocked_strategies: remoteDep.blockedStrategies,
+      });
       return;
     }
     const accepted = manager.submit(body as RunRequest);

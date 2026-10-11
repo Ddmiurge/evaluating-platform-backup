@@ -2,27 +2,66 @@
  * 自选评测向导页（Phase 2）：不经聊天工作台直接发起 promptfoo 引擎评测。
  * 页首引导回 AI 对话（对话优先），表单 → 进度 → 结果三段式 + 历史记录。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Alert, Button, Card, Col, Collapse, Descriptions, Form, InputNumber, Progress, Row, Select, Space, Spin, Steps, Table, Tag, Typography, message,
+  Alert, Button, Card, Col, Collapse, Descriptions, Form, InputNumber, Progress, Row, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
-  ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS, engineEvalService,
+  ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS,
+  REMOTE_GENERATION_UNAVAILABLE_REASON, engineEvalService, explainRemoteGenerationRejection,
+  isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, toEngineSelectOption,
 } from '../../services/engineEval'
 import type { EngineRun, EngineRunResult } from '../../services/engineEval'
 
-/** 插件选项按风险类别分组（与后端 catalog 的 category 对齐）。 */
+/**
+ * 插件选项按风险类别分组（与后端 catalog 的 category 对齐）。
+ *
+ * U6：被标记 `requires_remote_generation` 的条目**置灰但保留可见**，并在灰态
+ * 上挂 Tooltip 说明屏蔽原因。用户必须能看到「这个能力存在但此处不可用」——
+ * 若直接隐藏，用户会以为平台不具备该能力，从而忽略这块风险面。
+ */
 const ENGINE_PLUGIN_GROUPS = Object.entries(
-  ENGINE_PLUGIN_OPTIONS.reduce<Record<string, Array<{ value: string; label: string }>>>((acc, p) => {
-    ;(acc[p.category] ||= []).push({ value: p.id, label: p.name })
+  ENGINE_PLUGIN_OPTIONS.reduce<Record<string, ReturnType<typeof toEngineSelectOption>[]>>((acc, p) => {
+    ;(acc[p.category] ||= []).push(toEngineSelectOption(p))
     return acc
   }, {}),
 ).map(([category, options]) => ({
   label: ENGINE_PLUGIN_CATEGORY_LABELS[category] ?? category,
   options,
 }))
+
+const ENGINE_STRATEGY_SELECT_OPTIONS = ENGINE_STRATEGY_OPTIONS.map(toEngineSelectOption)
+
+/**
+ * 灰态选项统一渲染：置灰 + 就地显示屏蔽原因 + 悬停补充完整说明。
+ *
+ * antd v5 的 `optionRender` 里包 `<Tooltip>` 不可靠：Tooltip 会把
+ * `aria-describedby` 挂到内层 span 上，但虚拟列表只在可视窗口内挂载 tooltip
+ * 节点，headless 下实测 `.ant-tooltip` 始终为 0 个——即悬停不出现。
+ * 因此**屏蔽原因直接写进选项本身**（不依赖悬停即可读），Tooltip 仅作为补充。
+ */
+function renderDisabledOption(option: unknown): ReactNode {
+  const data = option as { label?: string; disabled?: boolean; reason?: string } | undefined
+  if (!data || data.disabled !== true) {
+    return data?.label ?? ''
+  }
+  const reason = data.reason ?? REMOTE_GENERATION_UNAVAILABLE_REASON
+  return (
+    <Tooltip title={reason}>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span>
+          <span style={{ color: 'rgba(0,0,0,0.25)' }}>{data.label}</span>
+          <Tag color="default" style={{ marginLeft: 6, fontSize: 11 }}>需远程生成</Tag>
+        </span>
+        {/* 屏蔽原因就地可见：不悬停也能读懂为什么置灰 */}
+        <span style={{ color: 'rgba(0,0,0,0.45)', fontSize: 12, lineHeight: 1.4 }}>{reason}</span>
+      </span>
+    </Tooltip>
+  )
+}
 
 const { Paragraph, Text, Title } = Typography
 
@@ -175,6 +214,16 @@ export function EngineEvalPage() {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const pollRef = useRef<number | null>(null)
 
+  // U6：置灰项数量（供下方 Alert 说明，不隐藏任何条目）。
+  const gatedPluginCount = useMemo(
+    () => ENGINE_PLUGIN_OPTIONS.filter((p) => p.requires_remote_generation).length,
+    [],
+  )
+  const gatedStrategyCount = useMemo(
+    () => ENGINE_STRATEGY_OPTIONS.filter((s) => s.requires_remote_generation).length,
+    [],
+  )
+
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
     try {
@@ -209,6 +258,16 @@ export function EngineEvalPage() {
   }, [loadHistory])
 
   const onSubmit = async (values: { purpose: string; num_tests: number; plugins: string[]; strategies?: string[] }) => {
+    // U6 客户端侧二次拦截：后端与引擎都会拒绝，但选择器已置灰，这里只是防止
+    // 表单被预填/粘贴绕过时把一个必然被拒的请求发出去。
+    const gated = (values.plugins ?? []).filter(isPluginRemoteGenerationGated)
+    const gatedStrategies = (values.strategies ?? []).filter(isStrategyRemoteGenerationGated)
+    if (gated.length > 0 || gatedStrategies.length > 0) {
+      message.error(
+        `${REMOTE_GENERATION_UNAVAILABLE_REASON}。本次选择包含不可用能力：${[...gated, ...gatedStrategies].join('、')}。请改选可本地生成的能力。`,
+      )
+      return
+    }
     setSubmitting(true)
     try {
       const run = await engineEvalService.createRun({
@@ -222,8 +281,15 @@ export function EngineEvalPage() {
       startPolling(run.id)
       message.success('评测任务已提交')
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || '提交失败'
-      message.error(msg)
+      // U6：远程依赖拒绝是可读的业务错误，单独翻译；其余沿用原提示。
+      const data = (e as { response?: { data?: unknown } })?.response?.data
+      const rejection = explainRemoteGenerationRejection(data)
+      if (rejection) {
+        message.error(rejection.message)
+      } else {
+        const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || '提交失败'
+        message.error(msg)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -266,16 +332,26 @@ export function EngineEvalPage() {
               </Form.Item>
               <Form.Item name="plugins" label="攻击插件" rules={[{ required: true, message: '至少选择一个插件' }]}>
                 <Select mode="multiple" placeholder="选择攻击类别"
-                  options={ENGINE_PLUGIN_GROUPS} />
+                  options={ENGINE_PLUGIN_GROUPS}
+                  optionRender={(option) => renderDisabledOption(option.data)} />
               </Form.Item>
               <Form.Item name="strategies" label="攻击策略">
                 <Select mode="multiple" placeholder="默认直接攻击"
-                  options={ENGINE_STRATEGY_OPTIONS.map(s => ({ value: s.id, label: s.name }))} />
+                  options={ENGINE_STRATEGY_SELECT_OPTIONS}
+                  optionRender={(option) => renderDisabledOption(option.data)} />
               </Form.Item>
               <Button type="primary" htmlType="submit" block loading={submitting} icon={<PlayCircleOutlined />}>
                 开始评测
               </Button>
             </Form>
+            {/* U6：说明为何部分能力置灰——避免用户把「屏蔽」误读为「平台没有」。 */}
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginTop: 16 }}
+              message={`${gatedPluginCount} 个插件 / ${gatedStrategyCount} 个策略当前不可选`}
+              description={`${REMOTE_GENERATION_UNAVAILABLE_REASON}。这些能力仍然列在上方（置灰），只是在本环境无法产生评测用例——若强行提交，引擎会直接报错而不会静默跑 0 条。`}
+            />
           </Card>
         </Col>
 

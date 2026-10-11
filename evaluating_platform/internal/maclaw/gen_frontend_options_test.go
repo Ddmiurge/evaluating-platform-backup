@@ -52,11 +52,23 @@ func extractTSArrayIDs(t *testing.T, src, constName string) []string {
 	if marker < 0 {
 		t.Fatalf("frontend engineEval.ts: const %q not found", constName)
 	}
-	openRel := strings.Index(src[marker:], "[")
-	if openRel < 0 {
-		t.Fatalf("frontend engineEval.ts: array start for %q not found", constName)
+	// Anchor on the ASSIGNED array literal, not merely the first "[" after the
+	// name. A TypeScript type annotation on the const (`const X: Foo[] = [`)
+	// contains its own brackets, and treating that as the array body yields
+	// zero ids — a false "catalog drift" that looks like a truncated file but
+	// is really a parser bug. Requiring the bracket to be preceded by "= "
+	// keeps the guard correct for any annotation style (`ReadonlyArray<T>`,
+	// `as const`, no annotation at all).
+	assignRel := strings.Index(src[marker:], "= [")
+	if assignRel < 0 {
+		t.Fatalf(
+			"frontend engineEval.ts: could not find the array literal assigned to %q "+
+				"(expected `= [` after the const name). If the declaration was restructured, "+
+				"update extractTSArrayIDs in this file together with it — do not weaken the guard.",
+			constName,
+		)
 	}
-	open := marker + openRel
+	open := marker + assignRel + 2 // land on the "[" of "= ["
 	closeRel := strings.Index(src[open:], "]")
 	if closeRel < 0 {
 		t.Fatalf("frontend engineEval.ts: array end for %q not found", constName)
@@ -66,6 +78,16 @@ func extractTSArrayIDs(t *testing.T, src, constName string) []string {
 	ids := make([]string, 0, len(matches))
 	for _, m := range matches {
 		ids = append(ids, m[1])
+	}
+	// A zero-length result means the parser anchored on the wrong bracket (or
+	// the array was emptied). Report that as a parse failure rather than as
+	// catalog drift, so the cause is obvious from the message alone.
+	if len(ids) == 0 {
+		t.Fatalf(
+			"frontend engineEval.ts: parsed zero ids from the %q array literal. "+
+				"This is a parser/anchor problem, not catalog drift.",
+			constName,
+		)
 	}
 	return ids
 }

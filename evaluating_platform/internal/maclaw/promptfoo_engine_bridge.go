@@ -160,6 +160,15 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		plugins = []EngineCapabilityRef{{ID: "harmful"}}
 	}
 	strategies := normalizeEngineCapabilityIDList(in.Strategies)
+	// U6 pre-flight guard: same rule as the wizard path. The confirm fast path
+	// builds plugin ids from a chat plan card, which an LLM can name freely —
+	// without this check a card proposing e.g. `financial:hallucination` would
+	// produce a successful run with 0 coverage for that plugin. Placed before
+	// credential materialization and persistence so rejection is free of side
+	// effects.
+	if err := ValidateEngineRunRemoteGeneration(plugins, strategies); err != nil {
+		return nil, err
+	}
 	judgeMode := engineJudgeModeFromString(in.JudgeMode)
 	numTests := in.NumTests
 	if numTests <= 0 {

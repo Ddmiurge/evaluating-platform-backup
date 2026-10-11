@@ -72,12 +72,28 @@ export interface EngineCatalogPlugin {
   category: string;
   category_label: string;
   severity: string;
+  /**
+   * U6: the backend flags plugins whose attack cases promptfoo can only fetch
+   * from its remote generation service. This deployment is fail-closed on that
+   * channel (PROMPTFOO_DISABLE_REMOTE_GENERATION=1), and promptfoo responds by
+   * `return []`-ing mid-run — a green run with 0 coverage for that plugin. The
+   * engine therefore refuses such a run up front with a readable error code.
+   */
+  requires_remote_generation?: boolean;
+  /** User-facing explanation to surface when the run is rejected. */
+  unavailable_reason?: string;
 }
 
 /** One attack strategy as named by the backend catalog. */
 export interface EngineCatalogStrategy {
   id: string;
   name: string;
+  /** U6: same remote-generation gate as EngineCatalogPlugin. */
+  requires_remote_generation?: boolean;
+  /** promptfoo's own id for this strategy (differs for gated entries). */
+  promptfoo_id?: string;
+  /** User-facing explanation to surface when the run is rejected. */
+  unavailable_reason?: string;
 }
 
 /** Plugin/strategy catalog shipped with a run request. */

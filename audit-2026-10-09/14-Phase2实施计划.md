@@ -137,8 +137,21 @@ graph TB
 |---|---|
 | **批次目标** | 把"哪些插件/策略在fail-closed 下不可用"从**日志里的静默 `return []`**变成**目录里显式、前端可见、运行前明确报错**的护栏。**这是 U7 的验收前提。** |
 | **前置依赖** | U1（目录单一来源断言已就位，作为护栏的回归网） |
-| **涉及文件** | 改：`internal/maclaw/promptfoo_plugin_catalog.go`（目录条目增字段）、`promptfoo_plugin_catalog_test.go`、新增 `internal/maclaw/promptfoo_remote_dep.go`（远程依赖判定 + 映射表）、`frontend/src/services/engineEval.ts`（由后端生成，带出新字段）、报告/前端展示组件；改：`docs/architecture/*` |
-| **关键实现要点** | ① **零行为变更**：本批**不改生成逻辑**，只加元数据 + 校验 + 展示；② 目录条目增字段 `requires_remote_generation: bool`（或等价标记），值由**一张映射表**驱动，映射表来源见 §3；③ **CI 断言**：目录里标了 `requires_remote_generation` 的条目，其 id 必须真实存在于 promptfoo 的远程依赖清单中（防止 promptfoo 升级后清单变化导致我们的标记漂移）；④ **前端可见**：插件选择器对被标记项**置灰 + 显示"需远程生成·当前环境已屏蔽"**，且**明确不隐藏**（用户要能看到"这个能力存在但此处不可用"，而不是以为平台没有）；⑤ **运行前明确报错**：若请求里出现被标记的 plugin/strategy，引擎侧**返回可读的 `error_code`**（如 `plugin_requires_remote_generation`）而非静默 `return []`。 |
+| **涉及文件** | 改：`internal/maclaw/promptfoo_plugin_catalog.go`（目录条目增字段）、`promptfoo_plugin_catalog_test.go`、新增 `internal/maclaw/promptfoo_remote_dep.go`（远程依赖判定 + 映射表）、`frontend/src/services/engineEval.ts`（带出新字段）、报告/前端展示组件；改：`docs/architecture/*` |
+| **关键实现要点** | ① **零行为变更**：本批**不改生成逻辑**，只加元数据 + 校验 + 展示。**验收口径（U6 已确认）**：U6 是「**生成与判定逻辑**零行为变更」，**不是**「运行前行为零变更」——新增的预检会把原本「静默跑 0 条」的请求变成 409 拒绝，这正是本批的目的（若要求连预检都不许加，则与要点⑤ 自相矛盾）；② 目录条目增字段 `requires_remote_generation: bool`（或等价标记），值由**一张映射表**驱动，映射表来源见 §3；③ **CI 断言**：目录里标了 `requires_remote_generation` 的条目，其 id 必须真实存在于 promptfoo 的远程依赖清单中（防止 promptfoo 升级后清单变化导致我们的标记漂移）；④ **前端可见**：插件选择器对被标记项**置灰 + 显示"需远程生成·当前环境已屏蔽"**，且**明确不隐藏**（用户要能看到"这个能力存在但此处不可用"，而不是以为平台没有）；⑤ **运行前明确报错**：若请求里出现被标记的 plugin/strategy，引擎侧**返回可读的 `error_code`**（如 `plugin_requires_remote_generation`）而非静默 `return []`。 |
+
+**U6 落地结果（2026-10-11，可复核）**：
+
+| 项 | 落点 |
+|---|---|
+| 映射表单一来源 | `scripts/gen_remote_dep.mjs` → `internal/maclaw/testdata/promptfoo_remote_dep.json`（`go:embed`，**不手维护**） |
+| 后端判定 + 预检 | `internal/maclaw/promptfoo_remote_dep.go`（`ValidateEngineRunRemoteGeneration`，纯函数） |
+| 后端防漂移断言 | `internal/maclaw/promptfoo_remote_dep_test.go`（7 个测试，见下） |
+| 引擎侧独立闸 | `promptfoo_engine/src/remoteDepGuard.ts` + `src/routes/runs.ts`（409 + `error_code`） |
+| 前端置灰 | `frontend/src/services/engineEval.ts` + `EngineEvalPage.tsx` |
+| 实测证据 | `audit-2026-10-09/evidence/u6/`（截图 + headless 检查输出） |
+
+**为什么 BFF 与引擎各有一道闸**：引擎是**可独立部署的服务**，有自己的 REST 面。绕过 BFF 直连引擎的请求（老版本 BFF、重放的抓包、未来新调用方）同样会产出「静默 0 覆盖」的 run。两道闸共享同一真相源——`requires_remote_generation` 由 BFF 随catalog 下发，**引擎侧不复制映射表**（无 catalog 时不拒绝，避免出现第二份会腐烂的清单）。
 
 **为什么必须有这批**：promptfoo 在远程关闭时的行为是
 
@@ -257,14 +270,31 @@ node --input-type=module -e "
 
 ### 3.2 三处来源与命中数
 
+> **U6 实测复核（2026-10-11）**：下表三个数字已由 `evaluating_platform/scripts/gen_remote_dep.mjs` 在 promptfoo **0.123.0** 上运行时复现，**与本表逐字一致**（65 / 21 / 4，合计 90 / 119，本地 29）。两处措辞已更正，见下方脚注。
+
 | 来源 | 常量（运行时长度） | 命中平台 119 目录 |
 |---|---|---|
 | 远程专用插件 | `REMOTE_ONLY_PLUGIN_IDS`（93） | **65** |
-| 非对齐有害生成 | `UNALIGNED_PROVIDER_HARM_PLUGINS`（22，扣除已计入的 1） | **21** |
+| 非对齐有害生成 | `UNALIGNED_PROVIDER_HARM_PLUGINS`（22，其中 1 条不在平台目录内） | **21** |
 | 偏见家族 | `BIAS_PLUGINS`（4） | **4** |
 | **合计（去重）** | | **90 / 119** |
 
+**更正 1 —— 「扣除已计入的 1」是措辞错误。** U6 实测：22 条 unaligned id 与 65 条 remote_only 命中集合**交集为 0**（两者不重叠，无需去重）。那「1」指的是**运行时 22 条里有 1 条不在平台 119 目录内**，所以只命中 21。总数 90 的算法正确，但原文会误导后人以为要再去重一次。
+
+**更正 2 —— `REMOTE_ONLY_PLUGIN_IDS` 是数组，不是 Record。** U6 实测（promptfoo 0.123.0）：
+
+```
+Array.isArray()        : true
+.length                : 93
+Object.keys().length   : 93      // 与 .length 相同
+Object.keys() 前 3 个   : ["0","1","2"]   // 数组下标，非 Record 语义键
+```
+
+因此**不存在「必须用 `Object.keys()` 否则只拿到 26」的问题**；`m.zt.length` 与 `Object.keys(m.zt).length` 都是 93。若在其他版本看到 124 等数字，**先确认那个数来自哪个导出**——U6 扫过该chunk 全部导出，**没有任何 size=124 的导出**；相邻的真实规模是 93（REMOTE_ONLY）/ 171（plugin→severity map）/ 26（HARM_PLUGINS，键与 REMOTE_ONLY 有重叠）/ 22 / 4。另注：`index.js` 与 `main.js` 从**不同chunk** 各自 import `REMOTE_ONLY_PLUGIN_IDS`（`tables-*.js` 的 `zt` / `At`），U6 已比对两者**均为数组、均 93、集合完全一致**。
+
 → **仅 29 个插件可纯本地生成**：`beavertails` / `bias` / `contracts` / `cross-session-leak` / `cyberseceval` / `divergent-repetition` / `donotanswer` / `excessive-agency` / `hallucination` / `harmbench` / `harmful` / `harmful:intellectual-property` / `harmful:privacy` / `imitation` / `jailbreak` / `overreliance` / `pii` / `pii:api-db` / `pii:direct` / `pii:session` / `pii:social` / `pliny` / `policy` / `politics` / `prompt-extraction` / `prompt-injection` / `security-exploit` / `teen-safety:age-restricted-goods-and-services` / `xstest`
+
+**⚠️ 巧合警告，不要「对齐」它**：三张表的运行时**并集恰好也是 119**，与平台目录条数相同，但**两个集合并不相同**（各差 29 条，纯属巧合）。若有人发现「并集 = 目录数」而试图据此简化映射表，请先跑集合差集确认。
 
 ### 3.3 策略侧（原生生成不可用，7 个）
 
@@ -281,6 +311,50 @@ node --input-type=module -e "
 | —（平台目录无） | `video` | `strategies-*.js:1914`（有 ffmpeg 本地回退路径） |
 
 > ⚠️ **多轮策略（`crescendo` / `goat` / `hydra` / `iterative` / `iterative:tree` / `iterative:meta`）不在此列** —— 它们用 `shouldGenerateRemote()` **条件性**选择远程 provider（`crescendo-*.js:73`、`hydra-*.js:79`、`iterative-*.js:468`），在 C 方案下可走本地 provider。**这正是 U7 的主要收益来源。**
+
+---
+
+## 3.4 U7 前置硬约束（U6 实测沉淀，**必须在 U7 Step 0 遵守**）
+
+U6 已把远程依赖清单落成代码并加了防漂移断言。以下两条是踩过坑得出的，**不是建议，是硬约束**。
+
+### 3.4.1 禁止按源码字面量或「形状」数远程依赖清单
+
+**唯一可靠法：解析 `dist/src/index.js` 的具名import，再 import 取值。**
+
+```bash
+cd evaluating_platform && node scripts/gen_remote_dep.mjs
+```
+
+为什么不能用别的办法（U6 全部实测过）：
+
+|错误做法 | 实测结果 |
+|---|---|
+| grep 源码字面量行 | `REMOTE_ONLY` 含 **8 个 `...spread`** 引用其他表 → 数出 26，**实际 93（差 67）** |
+| 按「93 字符串数组」等**形状**猜导出 | 同 chunk 内有一个 **171 键的 plugin→severity map** 和 26 键 `HARM_PLUGINS` 干扰 → 误认成 `UNALIGNED`，跑出**116 marked / 3 local**（错） |
+| 硬编码 `tables-BboCJNxW.js` + `zt`/`Ut`/`St` | chunk 文件名是**内容哈希**（本机就有 **3 个变体**），导出名是**压缩后的**，升级即失效 |
+
+生成器的实际做法：`index.js` 里有一行
+`import { zt as REMOTE_ONLY_PLUGIN_IDS, Ut as UNALIGNED_PROVIDER_HARM_PLUGINS, St as BIAS_PLUGINS } from "./tables-XXXX.js"`
+—— 解析这行得到「哪个 chunk 的哪个导出 = 哪个常量」，再 `import()` 取值。**这是唯一不靠猜的路径。**
+
+### 3.4.2 升级 promptfoo 后必须重新生成并 review diff
+
+```bash
+cd evaluating_platform/promptfoo_engine && npm ci
+cd .. && node scripts/gen_remote_dep.mjs
+cd .. && git diff --exit-code internal/maclaw/testdata/promptfoo_remote_dep.json   # 有 diff 就说明清单变了，必须人工看
+```
+
+- 生成器是 **fail-loud** 设计：上游常量改名 → **exit 1 + 明确报错**。**不得改成静默兜底**（静默兜底会让标记悄悄腐烂，正是U6 要消灭的那类静默失败）。
+- `TestRemoteDepProvenanceMatchesInstalledPromptfoo` 会把表里的 `promptfoo_version` 与 `promptfoo_engine/package.json` / `package-lock.json` 三方对照，**升级后不重新生成就会红**。
+- 90 / 29 这两个数字被 `TestPromptfooRemoteDepMappingMatchesPromptfoo` 与 `TestLocalOnlyPluginIDsAreTheDocumentedList` **硬钉住**，且与本文档 §3.2 同步维护。
+
+### 3.4.3 `frontend/src/services/engineEval.ts` 没有生成器（U1 建的是断言）
+
+U1 建的是 `internal/maclaw/gen_frontend_options_test.go` 的**双向 id 集合断言**（防漂移），**不是 codegen**。U6 给该文件加 `requires_remote_generation` 标记时，是按映射表批量改的，**并已把断言的解析器加固**（见 §5纪律）。
+
+> ⚠️ **一个已修的解析器陷阱**：该断言原以「常量名之后的**第一个 `[`**」定位数组字面量。若给 const 加 TypeScript 类型注解（`const X: readonly Foo[] = [`），注解里的 `[]` 会抢在数组字面量之前 → 解析出**空数组** → 报「frontend has 0 ids」，**看起来像文件被截断，实际文件完好**。现已改为锚定 `= [`，并在解析到 0 个 id 时明确区分「解析器问题」与「目录漂移」。若要用类型注解，请写 `ReadonlyArray<Foo>`（无方括号字符）。
 
 ---
 

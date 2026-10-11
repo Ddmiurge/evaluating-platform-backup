@@ -114,6 +114,15 @@ type EngineCatalogPlugin struct {
 	Category      string `json:"category"`
 	CategoryLabel string `json:"category_label"`
 	Severity      string `json:"severity"`
+	// RequiresRemoteGeneration marks plugins whose attack cases promptfoo can
+	// only fetch from its remote generation service (U6). The engine uses it
+	// to refuse such a run up front with a readable error code instead of
+	// letting promptfoo `return []` mid-run and report 0 coverage as success.
+	// omitempty keeps pre-U6 BFF payloads byte-identical on the wire.
+	RequiresRemoteGeneration bool `json:"requires_remote_generation,omitempty"`
+	// UnavailableReason is the user-facing explanation to surface when a run is
+	// rejected. Safe to display: it is a static platform-authored string.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 // EngineCatalogStrategy is one attack strategy as the engine names it. The
@@ -121,6 +130,12 @@ type EngineCatalogPlugin struct {
 type EngineCatalogStrategy struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// RequiresRemoteGeneration mirrors EngineCatalogPlugin's flag for the
+	// strategy vocabulary (U6). Platform ids differ from promptfoo's for some
+	// gated entries, so PromptfooID carries the upstream id.
+	RequiresRemoteGeneration bool   `json:"requires_remote_generation,omitempty"`
+	PromptfooID               string `json:"promptfoo_id,omitempty"`
+	UnavailableReason         string `json:"unavailable_reason,omitempty"`
 }
 
 // EngineRunStatus is the GET /runs/:id response (safe fields only).

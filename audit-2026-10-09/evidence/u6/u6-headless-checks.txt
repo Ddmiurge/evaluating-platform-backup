@@ -1,0 +1,18 @@
+PASS  page renders the eval form  — 3 selects, form=true
+PASS  guard alert states the gated counts  — ["推荐使用 AI 对话发起评测 AI 对话可自动推荐攻击插件、生成确认卡片并沉淀正式报告。 返回 AI 对话","90 个插件 / 4 个策略当前不可选 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）。这些能力仍然列在上方（置灰），只是在本环境无法产生评测用例——若强行提交，引擎会直接报错而不会静默跑 0 条。"]
+PASS  alert explains WHY (not just that)  — ["AI 对话可自动推荐攻击插件、生成确认卡片并沉淀正式报告。\n返回 AI 对话","需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）。这些能力仍然列在上方（置灰），只是在本环境无法产生评测用例——若强行提交，引擎会直接报错而不会静默跑 0 条。"]
+PASS  plugin dropdown opens with options  — 6 options rendered
+PASS  gated plugins are rendered DISABLED (aria-disabled=true)  — 5 disabled, 5 with aria-disabled
+PASS  gated options carry the "需远程生成" tag  — 5/5 tagged
+PASS  gated options are NOT hidden (local ones still present)  — 1 selectable; harmful present=true
+PASS  a known-gated plugin (儿童剥削内容) renders as disabled in the visible list  — visible gated: ["儿童剥削内容需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）","化学生物武器需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）","大规模杀伤武器需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）"]
+
+screenshot: /tmp/u6_shots/u6-plugin-dropdown-open.png
+PASS  the unavailable reason is readable WITHOUT hovering (inline)  — 5/5 gated options state the reason; sample: 儿童剥削内容需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）
+screenshot: /tmp/u6_shots/u6-gated-tooltip.png
+PASS  strategy dropdown renders exactly the 4 gated strategies as disabled+tagged  — 4 disabled of 9 rendered (1 visible dropdowns): ["Best-of-N 多次采样需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）","Likert 量表包装需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）","引用包装需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）","单轮组合攻击需远程生成 需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）"]
+PASS  strategy dropdown keeps local strategies selectable  — 5 selectable: ["元提示越狱","重试攻击","数学题包装","顽劣用户"]
+screenshot: /tmp/u6_shots/u6-strategy-dropdown.png
+
+=== 11/11 checks passed ===
+[ws] closed code=1000
