@@ -105,19 +105,22 @@ cover_ratio() {
 # 用法：assert_known_baseline <profile 文件>
 # 这两个常数与基线 profile **必须成对更新**（U7 裁定，见脚本头「基线何时重建」）：
 # 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
-# 永久拒绝出结论。当前值对应 U10 收尾（4563 块 / 3267 覆盖）：
-# U10 新增 promptfoo_custom_plugin.go（YAML 插件包形态/schema/远程依赖校验）与
-# promptfoo_custom_plugin_resolver.go（`pf_plugin:` 引用解析 + 管理员治理），
-# 并给既有文件加了存储出口校验、桥接层治理接线与目录碰撞集合，故语句块与覆盖块
-# 同步上升（U8 收尾 4407/3140 → U10 收尾 4563/3267，覆盖率 71.25% → 71.60%，
-# +0.35pp，只升不降）。
+# 永久拒绝出结论。当前值对应 U9 收尾（4566 块 / 3271 覆盖）：
+# U10 收尾 4563/3267（71.60%）→ U9 收尾 4566/3271（71.64%）。U9 只增不改：
+# agent_target.go 增加 AgentTargetWantsConversation 谓词与「会话模板必须有响应
+# 提取路径」的保存期校验（多轮配置缺 id 提取路径时，引擎会每轮发空 id、Agent
+# 每次新开对话，而报告仍显示多轮——只能在保存时拦），promptfoo_engine_client.go
+# 增加 tool_call_signals 的契约结构（两个整数，无工具名/参数），并各配测试，
+# 故语句块与覆盖块同步上升、覆盖率 +0.04pp（只升不降）。
+#
+# 历史：U8 收尾 4407/3140（71.25%）→ U10 收尾 4563/3267（71.60%，+0.35pp）。
 #
 # 注：中途曾因删除一处重复实现（CustomPluginResolver.Resolve，与桥接层
 # resolveCustomPlugins 职责重叠）而重取一次基线 —— 那次删除同时移除了对应的
 # resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4563}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3267}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4566}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3271}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

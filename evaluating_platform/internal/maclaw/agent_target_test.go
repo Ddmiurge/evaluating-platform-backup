@@ -30,8 +30,8 @@ func agentTestKeyStore(t *testing.T) *appcrypto.KeyStore {
 
 func TestBuildAgentTargetRequestSpecRendersTemplates(t *testing.T) {
 	target := EvaluationTargetInput{
-		Name: "Agent",
-		Kind: EvaluationTargetKindAgent,
+		Name:             "Agent",
+		Kind:             EvaluationTargetKindAgent,
 		CredentialSecret: "sk-agent-secret",
 		Metadata: map[string]string{
 			TargetMetadataAgentEndpoint:     "https://agent.example.com/chat?token={{api_key}}",
@@ -170,13 +170,13 @@ func TestMaterializeEngineCredentialsAgentFieldsAndNoHeaderLeak(t *testing.T) {
 		Model:            "",
 		CredentialSecret: "sk-agent-secret",
 		Metadata: map[string]string{
-			TargetMetadataAgentEndpoint:      "https://agent.example.com/chat",
-			TargetMetadataAgentMethod:        "POST",
-			TargetMetadataAgentHeadersTmpl:   `{"X-Api-Key":"{{api_key}}"}`,
-			TargetMetadataAgentBodyTmpl:      `{"query":"{{prompt}}"}`,
-			TargetMetadataAgentResponsePath:  "reply.text",
-			"health_url":                     "https://agent.example.com/health",
-			"supports_vision":                "false",
+			TargetMetadataAgentEndpoint:     "https://agent.example.com/chat",
+			TargetMetadataAgentMethod:       "POST",
+			TargetMetadataAgentHeadersTmpl:  `{"X-Api-Key":"{{api_key}}"}`,
+			TargetMetadataAgentBodyTmpl:     `{"query":"{{prompt}}"}`,
+			TargetMetadataAgentResponsePath: "reply.text",
+			"health_url":                    "https://agent.example.com/health",
+			"supports_vision":               "false",
 		},
 	}
 	creds := MaterializeEngineCredentialsWithGeneration(target, nil)
@@ -208,10 +208,10 @@ func TestMaterializeEngineCredentialsAgentFieldsAndNoHeaderLeak(t *testing.T) {
 func TestMaterializeEngineCredentialsHeadersPassThrough(t *testing.T) {
 	// Genuine header entries (e.g. X-Org) still pass through for llm targets.
 	creds := MaterializeEngineCredentialsWithGeneration(&EvaluationTargetInput{
-		Kind:      EvaluationTargetKindLLM,
-		BaseURL:   "https://t.example/v1",
-		Model:     "m",
-		Metadata:  map[string]string{"X-Org": "acme", "health_url": "https://t.example/models"},
+		Kind:     EvaluationTargetKindLLM,
+		BaseURL:  "https://t.example/v1",
+		Model:    "m",
+		Metadata: map[string]string{"X-Org": "acme", "health_url": "https://t.example/models"},
 	}, nil)
 	if creds.Target.Headers["X-Org"] != "acme" {
 		t.Fatalf("X-Org lost: %v", creds.Target.Headers)
@@ -315,9 +315,9 @@ func TestAgentTargetMultimodalNotSupported(t *testing.T) {
 	bridge := NewRedteamToolBridge(nil, nil, nil)
 	bridge.SetTargetConfigService(service)
 	call, err := bridge.CallEvaluationTarget(context.Background(), userID, CallEvaluationTargetInput{
-		RunID:   "run_1",
-		Prompt:  "text",
-		Images:  []RedteamPayloadImage{{DataBase64: "aGk=", MimeType: "image/png"}},
+		RunID:  "run_1",
+		Prompt: "text",
+		Images: []RedteamPayloadImage{{DataBase64: "aGk=", MimeType: "image/png"}},
 	})
 	if err != nil {
 		t.Fatalf("CallEvaluationTarget: %v", err)
@@ -385,5 +385,148 @@ func TestAgentTargetMetadataRoundTripAndNoSecretInSummary(t *testing.T) {
 	raw, _ := json.Marshal(summary)
 	if strings.Contains(string(raw), "sk-agent-secret") {
 		t.Fatalf("summary leaked secret: %s", raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// U9 · Agent multi-turn ({{conversation_id}})
+// ---------------------------------------------------------------------------
+
+// TestAgentTargetWantsConversation pins the predicate the save path and the
+// engine agree on: a target is a "conversation target" exactly when the operator
+// wrote the placeholder into a request template.
+func TestAgentTargetWantsConversation(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]string
+		want bool
+	}{
+		{"body placeholder", map[string]string{TargetMetadataAgentBodyTmpl: `{"conversation_id":"{{conversation_id}}"}`}, true},
+		{"header placeholder", map[string]string{TargetMetadataAgentHeadersTmpl: `{"X-Sid":"{{conversation_id}}"}`}, true},
+		{"v1 body", map[string]string{TargetMetadataAgentBodyTmpl: `{"query":"{{prompt}}"}`}, false},
+		{"no templates", map[string]string{}, false},
+		{"empty templates", map[string]string{TargetMetadataAgentBodyTmpl: "", TargetMetadataAgentHeadersTmpl: ""}, false},
+		{"other placeholders only", map[string]string{TargetMetadataAgentBodyTmpl: `{"q":"{{prompt}}","k":"{{api_key}}"}`}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AgentTargetWantsConversation(EvaluationTargetInput{
+				Kind:     EvaluationTargetKindAgent,
+				Metadata: tc.meta,
+			})
+			if got != tc.want {
+				t.Fatalf("AgentTargetWantsConversation = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateAgentTargetInputConversationRequiresResponsePath covers the one
+// conversation mistake that is cheap to make and invisible in the results: with
+// no extraction path the engine cannot learn the id, so every turn would send an
+// empty one and the agent would open a fresh conversation each time — producing a
+// report that claims multi-turn. Caught at save time instead.
+func TestValidateAgentTargetInputConversationRequiresResponsePath(t *testing.T) {
+	withConversation := func() EvaluationTargetInput {
+		return EvaluationTargetInput{
+			Name: "Dify Agent",
+			Kind: EvaluationTargetKindAgent,
+			Metadata: map[string]string{
+				TargetMetadataAgentEndpoint: "https://dify.example.com/v1/chat-messages",
+				TargetMetadataAgentBodyTmpl: `{"query":"{{prompt}}","conversation_id":"{{conversation_id}}"}`,
+			},
+		}
+	}
+
+	noPath := withConversation()
+	if err := ValidateAgentTargetInput(noPath); err == nil {
+		t.Fatal("expected an error: conversation placeholder with no response path")
+	} else if !strings.Contains(err.Error(), "conversation_id") {
+		t.Fatalf("error should name the placeholder, got %v", err)
+	}
+
+	// With the path supplied it must be accepted — this is the whole supported
+	// Dify shape from D-04.
+	ok := withConversation()
+	ok.Metadata[TargetMetadataAgentResponsePath] = "conversation_id"
+	if err := ValidateAgentTargetInput(ok); err != nil {
+		t.Fatalf("valid conversation target rejected: %v", err)
+	}
+}
+
+// TestAgentConversationPlaceholderSurvivesOneShotRendering is the load-bearing
+// Go-side property for U9: the BFF renders the *stored template* for the
+// one-shot Skill path, and it must NOT invent a conversation id there. The
+// placeholder has to pass through untouched so the engine can recognize it.
+//
+// A BFF that substituted "" for it here would make every engine run look
+// single-turn while the operator's config asked for multi-turn.
+func TestAgentConversationPlaceholderSurvivesOneShotRendering(t *testing.T) {
+	target := EvaluationTargetInput{
+		Name: "Dify Agent",
+		Kind: EvaluationTargetKindAgent,
+		Metadata: map[string]string{
+			TargetMetadataAgentEndpoint: "https://dify.example.com/v1/chat-messages",
+			TargetMetadataAgentBodyTmpl: `{"query":"{{prompt}}","conversation_id":"{{conversation_id}}"}`,
+		},
+	}
+	spec, err := buildAgentTargetRequestSpec(target, "attack prompt")
+	if err != nil {
+		t.Fatalf("buildAgentTargetRequestSpec: %v", err)
+	}
+	body := string(spec.Body)
+	if !strings.Contains(body, AgentConversationPlaceholder) {
+		t.Fatalf("one-shot rendering consumed the conversation placeholder: %s", body)
+	}
+	if !strings.Contains(body, "attack prompt") {
+		t.Fatalf("prompt not substituted: %s", body)
+	}
+	// And the rendered body must still be valid JSON — the placeholder is
+	// rendered as a JSON string value, not spliced in raw.
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(spec.Body, &parsed); err != nil {
+		t.Fatalf("rendered body is not valid JSON: %v (%s)", err, body)
+	}
+	if got, ok := parsed["conversation_id"].(string); !ok || got != AgentConversationPlaceholder {
+		t.Fatalf("conversation_id = %v, want the literal placeholder", parsed["conversation_id"])
+	}
+}
+
+// TestAgentTargetSummaryNeverCarriesAConversationValue pins the security
+// contract at the exit that produces the browser response: a saved target
+// summary echoes the *template* (which may contain the placeholder) but never a
+// concrete conversation handle — the summary is built from stored config, and no
+// conversation exists yet at save time.
+func TestAgentTargetSummaryNeverCarriesAConversationValue(t *testing.T) {
+	service := NewTargetConfigService(&memoryTargetConfigStore{}, agentTestKeyStore(t))
+	userID := uuid.New()
+	summary, err := service.SaveTarget(context.Background(), userID, EvaluationTargetInput{
+		Name:             "Dify Agent",
+		Kind:             EvaluationTargetKindAgent,
+		CredentialSecret: "app-dify-secret",
+		Enabled:          true,
+		Metadata: map[string]string{
+			TargetMetadataAgentEndpoint:     "https://dify.example.com/v1/chat-messages",
+			TargetMetadataAgentBodyTmpl:     `{"query":"{{prompt}}","conversation_id":"{{conversation_id}}"}`,
+			TargetMetadataAgentResponsePath: "conversation_id",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveTarget: %v", err)
+	}
+	// The summary must still describe a conversation target, i.e. the round trip
+	// through encrypted storage preserved the placeholder-bearing template.
+	if !strings.Contains(summary.Metadata[TargetMetadataAgentBodyTmpl], AgentConversationPlaceholder) {
+		t.Fatalf("saved summary lost the conversation configuration: %v", summary.Metadata)
+	}
+	raw, _ := json.Marshal(summary)
+	if strings.Contains(string(raw), "app-dify-secret") {
+		t.Fatalf("summary leaked secret: %s", raw)
+	}
+	// A concrete handle looks like a uuid/uuid-ish token; the only
+	// conversation_id in the payload must be the placeholder itself.
+	if strings.Contains(string(raw), `"conversation_id"`) &&
+		!strings.Contains(string(raw), AgentConversationPlaceholder) {
+		t.Fatalf("summary carries a conversation value rather than the placeholder: %s", raw)
 	}
 }

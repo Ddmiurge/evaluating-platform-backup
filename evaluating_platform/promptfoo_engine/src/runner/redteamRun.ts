@@ -41,6 +41,18 @@ export interface EvalLike {
   results?: Array<{
     gradingResult?: { pass?: boolean; severity?: unknown; reason?: unknown };
     testCase?: { metadata?: Record<string, unknown> };
+    /**
+     * U9 · The provider's response. `raw` is the parsed JSON body the http
+     * provider received — the only place tool-call markers can be observed
+     * without re-reading the target (which U9 must never do: a second request
+     * would double the side effects the run is already warning about).
+     *
+     * Optional because the reducer is also fed hand-built fixtures in tests and
+     * by Plan A's in-memory `evaluate()` results; absence means "no response
+     * object to inspect", which is reported as *no signal* rather than as
+     * "no tool was used" (see `countToolCallSignals`).
+     */
+    response?: { raw?: unknown; output?: unknown };
   }>;
 }
 import type { EngineCatalog, OneShotCredentials, RunProgressEvent, SafeRunResult } from '../types.js';
@@ -48,6 +60,12 @@ import { redactReason, redactTopReasons, sanitizeSeverity } from '../sanitize/re
 import type { RunRecord } from '../manager/taskManager.js';
 import { EngineRunError, generateAttackTests } from './generateTests.js';
 import { buildJudgeRubricMap, PLUGIN_JUDGE_SOURCE_METADATA_KEY, resolveJudgeRubric, UNMAPPED_JUDGE_SOURCE } from './judgeRubric.js';
+import {
+  buildSessionParser,
+  countToolCallSignals,
+  renderConversationPlaceholders,
+  wantsAgentConversation,
+} from './agentSession.js';
 
 type Emit = (event: RunProgressEvent) => void;
 
@@ -138,6 +156,21 @@ export function toAgentTransformResponse(raw?: string): string {
  * left for promptfoo's nunjucks substitution — {{api_key}} is substituted
  * here, server-side, so the credential never appears in config that could be
  * serialized anywhere.
+ *
+ * U9: when the agent body/header template contains `{{conversation_id}}`, two
+ * more things happen here, and this function is the **only** place they do:
+ *
+ *  - the operator-facing `{{conversation_id}}` is rewritten to the
+ *    `{{sessionId}}` name promptfoo actually binds (see agentSession.ts for why
+ *    the engine translates rather than re-implementing promptfoo's session
+ *    support), and
+ *  - a `sessionParser` is derived from `agent_response_path`, so the id the
+ *    target minted on turn 1 comes back out of turn 1's response.
+ *
+ * Both are gated on the placeholder being present, which is what makes "leave
+ * the new configuration empty ⇒ v1 behaviour" true **by construction** rather
+ * than by a flag: with no placeholder, `sessionParser` is never emitted and the
+ * emitted config is byte-identical to U8's.
  */
 export function buildTargetProvider(target: OneShotCredentials['target']): {
   id: string;
@@ -168,6 +201,23 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
     if (rawBody) {
       body = JSON.parse(substituteAgentAPIKey(rawBody, apiKey)) as Record<string, unknown>;
     }
+
+    // U9 · Server-owned conversation. `wantsAgentConversation` is checked
+    // against the *original* templates (before rendering), because that is what
+    // the operator wrote; the rendered copies no longer contain the placeholder
+    // once it has been rewritten.
+    const conversationWanted = wantsAgentConversation({
+      agent_body_template: target.agent_body_template,
+      agent_headers_template: target.agent_headers_template,
+    });
+    if (conversationWanted) {
+      if (rawBody) body = remapConversationPlaceholders(body);
+      for (const name of Object.keys(headers)) {
+        headers[name] = renderConversationPlaceholders(headers[name] ?? '');
+      }
+    }
+
+    const responsePath = (target.agent_response_path ?? '').trim();
     return {
       id: 'http',
       config: {
@@ -176,6 +226,9 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
         headers,
         body,
         transformResponse: toAgentTransformResponse(target.agent_response_path),
+        // Only present when a conversation was asked for. See the function
+        // header for why its absence is what preserves v1 behaviour.
+        ...(conversationWanted ? { sessionParser: buildSessionParser(responsePath) } : {}),
         ...(target.timeout_seconds ? { timeout: target.timeout_seconds * 1000 } : {}),
       },
     };
@@ -201,6 +254,29 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
       ...(target.timeout_seconds ? { timeout: target.timeout_seconds * 1000 } : {}),
     },
   };
+}
+
+/**
+ * Rewrite `{{conversation_id}}` throughout a parsed body template, at any depth.
+ *
+ * The body is a JSON tree, not a flat string, so a naive `replace` on the
+ * serialized form would be fragile: it would also rewrite occurrences inside
+ * values that must stay literal, and JSON-escaping differences between the
+ * stored template and a re-serialization make byte-level replacement unsafe.
+ * Walking the tree only touches string *values*, which is exactly the set the
+ * placeholder can legitimately appear in.
+ */
+function remapConversationPlaceholders(node: unknown): any {
+  if (typeof node === 'string') return renderConversationPlaceholders(node);
+  if (Array.isArray(node)) return node.map(remapConversationPlaceholders);
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      out[key] = remapConversationPlaceholders(value);
+    }
+    return out;
+  }
+  return node;
 }
 
 /**
@@ -476,6 +552,11 @@ export function reduceEvalToSafeResult(
   // degraded to the unmapped tier) is visible as such in the report.
   const judgeSourceCounts = new Map<string, number>();
 
+  // U9 · Tool-call visibility for agent targets. Counts only — no tool
+  // arguments, no tool names, nothing attacker-influenced (see the type doc).
+  let probesWithToolCalls = 0;
+  let totalToolCallMarkers = 0;
+
   let probes = 0;
   let attackSuccess = 0;
 
@@ -506,6 +587,15 @@ export function reduceEvalToSafeResult(
           options?.judgeSourceOverrides?.get(pluginId) ??
           resolveJudgeRubric(pluginId, rubricMap).source);
     judgeSourceCounts.set(judgeSource, (judgeSourceCounts.get(judgeSource) ?? 0) + 1);
+
+    // U9: look for tool-call markers in the target's own response. Read-only
+    // inspection of data promptfoo already holds — the engine never re-requests
+    // the target, which would double this run's side effects.
+    const toolCalls = countToolCallSignals(r.response?.raw);
+    if (toolCalls.count > 0) {
+      probesWithToolCalls++;
+      totalToolCallMarkers += toolCalls.count;
+    }
 
     // evaluate mode: use the catalog severity for display when the grader did
     // not provide one (llm-rubric results never do).
@@ -625,6 +715,13 @@ export function reduceEvalToSafeResult(
     judge_sources: [...judgeSourceCounts.entries()]
       .map(([source, count]) => ({ source, probes: count, is_fallback: source === UNMAPPED_JUDGE_SOURCE }))
       .sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0)),
+    // U9: always present once there is at least one probe, including at zero.
+    // An absent field would be read as "not measured"; a present 0 is the
+    // honest "no marker was recognised in any response" (and the type doc is
+    // explicit that this is not a guarantee no tool was used).
+    ...(probes > 0
+      ? { tool_call_signals: { probes_with_tool_calls: probesWithToolCalls, total_tool_call_markers: totalToolCallMarkers } }
+      : {}),
     token_usage: {
       generation: 0,
       judging: 0,

@@ -6,6 +6,7 @@ package maclaw
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
@@ -108,12 +109,12 @@ func TestEngineSafeResultFindings(t *testing.T) {
 }
 
 type fakePromptfooEngineRunner struct {
-	enabled   bool
-	createErr error
-	statuses  map[string]*EngineRunStatus
+	enabled    bool
+	createErr  error
+	statuses   map[string]*EngineRunStatus
 	statusHook func(runID string, call int) *EngineRunStatus
-	created   []*EngineRunRequest
-	getCalls  int
+	created    []*EngineRunRequest
+	getCalls   int
 }
 
 func (f *fakePromptfooEngineRunner) Enabled() bool { return f.enabled }
@@ -180,10 +181,10 @@ func TestRunPromptfooRedteamEvaluationOrchestration(t *testing.T) {
 	}
 
 	out, err := bridge.RunPromptfooRedteamEvaluation(context.Background(), userID, "inst-1", PromptfooEngineRunInput{
-		RunID:     "maclaw-run-1",
-		Purpose:   "客服助手安全评测",
-		NumTests:  2,
-		Plugins:   []string{"harmful"},
+		RunID:      "maclaw-run-1",
+		Purpose:    "客服助手安全评测",
+		NumTests:   2,
+		Plugins:    []string{"harmful"},
 		Strategies: []string{"direct"},
 	})
 	if err != nil {
@@ -303,5 +304,82 @@ func TestPromptfooEngineNotConfigured(t *testing.T) {
 	}
 	if _, err := bridge.GetPromptfooEvaluationResult(context.Background(), uuid.New(), "er-1"); err == nil {
 		t.Fatal("expected not-configured error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// U9 · tool_call_signals 契约往返
+// ---------------------------------------------------------------------------
+
+// TestEngineSafeResultCarriesToolCallSignals pins the U9 wire contract: the
+// engine's `tool_call_signals` must survive the JSON hop into the struct the
+// BFF persists into `engine_runs.result`.
+//
+// This is a **struct allowlist** on the Go side, which is exactly the U7/U8
+// silent-strip failure mode in a different guise: an engine field that nobody
+// declares here is not "not persisted yet", it is *silently dropped*, and the
+// report then claims a run had no tool-call activity when it did.
+func TestEngineSafeResultCarriesToolCallSignals(t *testing.T) {
+	payload := `{
+      "totals": {"probes": 4, "attack_success": 1, "pass_rate": 0.75},
+      "severity_counts": {"critical": 0, "high": 1, "medium": 0, "low": 0},
+      "risk_categories": [],
+      "plugin_stats": [],
+      "strategy_stats": [],
+      "token_usage": {"generation": 0, "judging": 0, "target": 0},
+      "tool_call_signals": {"probes_with_tool_calls": 2, "total_tool_call_markers": 5}
+    }`
+	var result EngineSafeResult
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result.ToolCallSignals == nil {
+		t.Fatal("tool_call_signals was silently dropped by the Go struct")
+	}
+	if result.ToolCallSignals.ProbesWithToolCalls != 2 {
+		t.Fatalf("probes_with_tool_calls = %d, want 2", result.ToolCallSignals.ProbesWithToolCalls)
+	}
+	if result.ToolCallSignals.TotalToolCallMarkers != 5 {
+		t.Fatalf("total_tool_call_markers = %d, want 5", result.ToolCallSignals.TotalToolCallMarkers)
+	}
+}
+
+// TestEngineSafeResultToolCallSignalsOmittedWhenAbsent pins the backward
+// compatibility direction: a pre-U9 engine payload (or any run without the
+// field) must not fail to decode, and must not fabricate a zero.
+//
+// Fabricating zeros would be the more dangerous half: "0 probes called tools"
+// reads as a measurement, while absent honestly reads as "this engine did not
+// report it".
+func TestEngineSafeResultToolCallSignalsOmittedWhenAbsent(t *testing.T) {
+	payload := `{
+      "totals": {"probes": 1, "attack_success": 0, "pass_rate": 1},
+      "severity_counts": {},
+      "risk_categories": [],
+      "plugin_stats": [],
+      "strategy_stats": [],
+      "token_usage": {"generation": 0, "judging": 0, "target": 0}
+    }`
+	var result EngineSafeResult
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		t.Fatalf("pre-U9 payload must still decode: %v", err)
+	}
+	if result.ToolCallSignals != nil {
+		t.Fatalf("absent field must stay nil, got %+v", result.ToolCallSignals)
+	}
+	// And a present-but-zero report must round-trip as a real measurement.
+	zero := `{"totals":{"probes":1,"attack_success":0,"pass_rate":1},"severity_counts":{},
+      "risk_categories":[],"plugin_stats":[],"strategy_stats":[],
+      "token_usage":{"generation":0,"judging":0,"target":0},
+      "tool_call_signals":{"probes_with_tool_calls":0,"total_tool_call_markers":0}}`
+	var measured EngineSafeResult
+	if err := json.Unmarshal([]byte(zero), &measured); err != nil {
+		t.Fatalf("zero-valued report must decode: %v", err)
+	}
+	if measured.ToolCallSignals == nil {
+		t.Fatal("a present zero must stay distinguishable from an absent field")
+	}
+	if measured.ToolCallSignals.ProbesWithToolCalls != 0 {
+		t.Fatalf("probes_with_tool_calls = %d, want 0", measured.ToolCallSignals.ProbesWithToolCalls)
 	}
 }

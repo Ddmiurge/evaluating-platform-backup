@@ -8,6 +8,7 @@ import type { EvaluationJob, EvaluationTarget, RuntimeRun } from '../../services
 import { MessageBubble, TypingIndicator, WelcomePanel } from './ChatCards'
 import { AGENT_WELCOME_CAPABILITIES, DEFAULT_WELCOME_CAPABILITIES, confirmedPlanStateFromMessages, formatSessionDate, messagesForSession, normalizeSessionTimestamps, pendingAssistantUserMessageId, prepareMessagesForDisplay } from './chatDisplay'
 import { applyEvaluationJobRecovery, buildEvaluationJobProgressMessage, jobRunToStream, markEvaluationJobRecoveryStarted, markEvaluationJobRetryStarted } from './jobProgressMessages'
+import { assertConversationTemplateHasResponsePath } from './agentConversation'
 
 const { TextArea } = Input
 
@@ -905,15 +906,30 @@ export function ChatPage() {
                           }
                         },
                       },
+                      {
+                        // U9: a conversation template with no extraction path cannot
+                        // thread the id — every turn would open a fresh conversation
+                        // while the report claims multi-turn. Caught here rather than
+                        // after a paid run; the BFF enforces it too. The predicate and
+                        // the message live in agentConversation.ts so this component,
+                        // the BFF and the engine cannot drift apart.
+                        validator: (_rule, value: string) => {
+                          const errors = assertConversationTemplateHasResponsePath({
+                            bodyTemplate: value,
+                            responsePath: targetForm.getFieldValue('agent_response_path') as string,
+                          })
+                          return errors.length > 0 ? Promise.reject(new Error(errors[0]!)) : Promise.resolve()
+                        },
+                      },
                     ]}
-                    extra={'用 {{prompt}} 占位攻击提示（每条用例替换一次），{{api_key}} 占位密钥。留空默认 {"prompt":"{{prompt}}"}。示例：{"query":"{{prompt}}","session":"fixed"}'}
+                    extra={<span>用 {'{{prompt}}'} 占位攻击提示（每条用例替换一次），{'{{api_key}}'} 占位密钥。多轮会话可额外用 {'{{conversation_id}}'} 占位会话 id（需同时填写下方响应提取路径，并选择 crescendo 等多轮策略）。留空默认 {'{"prompt":"{{prompt}}"}'}。Dify 示例：{'{"query":"{{prompt}}","conversation_id":"{{conversation_id}}"}'}</span>}
                   >
                     <Input.TextArea rows={3} placeholder='{"query":"{{prompt}}"}' autoComplete="off" />
                   </Form.Item>
                   <Form.Item
                     label="响应提取路径"
                     name="agent_response_path"
-                    extra="从 JSON 响应中提取智能体回复文本的点分路径。示例：reply.text、choices[0].message.content。留空表示提取不到时回退整包。"
+                    extra="从 JSON 响应中提取智能体回复文本的点分路径。示例：reply.text、choices[0].message.content。留空表示提取不到时回退整包。若请求体用了 {{conversation_id}}，这里填会话 id 所在字段（Dify 填 conversation_id），平台据此在多轮之间回传会话。"
                   >
                     <Input placeholder="reply.text" />
                   </Form.Item>
@@ -924,7 +940,13 @@ export function ChatPage() {
                     type="warning"
                     showIcon
                     style={{ marginBottom: 16 }}
-                    message="智能体评测为单轮调用（v1）：每个攻击用例独立发起一次请求，不维护多轮会话状态。请确保端点无副作用或使用沙箱环境。"
+                    message="安全评测会向你的 Agent 发送对抗性攻击提示。请务必使用沙箱/mock 端点，或确保工具调用在评测账号下只读/幂等——平台不隔离 Agent 的内部副作用。"
+                  />
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="默认每个攻击用例独立发起一次请求（单轮）。若要让 crescendo 等多轮策略在 Agent 上形成真实多轮，请在请求体模板中加入 {{conversation_id}} 并填写响应提取路径，同时为本次评测选择多轮策略；会话 id 只在本次运行内存活，不落库、不进报告。"
                   />
                 </>
               ) : (

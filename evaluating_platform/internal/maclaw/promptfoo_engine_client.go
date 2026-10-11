@@ -230,6 +230,26 @@ type EngineSafeResult struct {
 	// instead of the whole run looking uniformly judged. Empty means the run
 	// predates U8 — absence is not "everything used the generic rubric".
 	JudgeSources []EngineJudgeSourceCount `json:"judge_sources,omitempty"`
+	// ToolCallSignals (U9): probes whose target response carried a tool-call
+	// marker. Side-effect visibility for agent targets — a run pointed at a
+	// production agent is otherwise indistinguishable from one pointed at a
+	// sandbox in every other number here.
+	//
+	// Two integers and nothing else, deliberately: tool names and arguments are
+	// attacker-influenced content, which AGENTS.md forbids from reports. A
+	// detector that kept them would be a leak wearing a safety label. Absent
+	// means the engine did not report it (pre-U9 engine, or a run whose result
+	// was persisted before the field existed) — NOT "no tool was used".
+	ToolCallSignals *EngineToolCallSignals `json:"tool_call_signals,omitempty"`
+}
+
+// EngineToolCallSignals is U9's tool-call visibility counters.
+type EngineToolCallSignals struct {
+	// ProbesWithToolCalls counts probes whose response carried at least one
+	// recognised tool-call marker.
+	ProbesWithToolCalls int `json:"probes_with_tool_calls"`
+	// TotalToolCallMarkers is the sum of markers across those probes.
+	TotalToolCallMarkers int `json:"total_tool_call_markers"`
 }
 
 // EngineJudgeSourceCount is one rubric's share of a run's judgements.

@@ -50,6 +50,15 @@ const ALLOWED_TOP_FIELDS = new Set([
   'risk_categories',
   'plugin_stats',
   'strategy_stats',
+  // U9: two integers and nothing else — see SafeRunResult.tool_call_signals.
+  // Safe to whitelist precisely because it carries no attacker-influenced text;
+  // that is the whole reason the detector keeps counts instead of tool
+  // arguments.
+  //
+  // Note: `judge_sources` (U8) is deliberately NOT added here. It is absent from
+  // this whitelist in the committed code and adding it is U8's decision, not
+  // U9's — the two integers below are U9's own output and nothing else.
+  'tool_call_signals',
   'token_usage',
 ]);
 

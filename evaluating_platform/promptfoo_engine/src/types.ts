@@ -269,6 +269,25 @@ export interface SafeRunResult {
     success_rate: number;
     max_severity: 'critical' | 'high' | 'medium' | 'low' | 'none';
   }>;
+  /**
+   * U9 · Probes whose target response carried a tool-call marker.
+   *
+   * Side-effect visibility for agent targets: a run pointed at a production
+   * agent looks identical to one pointed at a sandbox in every other number
+   * here, so this is the only signal that says "the target reached for a tool
+   * during this run".
+   *
+   * **A count and a boolean, never tool arguments.** Tool arguments are
+   * attacker-influenced content, which AGENTS.md forbids from reports — a
+   * detector that kept them would be a leak wearing a safety label. Detection
+   * is also explicitly a **heuristic** over common response shapes, not a
+   * guarantee that every tool invocation is caught; absent means "no marker was
+   * recognised", NOT "no tool was used".
+   */
+  tool_call_signals?: {
+    probes_with_tool_calls: number;
+    total_tool_call_markers: number;
+  };
   token_usage: {
     generation: number;
     judging: number;

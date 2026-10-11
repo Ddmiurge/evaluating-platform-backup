@@ -1,8 +1,16 @@
 package maclaw
 
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+)
+
 // agent_target.go — custom-HTTP agent target support (target kind=agent).
 //
-// An agent target lets enterprises plug any stateless conversational endpoint
+// An agent target lets enterprises plug any conversational endpoint
 // (an existing customer-service agent, a RAG gateway, an MCP-backed
 // assistant...) into the platform as the system-under-test, mirroring
 // promptfoo's `http` provider model:
@@ -12,28 +20,55 @@ package maclaw
 //	agent_headers_template  JSON object of static headers; values may contain
 //	                       the {{api_key}} placeholder
 //	agent_body_template     JSON request body; string values may contain the
-//	                       {{prompt}} and {{api_key}} placeholders
+//	                       {{prompt}}, {{api_key}} and {{conversation_id}}
+//	                       placeholders
 //	agent_response_path     dot path into the JSON response holding the agent
 //	                       reply text, e.g. `reply.text` or
 //	                       `choices[0].message.content`
 //
 // Placeholders:
+//
 //	{{prompt}}  substituted per call with the attack prompt
 //	{{api_key}}  substituted server-side with the encrypted credential secret
+//	{{conversation_id}}  (U9) the server-owned conversation handle. Left intact
+//	                       here and translated by the engine, because this
+//	                       package also serves the single-shot Skill path,
+//	                       which has no notion of a multi-turn session.
+//
+// # Multi-turn (U9)
+//
+// A Dify-style endpoint owns the conversation: `POST /v1/chat-messages` with an
+// empty `conversation_id` opens one and returns a freshly minted id, and every
+// later turn must send that id back. So the platform-side contract is:
+//
+//	agent_body_template   contains {{conversation_id}}
+//	agent_response_path   points at the id in the response (e.g. conversation_id)
+//	a multi-turn strategy (crescendo/goat/hydra) is selected
+//
+// All three are required, and the engine refuses the combinations that cannot
+// work rather than running them — see promptfoo_engine/src/runner/agentSession.ts.
+//
+// This file deliberately does **not** implement a session store. The one-shot
+// Skill path has no multi-turn strategy to bind a conversation to, so a map here
+// would have no owner and no lifetime; keeping the state in the engine (where
+// the strategy lives, and where it dies with the run) is what keeps a
+// conversation handle from outliving its attack.
 //
 // The credential secret is write-only from the browser's perspective: it is
 // stored encrypted (TargetConfigService) and only ever substituted inside
 // server-side request builders (ProbeTarget, callStoredTarget) or forwarded
 // one-shot to the engine. It never appears in summaries, logs, engine run
-// records, or browser responses.
+// records, or browser responses. The same holds for `{{conversation_id}}`: a
+// conversation handle is only ever a placeholder in stored config and a rendered
+// value inside a live request — it is never persisted, summarized, or returned.
+const agentAPIKeyPlaceholder = "{{api_key}}"
+const agentPromptPlaceholder = "{{prompt}}"
 
-import (
-	"encoding/json"
-	"errors"
-	"net/http"
-	"strconv"
-	"strings"
-)
+// AgentConversationPlaceholder is the operator-facing placeholder for the
+// server-minted conversation id (U9). Exported so the target-summary builder
+// and the credential materializer can recognise it without duplicating the
+// literal.
+const AgentConversationPlaceholder = "{{conversation_id}}"
 
 // Metadata keys for agent target configuration (stored in target metadata;
 // none contain the sanitizer's blocked substrings so they round-trip safely).
@@ -45,12 +80,25 @@ const (
 	TargetMetadataAgentResponsePath = "agent_response_path"
 )
 
-const agentAPIKeyPlaceholder = "{{api_key}}"
-const agentPromptPlaceholder = "{{prompt}}"
-
 // TargetIsAgent reports whether the target is a custom-HTTP agent target.
 func TargetIsAgent(target EvaluationTargetInput) bool {
 	return target.Kind == EvaluationTargetKindAgent
+}
+
+// AgentTargetWantsConversation reports whether the operator asked for a
+// server-owned multi-turn conversation (U9), i.e. wrote {{conversation_id}} into
+// a request template.
+//
+// The BFF does not enforce the *rest* of the contract (response path present, a
+// multi-turn strategy selected, stateful not contradicted) because those depend
+// on the run's strategy list, which is only known when the run is created — the
+// engine refuses those combinations at run time with a readable code. This
+// predicate exists so the config-save path can tell the two shapes apart and say
+// so, instead of accepting a conversation target silently and letting the run
+// fail later.
+func AgentTargetWantsConversation(in EvaluationTargetInput) bool {
+	return strings.Contains(in.Metadata[TargetMetadataAgentBodyTmpl], AgentConversationPlaceholder) ||
+		strings.Contains(in.Metadata[TargetMetadataAgentHeadersTmpl], AgentConversationPlaceholder)
 }
 
 // ValidateAgentTargetInput checks the browser-supplied agent target fields.
@@ -81,6 +129,15 @@ func ValidateAgentTargetInput(in EvaluationTargetInput) error {
 		default:
 			return errors.New("agent method must be one of GET, POST, PUT, PATCH")
 		}
+	}
+	// U9: a conversation template with no way to read the id back is the one
+	// mistake that is both easy to make and invisible in the results — every turn
+	// would send an empty id and the agent would open a fresh conversation each
+	// time, producing a report that claims multi-turn. Caught here so the operator
+	// finds out while saving the target, not after a paid run.
+	if AgentTargetWantsConversation(in) &&
+		strings.TrimSpace(in.Metadata[TargetMetadataAgentResponsePath]) == "" {
+		return errors.New("多轮会话模板使用了 {{conversation_id}}，但未填写响应提取路径：平台需要知道从响应的哪个字段取回会话 id，否则每轮都会新开一段对话")
 	}
 	return nil
 }

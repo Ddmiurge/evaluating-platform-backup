@@ -93,6 +93,12 @@ import type { RunRecord } from '../manager/taskManager.js';
 import { EngineRunError } from './generateTests.js';
 import { buildTargetProvider, reduceEvalToSafeResult, type EvalLike, type RunnerResult } from './redteamRun.js';
 import { assertNativeStrategyMapIsCurrent, nativeStrategyMapping } from './nativeStrategyMap.js';
+import {
+  applyStatefulToMultiTurn,
+  assertAgentConversationIsExecutable,
+  assertMultiTurnStrategyIdsAreCurrent,
+  wantsAgentConversation,
+} from './agentSession.js';
 import { buildJudgeRubricMap, resolveJudgeRubric, type JudgeRubric } from './judgeRubric.js';
 import {
   applyCustomPluginRefs,
@@ -448,11 +454,31 @@ export interface NativeRedteamConfig {
     purpose: string;
     numTests: number;
     plugins: Array<{ id: string; config?: Record<string, unknown> }>;
-    strategies: Array<{ id: string }>;
+    strategies: NativeStrategyRef[];
     injectVar: string;
     provider: ReturnType<typeof buildGenerationProviderOptions>;
     testGenerationInstructions?: string;
   };
+}
+
+/**
+ * One strategy as it appears in the config document.
+ *
+ * `config` is declared because promptfoo **consumes** it — `RedteamStrategySchema`
+ * is `z.union([strategyIdSchema, z.object({ id, config: z.record(...) })])`, and
+ * `addCrescendo` spreads `strategy.config` straight into the CrescendoProvider
+ * config (`strategies-*.js`). So it is not a decorative field.
+ *
+ * Note that the platform does not currently *supply* it: `resolveNativeStrategies`
+ * builds `{ id }` only. That is why the U9 `stateful: false` contradiction guard
+ * is unreachable from the live path today and exists as defence for the day
+ * strategy-level config is plumbed through — at which point an operator could
+ * write a contradictory config for the first time. Widening the type now means
+ * that day needs no signature change.
+ */
+interface NativeStrategyRef {
+  id: string;
+  config?: Record<string, unknown>;
 }
 
 /** Build the config document. Exported for tests; not part of the REST contract. */
@@ -464,7 +490,7 @@ export async function buildNativeRedteamConfig(input: {
   injectVar: string;
   numTests: number;
   plugins: Array<{ id: string; config?: Record<string, unknown> }>;
-  strategies: Array<{ id: string }>;
+  strategies: NativeStrategyRef[];
   credentials: OneShotCredentials;
   /**
    * U8 · Plugin/strategy catalog carrying each plugin's judging standard.
@@ -503,6 +529,40 @@ export async function buildNativeRedteamConfig(input: {
   const provider = buildGenerationProviderOptions(input.credentials.generation!);
   const instructions = (input.testGenerationInstructions ?? '').trim();
 
+  // U9 · Server-owned conversation (Dify-style `conversation_id`).
+  //
+  // Two things have to be true for turn 2 to carry turn 1's id, and both are
+  // decided HERE — inside the config builder, which is the single place a
+  // promptfoo config document is produced. Putting either at the call site in
+  // executeNativeRedteamRun would recreate U8's counter-proof hole: a test that
+  // calls the builder directly would not see the wiring, so deleting the
+  // call-site line would leave the suite green.
+  //
+  //   1. the target provider carries a `sessionParser` (buildTargetProvider,
+  //      gated on the operator having written `{{conversation_id}}`);
+  //   2. the multi-turn strategies carry `stateful: true`, without which
+  //      promptfoo never echoes the id back (see agentSession.ts).
+  //
+  // The refusals come first: a conversation target that cannot thread its id
+  // would otherwise complete as a normal-looking single-turn run.
+  const conversationWanted = wantsAgentConversation({
+    agent_body_template: input.credentials.target.agent_body_template,
+    agent_headers_template: input.credentials.target.agent_headers_template,
+  });
+  let strategies = input.strategies;
+  if (conversationWanted) {
+    assertMultiTurnStrategyIdsAreCurrent(promptfoo.redteam.Strategies.map((s) => s.id));
+    assertAgentConversationIsExecutable({
+      wantsConversation: true,
+      agentResponsePath: input.credentials.target.agent_response_path ?? '',
+      promptfooStrategyIds: strategies.map((s) => s.id),
+      // U9 refusal 3: an explicit `stateful: false` next to a conversation
+      // placeholder is a contradiction, not a preference — see agentSession.ts.
+      promptfooStrategyConfigs: new Map(strategies.map((s) => [s.id, s.config])),
+    });
+    strategies = applyStatefulToMultiTurn(strategies);
+  }
+
   // U10: write the packages and swap the marker ids for `file://` refs. Done
   // inside the builder so there is no second path that can produce a config
   // document in which a `promptfoo-custom:` marker reaches promptfoo (which
@@ -530,7 +590,7 @@ export async function buildNativeRedteamConfig(input: {
       // and one that would only surface as "the numbers changed after the
       // upgrade".
       plugins: withPluginJudgeRubrics(resolvedPlugins, buildJudgeRubricMap(input.catalog)),
-      strategies: input.strategies,
+      strategies,
       injectVar: input.injectVar,
       provider,
       ...(instructions ? { testGenerationInstructions: instructions } : {}),
