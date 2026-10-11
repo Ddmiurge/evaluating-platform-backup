@@ -241,6 +241,34 @@ export async function executeRedteamRun(
 }
 
 /**
+ * U10 · Error code for a published package requested on the Plan A path.
+ *
+ * Mirrored by the BFF's `engine_runner_error_code`; part of the API contract so
+ * the UI can say "需要开启原生生成" instead of "运行失败".
+ */
+export const PLAN_A_ERR_CUSTOM_PLUGIN = 'custom_plugin_requires_native_generation';
+
+/**
+ * Refuse a published package on the Plan A path.
+ *
+ * The check is on `custom_plugins` (the resolved payloads) rather than on the
+ * plugin ids, because ids alone cannot distinguish a package from a built-in:
+ * the BFF rewrites package refs to `promptfoo-custom:` markers, and Plan A would
+ * pass those markers to the generation LLM as if they were plugin families —
+ * producing prompts attributed to a plugin that does not exist.
+ */
+export function assertNoCustomPluginsOnPlanA(customPlugins: Array<{ handle: string }> | undefined): void {
+  if (!customPlugins || customPlugins.length === 0) return;
+  const handles = customPlugins.map((p) => p.handle).filter(Boolean);
+  throw new EngineRunError(
+    PLAN_A_ERR_CUSTOM_PLUGIN,
+    `自定义插件（${handles.join(', ')}）只能由 promptfoo 原生生成执行，当前平台生成路径不会调用插件引擎，` +
+      '照常运行会得到一份绿色报告，但专家插件的 generator 从未被执行（选中能力、零覆盖且无法察觉）。' +
+      '请开启 PROMPTFOO_ENGINE_NATIVE_GENERATION，或在本次评测中不使用自定义插件。',
+  );
+}
+
+/**
  * Plan A: generate attack tests with the platform generation LLM, run them
  * against the target via promptfoo evaluate, and judge each response with
  * llm-rubric. Emits safe progress events through `emit`. Throws on engine
@@ -249,6 +277,19 @@ export async function executeRedteamRun(
 export async function executePlanARedteamRun(record: RunRecord, emit: Emit): Promise<RunnerResult> {
   const { request } = record;
   const { credentials } = request;
+
+  // U10: Plan A cannot execute a published package. It asks the platform LLM
+  // for attack prompts and hands plugin ids to it only as strings inside a
+  // prompt we wrote — promptfoo's plugin machinery is never involved, so a
+  // package's `generator` template would simply be ignored. Running anyway
+  // would produce a green report in which the expert's capability was never
+  // exercised: the same "selected a capability, got zero coverage, no way to
+  // tell" shape U6 exists to eliminate, reached by a different route.
+  //
+  // Refusing is the honest response. Turning on
+  // PROMPTFOO_ENGINE_NATIVE_GENERATION makes the same request work, and the
+  // message says so.
+  assertNoCustomPluginsOnPlanA(request.custom_plugins);
 
   if (!credentials.generation) {
     // Plan A requires a generation LLM; the BFF fail-fasts on this too, so
@@ -390,6 +431,21 @@ export function reduceEvalToSafeResult(
      * scoring basis.
      */
     judgeSourceOverrides?: Map<string, string>;
+    /**
+     * U10 · Judge source for plugins whose standard is neither the platform's
+     * family rubric nor promptfoo's built-in grader.
+     *
+     * An expert-published package carries its **own** `grader`, and that is what
+     * decided each probe (`CustomPlugin.getAssertions` builds the llm-rubric
+     * assertion from it). Without this override the lookup falls through to the
+     * catalog, does not find the id, and lands on `fallback:unmapped` — which
+     * would claim a degradation that did not happen, while the real basis (the
+     * expert's grader) went unrecorded.
+     *
+     * Consulted before the override map and after the per-test stamp, so a
+     * Plan-A style explicit stamp still wins.
+     */
+    judgeSourceByPlugin?: Map<string, string>;
   },
 ): SafeRunResult {
   const catalogMap = buildCatalogMap(catalog);
@@ -446,7 +502,9 @@ export function reduceEvalToSafeResult(
     const judgeSource =
       typeof stamped === 'string' && stamped.trim()
         ? stamped.trim()
-        : (options?.judgeSourceOverrides?.get(pluginId) ?? resolveJudgeRubric(pluginId, rubricMap).source);
+        : (options?.judgeSourceByPlugin?.get(pluginId) ??
+          options?.judgeSourceOverrides?.get(pluginId) ??
+          resolveJudgeRubric(pluginId, rubricMap).source);
     judgeSourceCounts.set(judgeSource, (judgeSourceCounts.get(judgeSource) ?? 0) + 1);
 
     // evaluate mode: use the catalog severity for display when the grader did

@@ -192,12 +192,48 @@ services:
     image: evaluating_platform-promptfoo-engine:latest
     container_name: ep_promptfoo_engine
     restart: unless-stopped
+    # ── U10 · sandbox boundary ───────────────────────────────────────────────
+    # U10 executes expert-authored plugin packages inside this container, so the
+    # boundary is declared here rather than assumed. See
+    # promptfoo_engine/Dockerfile for the full rationale and for which property
+    # is enforced in which layer.
+    #
+    # read_only: the root filesystem is mounted read-only. The only writable
+    # surfaces are the two tmpfs mounts below plus the /data/runs volume.
+    read_only: true
+    tmpfs:
+      # promptfoo and node both need a writable temp dir; without this the
+      # container cannot even boot under read_only.
+      - /tmp:rw,noexec,nosuid,size=256m
+      # promptfoo's SQLite database lives under its config dir. Mounted as
+      # tmpfs so a read-only root does not break it AND so the database does not
+      # persist between container restarts — U7's cleanup contract
+      # (promptfooStateCleanup) already removes run artifacts on every terminal
+      # path, and an ephemeral mount removes the class of "state survived a
+      # restart" residue entirely.
+      - /home/node/.promptfoo:rw,noexec,nosuid,size=512m
+    # Drop every capability: the engine needs none (it makes outbound HTTP
+    # connections and writes files, neither of which requires a capability).
+    cap_drop:
+      - ALL
+    # Refuse privilege escalation via setuid binaries.
+    security_opt:
+      - no-new-privileges:true
     environment:
       # fail-closed security switches (also asserted at boot by the engine)
       PROMPTFOO_DISABLE_REMOTE_GENERATION: "1"
       PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: "1"
       PROMPTFOO_DISABLE_TELEMETRY: "1"
       PROMPTFOO_DISABLE_SHARE: "1"
+      # U10: declares the read-only root contract to the engine, which reports
+      # it in its sandbox report and (with the probe below) actually tests it.
+      PROMPTFOO_ENGINE_READONLY_ROOT: "1"
+      # Opt in to the LIVE write/network probes at boot. Off by default because
+      # it adds a network round-trip and a filesystem write attempt to every
+      # start; turn it on in a deployment that wants the boundary measured
+      # rather than declared. With it on, a reachable promptfoo remote service
+      # or a writable root filesystem makes the engine REFUSE TO START.
+      PROMPTFOO_ENGINE_SANDBOX_PROBE: "${PROMPTFOO_ENGINE_SANDBOX_PROBE:-0}"
       PROMPTFOO_ENGINE_BEARER_TOKEN: "${PROMPTFOO_ENGINE_BEARER_TOKEN:-change-me-promptfoo-engine-bearer-secret}"
       PROMPTFOO_ENGINE_PORT: "8090"
       PROMPTFOO_ENGINE_DATA_ROOT: /data/runs

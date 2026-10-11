@@ -146,4 +146,61 @@ export const expertService = {
 
   listMaclawMCPServerTools: (id: string) =>
     api.get<{ items: MaclawMCPToolSummary[] }>(`/maclaw/mcp/servers/${encodeURIComponent(id)}/tools`).then((r) => r.data),
+
+  // ── U10 · 专家自定义插件（首期仅 yaml 形态）───────────────────────────────
+  // 发布走既有的加密资源存储（POST /maclaw/evaluation/resources，kind=pf_plugin），
+  // 不另建一套上传接口：发布 → 分发 → 管理员治理全部复用 maclaw_resources +
+  // maclaw_resource_publications，与设计文档 §2 U10 ① 一致。
+  publishPromptfooPlugin: (data: PromptfooPluginPublishInput) =>
+    api.post<PromptfooPluginSummary>('/maclaw/evaluation/resources', data).then((r) => r.data),
+
+  listPromptfooPlugins: (params?: { include_inactive?: boolean; limit?: number }) =>
+    api
+      .get<{ items: PromptfooPluginSummary[] }>('/maclaw/evaluation/resources', {
+        params: { kind: 'pf_plugin', ...params },
+      })
+      .then((r) => r.data),
+}
+
+/** U10 · 一条已发布的自定义插件（只含安全摘要，不含插件正文）。 */
+export interface PromptfooPluginSummary {
+  id: string
+  handle: string
+  name: string
+  description?: string
+  kind: string
+  version?: string
+  status: string
+  enabled: boolean
+  summary?: string
+  tags?: string[]
+  metadata?: Record<string, string>
+  created_at?: string
+  updated_at?: string
+}
+
+/**
+ * U10 · 发布请求。
+ *
+ * `pf_plugin_form` 固定为 'yaml'：首期仅支持 YAML 形态。后端仍会独立校验
+ * （含对伪装成 YAML 的 JS/脚本内容的嗅探），前端声明只是让「形态填错」得到
+ * 一条清楚的提示，而不是一条 schema 报错。
+ */
+export interface PromptfooPluginPublishInput {
+  name: string
+  description?: string
+  kind: 'pf_plugin'
+  version?: string
+  status: 'published'
+  enabled: boolean
+  summary?: string
+  tags?: string[]
+  /** 插件包正文（YAML：generator / grader / 可选 threshold / metric / id）。 */
+  payload: string
+  metadata: {
+    pf_plugin_form: 'yaml'
+    /** 逗号分隔的依赖插件 id；命中远程生成清单时后端会拒绝发布。 */
+    pf_plugin_depends_on?: string
+    [key: string]: string | undefined
+  }
 }

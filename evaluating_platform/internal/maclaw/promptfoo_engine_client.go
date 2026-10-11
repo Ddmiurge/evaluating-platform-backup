@@ -125,6 +125,21 @@ type EngineRunRequest struct {
 	// into. Empty means the engine default ("prompt"). Strategy transforms that
 	// rewrite a payload need this to know where to write.
 	InjectVar string `json:"inject_var,omitempty"`
+
+	// --- U10: expert-published YAML plugin packages ---
+
+	// CustomPlugins carries the resolved packages for this run. The BFF has
+	// already applied admin governance (a disabled or archived package is
+	// rejected before it gets here), validated the YAML against promptfoo's
+	// custom-plugin schema, and re-serialized it canonically — so `Definition`
+	// is exactly the document that was validated, byte for byte.
+	//
+	// Shipped inline rather than fetched by the engine: the engine has no
+	// database access and no business having one, and the payload is small (a
+	// template plus a rubric). The engine writes each definition into its
+	// per-run workdir and references it by `file://` path, which is the form
+	// promptfoo's CustomPlugin actually loads.
+	CustomPlugins []EngineCustomPlugin `json:"custom_plugins,omitempty"`
 }
 
 type EngineCapabilityRef struct {

@@ -246,7 +246,7 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
 
     const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'u8-e2e-'));
     try {
-      const config = buildNativeRedteamConfig({
+      const config = await buildNativeRedteamConfig({
         runId: 'u8-plan-c',
         purpose: 'U8 E2E',
         injectVar: 'prompt',

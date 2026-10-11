@@ -37,6 +37,35 @@ ENV PROMPTFOO_DISABLE_REMOTE_GENERATION=1 \
     PROMPTFOO_ENGINE_DATA_ROOT=/data/runs \
     PROMPTFOO_ENGINE_WORKERS=2 \
     PROMPTFOO_ENGINE_MAX_QUEUE=100
+# ── U10 · sandbox boundary (design doc `14` §2 U10 ②: 「最重安全项」) ────────
+#
+# U10 lets expert-authored plugin packages be *executed* by this process, so the
+# container boundary stops being theoretical. Three properties, each enforced in
+# the place that can actually enforce it:
+#
+#  1. **non-root** — `USER node` below, plus a boot-time assertion in
+#     src/env.ts (`assertSandboxInvariants`) that refuses to start when
+#     `process.getuid() === 0`. uid 0 bypasses both of the other properties, so
+#     this one is checked rather than trusted to the Dockerfile.
+#  2. **read-only root filesystem** — a *runtime* property, so it is set in
+#     docker-compose.yml (`read_only: true`) and asserted through
+#     `PROMPTFOO_ENGINE_READONLY_ROOT=1`. The image itself cannot declare it.
+#     Set `PROMPTFOO_ENGINE_SANDBOX_PROBE=1` to have the engine actually attempt
+#     the write and report the result (see src/sandbox.ts).
+#  3. **no unmanaged egress** — also a runtime property. The engine must reach
+#     the platform-supplied model endpoint, so "no network" is not the goal; the
+#     goal is that it can only reach endpoints the platform handed it. Enforced
+#     in src/runner/nativeRedteam.ts (`assertSafeProviderUrl`, which rejects
+#     vendor defaults and non-http(s) schemes) and probed by
+#     `PROMPTFOO_ENGINE_SANDBOX_PROBE=1`, which attempts to reach promptfoo's
+#     own remote generation service and fails the boot if it connects.
+#
+# The only writable surface is /data/runs (a volume) and /tmp (tmpfs in
+# compose). The engine writes per-run artifacts — the promptfoo config document
+# (which embeds the materialized generation API key) and U10's plugin packages —
+# only inside the per-run workdir under /data/runs, which is `rm -rf`'d on the
+# terminal path.
+ENV PROMPTFOO_ENGINE_READONLY_ROOT=1
 # Prepare the writable data directory as root, then drop privileges to the
 # non-root "node" user (uid 1000) shipped by the alpine node image.
 RUN mkdir -p /data/runs && chown node:node /data/runs

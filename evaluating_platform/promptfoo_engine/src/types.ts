@@ -99,6 +99,40 @@ export interface RunRequest {
    * single-variable prompt template uses.
    */
   inject_var?: string;
+  /**
+   * U10 · Expert-published YAML plugin packages, resolved and governed by the
+   * BFF.
+   *
+   * The BFF has already applied admin governance (a disabled or archived
+   * package never reaches this list), validated the YAML against promptfoo's
+   * custom-plugin schema, and re-serialized it canonically — so `definition` is
+   * byte-identical to the document that was validated. The engine writes each
+   * one into its per-run workdir and points promptfoo at it via `file://`.
+   *
+   * **Plan C only.** Plan A synthesizes attack prompts with the platform LLM
+   * and never invokes promptfoo's plugin machinery, so a package's `generator`
+   * template would simply be ignored there — a green run with the expert's
+   * capability silently absent, which is the exact failure shape U6/U10 exist
+   * to eliminate. Plan A therefore refuses such a request outright; see
+   * `assertNoCustomPluginsOnPlanA`.
+   */
+  custom_plugins?: EngineCustomPlugin[];
+}
+
+/**
+ * U10 · One published package, as shipped by the BFF.
+ *
+ * `handle` is the publication handle admin governance acts on; `plugin_id` is
+ * the package's own id (or promptfoo's default) and is what the report shows.
+ * `definition` is the canonical YAML — promptfoo loads it from a file the
+ * engine writes, never from this string directly.
+ */
+export interface EngineCustomPlugin {
+  handle: string;
+  plugin_id: string;
+  definition: string;
+  source_expert_user_id?: string;
+  version?: string;
 }
 
 /**

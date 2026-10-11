@@ -9,11 +9,13 @@ import {
   ExperimentOutlined,
   RocketOutlined,
   ApiOutlined,
+  BlockOutlined,
 } from '@ant-design/icons'
 import { SampleManager } from './SampleManager'
 import { EngineManager } from './EngineManager'
 import { MaclawSkillManager } from './MaclawSkillManager'
 import { MaclawMCPServerManager } from './MaclawMCPServerManager'
+import { PromptfooPluginPublisher } from './PromptfooPluginPublisher'
 import { useAuth } from '../../context/AuthContext'
 import { billingService } from '../../services/billing'
 import appLogoUrl from '../../assets/qianxin-ai-security-logo.png'
@@ -26,6 +28,9 @@ const menuItems = [
   { key: '/expert/engine', icon: <RocketOutlined />, label: '引擎管理' },
   { key: '/expert/skills', icon: <CodeOutlined />, label: 'Skill 管理' },
   { key: '/expert/mcp', icon: <ApiOutlined />, label: 'MCP 服务' },
+  // U10：专家自定义插件。放在 Skill 之后、MCP 之前——它是「可执行的评测能力」
+  // 的一种，与 Skill 同族，但与平台连接器（MCP）不是一回事。
+  { key: '/expert/plugins', icon: <BlockOutlined />, label: '评测插件' },
 ]
 
 export function ExpertPortal() {
@@ -172,6 +177,7 @@ export function ExpertPortal() {
             <Route path="engine" element={<EngineManager />} />
             <Route path="skills" element={<MaclawSkillManager />} />
             <Route path="mcp" element={<MaclawMCPServerManager />} />
+            <Route path="plugins" element={<PromptfooPluginPublisher />} />
             <Route path="*" element={<SampleManager />} />
           </Routes>
         </Content>

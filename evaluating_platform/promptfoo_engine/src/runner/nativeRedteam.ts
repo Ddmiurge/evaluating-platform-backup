@@ -88,12 +88,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import promptfoo from 'promptfoo';
 import { stringify } from 'yaml';
-import type { ApplicationDefinition, EngineCatalog, OneShotCredentials, RunProgressEvent } from '../types.js';
+import type { ApplicationDefinition, EngineCatalog, EngineCustomPlugin, OneShotCredentials, RunProgressEvent } from '../types.js';
 import type { RunRecord } from '../manager/taskManager.js';
 import { EngineRunError } from './generateTests.js';
 import { buildTargetProvider, reduceEvalToSafeResult, type EvalLike, type RunnerResult } from './redteamRun.js';
 import { assertNativeStrategyMapIsCurrent, nativeStrategyMapping } from './nativeStrategyMap.js';
 import { buildJudgeRubricMap, resolveJudgeRubric, type JudgeRubric } from './judgeRubric.js';
+import {
+  applyCustomPluginRefs,
+  materializeCustomPlugins,
+  reportPluginID,
+  type MaterializedCustomPlugin,
+} from './customPlugin.js';
 
 type Emit = (event: RunProgressEvent) => void;
 
@@ -450,7 +456,7 @@ export interface NativeRedteamConfig {
 }
 
 /** Build the config document. Exported for tests; not part of the REST contract. */
-export function buildNativeRedteamConfig(input: {
+export async function buildNativeRedteamConfig(input: {
   runId: string;
   purpose: string;
   applicationDefinition?: ApplicationDefinition;
@@ -472,10 +478,38 @@ export function buildNativeRedteamConfig(input: {
    * second path that can produce a rubric-less document.
    */
   catalog?: EngineCatalog;
-}): NativeRedteamConfig {
+  /**
+   * U10 · The per-run workdir. Custom plugin packages are written here and
+   * referenced by `file://` path, so this is a **required** parameter whenever
+   * `customPlugins` is non-empty — a package with nowhere to live cannot be
+   * loaded, and inventing a shared directory would break the workdir's
+   * wipe-on-terminal lifecycle (see customPlugin.ts).
+   */
+  workdir?: string;
+  /** U10 · Expert-published YAML plugin packages. */
+  customPlugins?: EngineCustomPlugin[];
+  /**
+   * U10 · Materialized packages, when the caller already wrote them.
+   *
+   * Supplied by `executeNativeRedteamRun` so the write happens exactly once per
+   * run and the resulting paths can be reused for the report-id remapping below.
+   * When absent the builder materializes from `customPlugins` itself — which is
+   * what tests do, and what keeps this function the single seam rather than
+   * having the write live at a call site.
+   */
+  materialized?: MaterializedCustomPlugin[];
+}): Promise<NativeRedteamConfig> {
   const target = buildTargetProvider(input.credentials.target);
   const provider = buildGenerationProviderOptions(input.credentials.generation!);
   const instructions = (input.testGenerationInstructions ?? '').trim();
+
+  // U10: write the packages and swap the marker ids for `file://` refs. Done
+  // inside the builder so there is no second path that can produce a config
+  // document in which a `promptfoo-custom:` marker reaches promptfoo (which
+  // would treat it as an unknown built-in plugin id and silently generate
+  // nothing for it).
+  const materialized = input.materialized ?? (await materializeCustomPlugins(input.customPlugins, requireWorkdir(input.workdir, input.customPlugins)));
+  const resolvedPlugins = applyCustomPluginRefs(input.plugins, materialized);
 
   return {
     description: `platform-native-redteam-${input.runId}`,
@@ -495,13 +529,83 @@ export function buildNativeRedteamConfig(input: {
       // promptfoo's one-size rubric — the exact degradation U8 exists to remove,
       // and one that would only surface as "the numbers changed after the
       // upgrade".
-      plugins: withPluginJudgeRubrics(input.plugins, buildJudgeRubricMap(input.catalog)),
+      plugins: withPluginJudgeRubrics(resolvedPlugins, buildJudgeRubricMap(input.catalog)),
       strategies: input.strategies,
       injectVar: input.injectVar,
       provider,
       ...(instructions ? { testGenerationInstructions: instructions } : {}),
     },
   };
+}
+
+/**
+ * Rewrite `metadata.pluginId` from a materialized `file://` path back to the
+ * package's own plugin id.
+ *
+ * Returns the input unchanged when there are no packages, so the common case
+ * allocates nothing.
+ */
+export function remapCustomPluginIds(evalLike: EvalLike, materialized: MaterializedCustomPlugin[]): EvalLike {
+  if (materialized.length === 0) return evalLike;
+  const results = evalLike.results ?? [];
+  if (results.length === 0) return evalLike;
+  return {
+    ...evalLike,
+    results: results.map((row) => {
+      const pluginId = row.testCase?.metadata?.pluginId;
+      if (typeof pluginId !== 'string') return row;
+      const mapped = reportPluginID(pluginId, materialized);
+      if (mapped === pluginId) return row;
+      return {
+        ...row,
+        testCase: {
+          ...(row.testCase ?? {}),
+          metadata: { ...(row.testCase?.metadata ?? {}), pluginId: mapped },
+        },
+      };
+    }),
+  };
+}
+
+/**
+ * Judge sources for the packages in this run.
+ *
+ * A custom package carries **its own grader** — that is the whole point of the
+ * `grader` field, and promptfoo builds an `llm-rubric` assertion from it
+ * (`CustomPlugin.getAssertions`, dist:15026). The platform family rubric was
+ * additionally attached as `graderGuidance`, but the standard that actually
+ * decided each probe is the expert's.
+ *
+ * Reporting `category:…` (which is what the catalog lookup yields for an id the
+ * catalog does not know) would credit the platform standard for a verdict the
+ * platform did not produce. Reporting the fallback tier would be wrong in the
+ * other direction — there was no fallback, there was a deliberate third basis.
+ * Hence `custom:<handle>`, which names it truthfully and stays countable in
+ * `judge_sources` like every other basis.
+ */
+export function customPluginJudgeSources(materialized: MaterializedCustomPlugin[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const item of materialized) {
+    out.set(item.pluginId, `custom:${item.handle}`);
+  }
+  return out;
+}
+
+/**
+ * Fail closed when a run needs a workdir and was not given one.
+ *
+ * Written as an explicit refusal rather than a default: silently writing
+ * packages somewhere shared would leave expert-authored definitions on disk
+ * outside the per-run lifecycle, and would put a path outside the sandbox's
+ * intended scope.
+ */
+function requireWorkdir(workdir: string | undefined, customPlugins: EngineCustomPlugin[] | undefined): string {
+  if (workdir && workdir.trim()) return workdir;
+  if (!customPlugins || customPlugins.length === 0) return '';
+  throw new EngineRunError(
+    NATIVE_ERR_CONFIG,
+    `run carries ${customPlugins.length} custom plugin package(s) but no workdir; refusing to write expert-authored definitions outside the per-run directory`,
+  );
 }
 
 /**
@@ -594,7 +698,13 @@ export async function executeNativeRedteamRun(
   const injectVar = (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR;
   const numTests = Math.min(Math.max(request.num_tests, 1), 50);
 
-  const config = buildNativeRedteamConfig({
+  // U10: write the expert's packages into THIS run's workdir before the config
+  // is built. WorkdirManager removes the directory on the terminal path, so a
+  // package cannot outlive its run and a disabled package leaves nothing behind
+  // for a later run to pick up.
+  const materialized = await materializeCustomPlugins(request.custom_plugins, workdir);
+
+  const config = await buildNativeRedteamConfig({
     runId: request.run_id,
     purpose: request.purpose,
     applicationDefinition: request.application_definition,
@@ -613,6 +723,8 @@ export async function executeNativeRedteamRun(
     // this catalog — see the note on that function's `catalog` parameter for
     // why the attachment lives there and not here.
     catalog: request.catalog,
+    workdir,
+    materialized,
   });
 
   // Written into the per-run workdir (wiped on terminal state), never into a
@@ -669,11 +781,19 @@ export async function executeNativeRedteamRun(
   // otherwise Plan C reports 0 probes / 0 coverage for every plugin and U8's
   // per-plugin rubric never reaches the report. See loadEvalResults.
   const loaded = await loadEvalResults(evalResult);
+  // U10: promptfoo stamps `metadata.pluginId = plugin.id` on every generated
+  // test, and on the custom-plugin path that id is the `file://` path we just
+  // wrote. Reducing straight from it would put the engine's local filesystem
+  // path into the report — forbidden by AGENTS.md ("must never include … local
+  // paths"), and unreadable besides. Translate the paths back to the package's
+  // own id before reducing.
+  const remapped = remapCustomPluginIds(loaded, materialized);
   // U8: plugins whose platform rubric could not be injected on this path are
   // judged by promptfoo's own grader; tell the reducer so the report says so
   // instead of crediting a platform standard that was never applied.
-  const result = reduceEvalToSafeResult(loaded, request.catalog as EngineCatalog | undefined, {
+  const result = reduceEvalToSafeResult(remapped, request.catalog as EngineCatalog | undefined, {
     judgeSourceOverrides: nativeJudgeSourceOverrides(request.plugins),
+    judgeSourceByPlugin: customPluginJudgeSources(materialized),
   });
   // Second fail-closed gate: rows existed but none survived reduction. Reporting
   // that as a 0-coverage success is the same green-run-zero-coverage shape U7

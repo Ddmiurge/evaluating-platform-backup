@@ -453,6 +453,52 @@ func PromptfooEngineSupportedStrategyIDs() []string {
 	return ids
 }
 
+// PromptfooCatalogPluginExists reports whether a plugin id names a built-in
+// catalog entry.
+//
+// U10 needs this as a collision oracle: an expert package must not claim a
+// built-in's id, because the report classifies every plugin by looking its id up
+// here — a collision would credit the package with the built-in's category,
+// severity and U8 rubric. Built as a set rather than a linear scan because it
+// runs once per published package, and a linear scan over 119 entries per
+// publication is the kind of thing that looks free until it is on a hot path.
+func PromptfooCatalogPluginExists(id string) bool {
+	return promptfooCatalogPluginIDSet[strings.ToLower(strings.TrimSpace(id))]
+}
+
+// PromptfooCatalogStrategyExists reports whether a strategy id names a built-in
+// catalog entry. Same collision rationale as PromptfooCatalogPluginExists.
+func PromptfooCatalogStrategyExists(id string) bool {
+	return promptfooCatalogStrategyIDSet[strings.ToLower(strings.TrimSpace(id))]
+}
+
+// promptfooCatalogPluginIDSet / promptfooCatalogStrategyIDSet are built once at
+// init from the same literals the catalog itself is built from, so they cannot
+// drift from it.
+var (
+	promptfooCatalogPluginIDSet = buildCatalogIDSet(len(promptfooPluginCatalog), func(yield func(string)) {
+		for _, entry := range promptfooPluginCatalog {
+			yield(entry.ID)
+		}
+	})
+	promptfooCatalogStrategyIDSet = buildCatalogIDSet(len(promptfooStrategyCatalog), func(yield func(string)) {
+		for _, entry := range promptfooStrategyCatalog {
+			yield(entry.ID)
+		}
+	})
+)
+
+// buildCatalogIDSet materializes a lowercased id set from an iterator.
+func buildCatalogIDSet(size int, each func(yield func(string))) map[string]bool {
+	out := make(map[string]bool, size)
+	each(func(id string) {
+		if trimmed := strings.ToLower(strings.TrimSpace(id)); trimmed != "" {
+			out[trimmed] = true
+		}
+	})
+	return out
+}
+
 // promptfooCategoryLabels maps a risk-category key to its Chinese display
 // label. Migrated from the engine's former CATEGORY_LABELS table so the label
 // vocabulary has a single source of truth (U2/T2.2): the backend now owns the

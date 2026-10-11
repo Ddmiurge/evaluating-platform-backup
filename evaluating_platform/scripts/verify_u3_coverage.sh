@@ -105,14 +105,19 @@ cover_ratio() {
 # 用法：assert_known_baseline <profile 文件>
 # 这两个常数与基线 profile **必须成对更新**（U7 裁定，见脚本头「基线何时重建」）：
 # 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
-# 永久拒绝出结论。当前值对应 U8 收尾（4407 块 / 3140 覆盖）：
-# U8 新增 promptfoo_judge_rubric.go（族级/覆盖/兜底 rubric 表）与
-# redteam_judge_source.go（judge_source 溯源与 caption），并给既有文件加了
-# 下发与渲染的接线，故语句块与覆盖块同步上升
-# （U7 收尾 4262/3019 → 4396/3130 → 4407/3140）。
+# 永久拒绝出结论。当前值对应 U10 收尾（4563 块 / 3267 覆盖）：
+# U10 新增 promptfoo_custom_plugin.go（YAML 插件包形态/schema/远程依赖校验）与
+# promptfoo_custom_plugin_resolver.go（`pf_plugin:` 引用解析 + 管理员治理），
+# 并给既有文件加了存储出口校验、桥接层治理接线与目录碰撞集合，故语句块与覆盖块
+# 同步上升（U8 收尾 4407/3140 → U10 收尾 4563/3267，覆盖率 71.25% → 71.60%，
+# +0.35pp，只升不降）。
+#
+# 注：中途曾因删除一处重复实现（CustomPluginResolver.Resolve，与桥接层
+# resolveCustomPlugins 职责重叠）而重取一次基线 —— 那次删除同时移除了对应的
+# resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4407}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3140}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4563}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3267}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

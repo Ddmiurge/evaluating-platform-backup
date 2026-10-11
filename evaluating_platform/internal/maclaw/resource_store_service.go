@@ -42,6 +42,34 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 	if !s.Enabled() {
 		return nil, ErrNotConfigured
 	}
+	// U10: the pf_plugin guardrail lives HERE, on the store's single write
+	// exit, not in the HTTP handler. Every write reaches this function — the
+	// expert publish endpoint, an admin re-publish, and the enterprise
+	// shadow-copy path (`ResourceProjectionService.ensureShadow` re-saves a
+	// published package through the same store with no handler in the path).
+	// A guard placed in the handler alone would be defeated by the shadow path,
+	// which is the U8 lesson (接线写在 helper 里 → 摘掉接线测试仍全绿) applied
+	// to placement: the guard has to sit where the data is written.
+	//
+	// Validation is a pure predicate over `in`, so a rejected package leaves no
+	// half-created row and no publication behind it.
+	if in.Kind == EvaluationResourceKindPromptfooPlugin {
+		def, err := ValidateAndParseCustomPluginPublication(in)
+		if err != nil {
+			return nil, err
+		}
+		// Normalize the stored payload to the parsed-and-reserialized form so
+		// what the engine later loads is exactly what was validated here.
+		// Storing the raw text instead would mean validation and execution read
+		// two different documents — the same class of gap U7 hit with
+		// `applicationDefinition`.
+		canonical, err := marshalCustomPluginDefinition(def)
+		if err != nil {
+			return nil, err
+		}
+		in.Payload = canonical
+		in.Metadata = CustomPluginPublicationMetadata(def, in.Metadata)
+	}
 	userID, err := normalizeUserID(userID)
 	if err != nil {
 		return nil, err

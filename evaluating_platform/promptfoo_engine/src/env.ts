@@ -101,6 +101,61 @@ export function nativeGenerationEnabled(env: NodeJS.ProcessEnv = process.env): b
 }
 
 /**
+ * U10 · Sandbox environment keys.
+ *
+ * `PROMPTFOO_ENGINE_READONLY_ROOT=1` is the engine's assertion that the
+ * container runs with a read-only root filesystem (compose: `read_only: true`).
+ * It is declared rather than probed by default, because there is no portable
+ * Node API for "is this filesystem read-only" — see `sandbox.ts` for the full
+ * reasoning and for the live probe (`PROMPTFOO_ENGINE_SANDBOX_PROBE=1`) that
+ * does test kernel behaviour.
+ *
+ * These are **additive**: nothing here relaxes any of the four fail-closed
+ * switches above, and every one of them only ever refuses.
+ */
+export const READONLY_ROOT_SWITCH = 'PROMPTFOO_ENGINE_READONLY_ROOT';
+export const SANDBOX_PROBE_SWITCH = 'PROMPTFOO_ENGINE_SANDBOX_PROBE';
+
+/**
+ * U10 · Fail-closed sandbox invariants.
+ *
+ * Only the **non-root** check is fatal, and that is a considered choice rather
+ * than an omission:
+ *
+ *  - Running as root makes every other boundary meaningless — a read-only root
+ *    filesystem and a dropped capability set are both bypassed by uid 0, so a
+ *    root container must not start. This one is checked at boot.
+ *  - The read-only and egress properties are asserted at boot **only when the
+ *    operator has declared the live probe**, because outside a container a dev
+ *    machine legitimately fails both. Refusing to boot there would make the
+ *    engine untestable on a laptop, which is where a surprising share of its
+ *    regressions are found.
+ *
+ * Every check's verdict is recorded distinctly (`verified` / `declared` /
+ * `failed` / `unavailable`) so a reader can never mistake "declared" for
+ * "verified". That distinction is the whole reason this layer exists.
+ */
+export async function assertSandboxInvariants(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const { verifySandbox } = await import('./sandbox.js');
+  const liveProbe = parseBool(env[SANDBOX_PROBE_SWITCH]);
+  const report = await verifySandbox(liveProbe);
+  const failed = report.properties.filter((p) => p.verdict === 'failed');
+  if (failed.length > 0) {
+    throw new Error(
+      `[FATAL] promptfoo-engine refuses to start: the execution sandbox is not intact: ` +
+        failed.map((p) => `${p.property} (${p.detail})`).join('; '),
+    );
+  }
+  const nonRoot = report.properties.find((p) => p.property === 'non_root');
+  if (nonRoot?.verdict !== 'verified') {
+    throw new Error(
+      `[FATAL] promptfoo-engine refuses to start: ${nonRoot?.detail ?? 'uid unknown'}. ` +
+        'The engine holds a materialized generation credential in its workdir; it must not run as root.',
+    );
+  }
+}
+
+/**
  * U7 · additive invariants for the native-generation path.
  *
  * These do NOT relax anything in `assertSecuritySwitches`; they are extra

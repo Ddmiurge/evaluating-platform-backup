@@ -24,6 +24,30 @@ func classifyMaclawError(err error) (int, string, string) {
 		return http.StatusServiceUnavailable, "maclaw_not_configured", "maclaw runtime is not configured"
 	}
 
+	// U10: a rejected expert plugin package is the submitter's input being
+	// wrong, not an upstream failure. Classified before the generic fallbacks
+	// so it surfaces as 400 with the validator's own message — the DoD requires
+	// "JS 形态被拒绝并有清晰提示（不是 500 错误）", and the generic branch would
+	// have turned it into a 503 with "maclaw runtime is not configured".
+	var validation *maclaw.PromptfooCustomPluginValidationError
+	if errors.As(err, &validation) {
+		return http.StatusBadRequest, validation.Code, validation.Error()
+	}
+	// U10: a `pf_plugin:` reference that cannot be resolved (admin disabled it,
+	// it was archived, or its content is gone) is likewise the caller's problem
+	// to act on, and the message explains which.
+	var refErr *maclaw.CustomPluginRefError
+	if errors.As(err, &refErr) {
+		return http.StatusConflict, refErr.Code, refErr.Message
+	}
+	// U6's remote-dependency guard surfaces through the same path when a run
+	// names a gated capability. Kept as its own case so the status reflects
+	// "this run cannot proceed as specified" rather than a bad-request on input.
+	var remoteDep *maclaw.EngineRemoteDepGuardError
+	if errors.As(err, &remoteDep) {
+		return http.StatusConflict, remoteDep.Code, remoteDep.Error()
+	}
+
 	var upstream *maclaw.UpstreamError
 	if errors.As(err, &upstream) {
 		switch upstream.StatusCode {

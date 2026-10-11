@@ -286,8 +286,8 @@ describe('buildNativeRedteamConfig — the document handed to promptfoo', () => 
     credentials: creds(),
   };
 
-  it('fills both slots with the platform endpoints', () => {
-    const cfg = buildNativeRedteamConfig(base);
+  it('fills both slots with the platform endpoints', async () => {
+    const cfg = await buildNativeRedteamConfig(base);
     // slot 1: the target under test
     expect(cfg.targets).toHaveLength(1);
     expect(cfg.targets[0]?.config.url).toBe('https://llm.corp.example/v1/chat/completions');
@@ -300,28 +300,28 @@ describe('buildNativeRedteamConfig — the document handed to promptfoo', () => 
 
   // Without this, grading would fall back to the same vendor default that
   // generation does — the target-side twin of the provider-missing hole.
-  it('also pins the grading provider so it cannot fall back', () => {
-    const cfg = buildNativeRedteamConfig(base);
+  it('also pins the grading provider so it cannot fall back', async () => {
+    const cfg = await buildNativeRedteamConfig(base);
     expect(cfg.defaultTest.options.provider.id).toBe('openai:chat:gen-model');
   });
 
-  it('uses the requested inject var in the prompt template', () => {
-    const cfg = buildNativeRedteamConfig({ ...base, injectVar: 'user_input' });
+  it('uses the requested inject var in the prompt template', async () => {
+    const cfg = await buildNativeRedteamConfig({ ...base, injectVar: 'user_input' });
     expect(cfg.prompts).toEqual(['{{user_input}}']);
     expect(cfg.redteam.injectVar).toBe('user_input');
   });
 
-  it('includes testGenerationInstructions only when non-empty', () => {
-    expect(buildNativeRedteamConfig(base).redteam.testGenerationInstructions).toBeUndefined();
-    const withText = buildNativeRedteamConfig({ ...base, testGenerationInstructions: ' 只用中文 ' });
+  it('includes testGenerationInstructions only when non-empty', async () => {
+    expect((await buildNativeRedteamConfig(base)).redteam.testGenerationInstructions).toBeUndefined();
+    const withText = await buildNativeRedteamConfig({ ...base, testGenerationInstructions: ' 只用中文 ' });
     expect(withText.redteam.testGenerationInstructions).toBe('只用中文');
   });
 
   // U8 adds one more key: graderGuidance. The caller-supplied config must still
   // survive alongside it, which is why this asserts per-key rather than by
   // whole-object equality (the rubric text is asserted in the U8 suite).
-  it('preserves per-plugin config', () => {
-    const cfg = buildNativeRedteamConfig({
+  it('preserves per-plugin config', async () => {
+    const cfg = await buildNativeRedteamConfig({
       ...base,
       plugins: [{ id: 'policy', config: { policy: { text: 'no refunds' } } }],
     });
@@ -390,8 +390,8 @@ describe('withPluginJudgeRubrics — Plan C carries the per-plugin rubric', () =
   // counter-proof (delete the rubric attachment from the run path) still
   // passed: the tests were green while Plan C judged by promptfoo's one-size
   // rubric. Testing the seam that emits the config is what closes that hole.
-  it('attaches each plugin rubric inside the config document promptfoo reads', () => {
-    const cfg = buildNativeRedteamConfig({
+  it('attaches each plugin rubric inside the config document promptfoo reads', async () => {
+    const cfg = await buildNativeRedteamConfig({
       runId: 'run-u8',
       purpose: 'p',
       injectVar: DEFAULT_INJECT_VAR,
@@ -405,8 +405,8 @@ describe('withPluginJudgeRubrics — Plan C carries the per-plugin rubric', () =
     expect(cfg.redteam.plugins[1]?.config?.graderGuidance).toBe('RUBRIC_HARMFUL');
   });
 
-  it('still attaches the named fallback for a plugin missing from the catalog', () => {
-    const cfg = buildNativeRedteamConfig({
+  it('still attaches the named fallback for a plugin missing from the catalog', async () => {
+    const cfg = await buildNativeRedteamConfig({
       runId: 'run-u8-fallback',
       purpose: 'p',
       injectVar: DEFAULT_INJECT_VAR,
@@ -421,8 +421,8 @@ describe('withPluginJudgeRubrics — Plan C carries the per-plugin rubric', () =
 
   // Pre-U8 BFF: no catalog at all. The run must still be rubric-bearing rather
   // than emitting a document with no standard per plugin.
-  it('degrades to the named fallback when no catalog is supplied', () => {
-    const cfg = buildNativeRedteamConfig({
+  it('degrades to the named fallback when no catalog is supplied', async () => {
+    const cfg = await buildNativeRedteamConfig({
       runId: 'run-u8-nocatalog',
       purpose: 'p',
       injectVar: DEFAULT_INJECT_VAR,

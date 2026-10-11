@@ -7,17 +7,29 @@
  *  3. graceful shutdown: stop accepting, cancel in-flight runs, wipe workdirs
  */
 import express from 'express';
-import { loadEnv } from './env.js';
+import { loadEnv, assertSandboxInvariants } from './env.js';
 import { bearerAuth } from './auth.js';
 import { TaskManager } from './manager/taskManager.js';
 import { WorkdirManager } from './manager/workdir.js';
 import { createRunsRouter } from './routes/runs.js';
 import { executeRedteamRun } from './runner/redteamRun.js';
 import { cleanupPromptfooRunArtifacts } from './runner/promptfooStateCleanup.js';
+import { formatSandboxReport, verifySandbox } from './sandbox.js';
 import { version } from './version.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();
+
+  // U10: assert the execution sandbox before anything can run a customer's
+  // code. `assertSandboxInvariants` refuses to boot when the process is root or
+  // a declared-and-probed property has failed; the report is logged either way
+  // so a reader can tell `verified` from `declared` — the distinction the
+  // design doc's "最重安全项" demands.
+  const sandbox = await verifySandbox();
+  for (const line of formatSandboxReport(sandbox)) {
+    console.log(line);
+  }
+  await assertSandboxInvariants();
 
   const workdirs = new WorkdirManager(env.dataRoot);
   const manager = new TaskManager({
@@ -67,6 +79,22 @@ async function main(): Promise<void> {
 
   app.use(bearerAuth(env.bearerToken));
   app.use(createRunsRouter(manager));
+
+  // U10: the sandbox report, behind the same bearer auth as the run routes.
+  //
+  // Deliberately NOT folded into `/health`. `/health` is unauthenticated (it is
+  // the compose healthcheck target), so publishing "is the sandbox intact"
+  // there would hand an unauthenticated caller a map of the engine's internals
+  // — writable root, uid, whether egress is blocked. Operators need the report;
+  // anonymous callers do not.
+  //
+  // The report distinguishes `verified` from `declared`, and `probed` says
+  // whether anything was actually probed at all, so an operator reading it can
+  // never mistake a declaration for a measurement.
+  app.get('/sandbox', async (_req: express.Request, res: express.Response) => {
+    const report = await verifySandbox();
+    res.json(report);
+  });
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

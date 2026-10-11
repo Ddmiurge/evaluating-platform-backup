@@ -42,8 +42,12 @@ type RedteamToolBridge struct {
 	engineRuns        *EngineRunService
 	engineTargets     EngineTargetProvider
 	engineGeneration  EngineGenerationProvider
-	mu                sync.RWMutex
-	payloadMap        map[string]redteamStoredPayload
+	// U10: resolves expert-published `pf_plugin:<handle>` references and applies
+	// admin governance. Nil in deployments without published packages, in which
+	// case refs pass through untouched (see CustomPluginResolver.Enabled).
+	customPlugins *CustomPluginResolver
+	mu            sync.RWMutex
+	payloadMap    map[string]redteamStoredPayload
 }
 
 var defaultRedteamTargetHTTPClient = &http.Client{Timeout: 180 * time.Second}

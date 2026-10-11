@@ -114,6 +114,16 @@ func (b *RedteamToolBridge) SetPromptfooEngine(runner PromptfooEngineRunner, run
 	b.engineGeneration = generation
 }
 
+// SetCustomPluginResolver wires the U10 published-package resolver into the
+// bridge. Optional: without it, `pf_plugin:` references are not resolvable and
+// runs naming them are rejected rather than silently dropped.
+func (b *RedteamToolBridge) SetCustomPluginResolver(resolver *CustomPluginResolver) {
+	if b == nil {
+		return
+	}
+	b.customPlugins = resolver
+}
+
 func (b *RedteamToolBridge) promptfooEngineReady() error {
 	if b == nil || b.engineRunner == nil || !b.engineRunner.Enabled() || b.engineRuns == nil || b.engineTargets == nil {
 		return errors.New("promptfoo engine is not configured")
@@ -177,16 +187,43 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if numTests > promptfooEngineMaxTests {
 		numTests = promptfooEngineMaxTests
 	}
+	// U10: resolve expert-published packages and apply admin governance.
+	//
+	// Placement is the point. This sits in PreparePromptfooEngineRun — the one
+	// function every confirmed engine run passes through — rather than in a
+	// helper the callers happen to call. U8's counter-proof showed what happens
+	// when a guard lives at a call site: deleting the wiring left 43 tests
+	// green. A disabled package that reached the engine would be exactly the
+	// silent-failure shape this project keeps refusing, so the check is here.
+	//
+	// Rejection happens before credential materialization and before the run
+	// record is persisted, so a refused package leaves no half-created run and
+	// no credential touched.
+	resolved, err := b.resolveCustomPlugins(ctx, userID, plugins)
+	if err != nil {
+		return nil, err
+	}
+	plugins = resolved.engineRefs
+	customPlugins := resolved.packages
 	sessionID := firstNonEmptyString(in.ExecutionSessionID, in.SessionID, in.Metadata["session_id"])
 	normalized := PromptfooEngineRunInput{
 		RunID:              strings.TrimSpace(in.RunID),
 		Purpose:            purpose,
 		NumTests:           numTests,
-		Plugins:            engineRefIDs(plugins),
+		Plugins:            resolved.recordIDs,
 		Strategies:         engineRefIDs(strategies),
 		JudgeMode:          string(judgeMode),
 		ExecutionUserID:    userID,
 		ExecutionSessionID: sessionID,
+	}
+
+	// The persisted run record must name the package's own plugin id, never the
+	// `promptfoo-custom:` marker. The marker is a transport detail between this
+	// process and the engine, and the record is what the report and the browser
+	// are built from.
+	recordRefs := make([]EngineCapabilityRef, 0, len(resolved.recordIDs))
+	for _, id := range resolved.recordIDs {
+		recordRefs = append(recordRefs, EngineCapabilityRef{ID: id})
 	}
 
 	stageDurations := map[string]int64{}
@@ -212,7 +249,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if isKnownEngineRunSource(in.Source) {
 		runSource = in.Source
 	}
-	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), plugins, strategies)
+	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordRefs, strategies)
 	saved, err := b.engineRuns.Save(ctx, record)
 	if err != nil {
 		return nil, fmt.Errorf("persist engine run: %w", err)
@@ -229,6 +266,10 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		JudgeMode:      judgeMode,
 		Credentials:    derefOrEmptyEngineCreds(MaterializeEngineCredentialsWithGeneration(target, generation)),
 		Catalog:        PromptfooEngineCatalog(),
+		// U10: the resolved packages. Governance has already been applied; the
+		// engine's job is to write each definition into its per-run workdir and
+		// point promptfoo at it.
+		CustomPlugins: customPlugins,
 	}
 	// U7: enrich the request with the application description promptfoo's own
 	// generation reads. Ignored while Plan A is selected, so this is safe to
@@ -245,6 +286,67 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	stageDurations["submit_engine_run"] = redteam.DurationMillisSinceTime(submitStarted)
 
 	return &PreparedEngineRun{Record: saved, NormalizedIn: normalized, StageDurations: stageDurations}, nil
+}
+
+// customPluginResolution is the outcome of resolving a run's plugin refs.
+//
+// Two id lists, because the two consumers need different things and conflating
+// them would leak:
+//
+//   - `engineRefs` carries the `promptfoo-custom:` marker the engine swaps for a
+//     `file://` path inside its own workdir. It never leaves the process.
+//   - `recordIDs` carries the package's own plugin id, which is what the run
+//     record, the report and the browser see. Using the marker there would put
+//     an internal transport detail into user-facing output, and using the
+//     engine's `file://` path would put a **local filesystem path** into a
+//     report — explicitly forbidden by AGENTS.md ("must never include … local
+//     paths").
+type customPluginResolution struct {
+	engineRefs []EngineCapabilityRef
+	recordIDs  []string
+	packages   []EngineCustomPlugin
+}
+
+// resolveCustomPlugins applies U10 governance to a run's plugin refs.
+//
+// Pure pass-through when no ref names a published package, so a deployment that
+// never uses the feature behaves exactly as before — that is the rollback
+// property, and it is also why the resolver does not require wiring to be
+// present in order to run.
+func (b *RedteamToolBridge) resolveCustomPlugins(
+	ctx context.Context,
+	userID uuid.UUID,
+	refs []EngineCapabilityRef,
+) (*customPluginResolution, error) {
+	recordIDs := make([]string, 0, len(refs))
+	engineRefs := make([]EngineCapabilityRef, 0, len(refs))
+	var packages []EngineCustomPlugin
+	for _, ref := range refs {
+		if !IsCustomPluginRef(ref.ID) {
+			recordIDs = append(recordIDs, ref.ID)
+			engineRefs = append(engineRefs, ref)
+			continue
+		}
+		if b == nil || b.customPlugins == nil || !b.customPlugins.Enabled() {
+			return nil, &CustomPluginRefError{
+				Code: CustomPluginErrRefUnavailable,
+				Ref:  ref.ID,
+				Message: "自定义插件 " + CustomPluginRefTarget(ref.ID) + " 无法加载：平台未启用自定义插件发布链路。" +
+					"请联系管理员确认加密资源存储（maclaw_resources KeyStore）与发布表已配置。",
+			}
+		}
+		pkg, err := b.customPlugins.resolveOne(ctx, userID, ref.ID)
+		if err != nil {
+			return nil, err
+		}
+		packages = append(packages, *pkg)
+		recordIDs = append(recordIDs, pkg.PluginID)
+		engineRefs = append(engineRefs, EngineCapabilityRef{
+			ID:     CustomPluginEngineMarker + ref.ID,
+			Config: ref.Config,
+		})
+	}
+	return &customPluginResolution{engineRefs: engineRefs, recordIDs: recordIDs, packages: packages}, nil
 }
 
 func engineRefIDs(refs []EngineCapabilityRef) []string {
