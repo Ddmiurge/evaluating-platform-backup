@@ -496,6 +496,122 @@ U7 已立此判据（§4.8.1），U8 在两个新字段上再次验证：
 | **回滚方式** | 新增配置项默认为空 → 不填即保持 v1 单轮行为，向后兼容；单 commit 可 revert |
 | **DoD** | - [ ] `go build ./... && go test ./...` 全绿<br/>- [ ] `npm run typecheck && npm test`（引擎）全绿<br/>- [ ] Dify 多轮端到端跑通（**实测，非 mock**）<br/>- [ ] `conversation_id` 回传已抓包/日志实证<br/>- [ ] `crescendo` 在 Agent 目标上构成真实多轮<br/>- [ ] 会话数据零落库/零落日志（安全抽查）<br/>- [ ] 不填新配置时行为与 v1 完全一致（**反证测试**）<br/>- [ ] 副作用隔离指引已写入 `agent-target-preparation-guide.md`<br/>- [ ] 覆盖率只升不降<br/>- [ ] 一个语义化 commit 已推送，CI 5 job 全绿 |
 
+### 2.12 U9 落地结果（2026-10-11 实测；**§2 U9 ② 与实际不符，以本节为准**）
+
+**commit `e425d5f`（未推送，待review）。**
+
+#### 2.12.1 设计更正：会话映射**不由引擎维护** —— §2 U9 ② 的前提被实测推翻
+
+§2 U9 ② 写的是「**会话映射由引擎侧维护**（promptfoo http provider 无状态）：
+`session_id ↔ conversation_id ↔ 历史`」。**前半句实测为假。**
+
+promptfoo 0.123.0 的 http provider **本就有原生会话支持**，三处证据（dist）：
+
+| 事实 | 位置 |
+|------|------|
+| `HttpProviderConfigSchema` 声明 `sessionParser` / `session` / `sessionSource` / `stateful` | `providers-*.js` `HttpProviderConfigSchema` |
+| `callApi` 把 `vars.sessionId` 放进 nunjucks 渲染上下文；`sessionParser` 从 `{headers, body}` 取值并写入 `ProviderResponse.sessionId` | 同上`callApi` |
+| crescendo/goat/hydra 在 **`stateful` 为真时**才把 `response.sessionId` 回写进 `vars.sessionId` | `crescendo-*.js:190` |
+
+所以引擎**没有另建会话map**。那会是上游状态的一份更差副本 —— 正是
+U8 §2.10.1 批评的「护栏扎在错误的接缝上」的同构错误。引擎实际只做四件事：
+
+1. 把操作员写的 `{{conversation_id}}` 译成 promptfoo 绑定的 `{{sessionId}}`
+   （`buildTargetProvider`，唯一出口）；
+2. 从**既有**的 `agent_response_path` 推导出 `sessionParser`
+   （`buildSessionParser`），不让操作员再学一门 JS 方言；
+3. **强制多轮策略 `stateful: true`**（`applyStatefulToMultiTurn`）；
+4. 拒绝对不work 的组合（三个 fail-closed，见 2.12.3）。
+
+#### 2.12.2 承重项：`stateful` 不是优化，是「真多轮」与「假多轮」的分界
+
+`crescendo-*.js:190` 是 `if (lastResponse.sessionId && this.stateful)`。
+`stateful` 缺省为 **false**，此时 promptfoo **静默丢弃**会话 id：运行正常结束、
+探针数正常、报告写着多轮，而有状态 Agent **每轮都在新开一段对话**。
+数字上看不出任何异常。
+
+因此引擎在检测到会话占位符时**强制置真**，并配了**对照组 E2E**
+（手写配置文档、故意不带 `stateful`）证明同一 harness 在缺接线时
+确实每轮新开 —— 否则第一条断言可能是恒真的。
+
+#### 2.12.3 三道 fail-closed（宁拒不跑）
+
+| 错误码 | 触发 | 拦截位置 |
+|--------|------|----------|
+| `agent_session_requires_response_path` | 有占位符但无 id 提取路径 | 前端 + Go **保存期** + 引擎兜底 |
+| `agent_session_requires_multiturn_strategy` | 有占位符但未选多轮策略 | 引擎（`buildNativeRedteamConfig`） |
+| `agent_session_stateful_false_contradiction` | 占位符 + 显式 `stateful:false` | 引擎（**当前不可达**，见下） |
+
+**第三条的可达性已显式记录，未留假绿**：`resolveNativeStrategies` 只产出
+`{ id }`、丢弃 `config`，所以操作员今天**写不出** `stateful: false`。
+已加一个专门测试断言这件事（`records that stateful is absent from the live
+path...`），将来若把策略 config 接通，该测试必须重新审视。
+这正是 U8 §2.10.3「实际用了 A、报告说成 B」那条判据的应用。
+
+#### 2.12.4 生命周期：为何不泄漏（清理触发点的答案）
+
+**没有需要清理的东西，因为引擎不持有会话状态。**
+promptfoo 的会话状态是 per-`callApi` 的 `vars`：每轮替换、provider 返回即释放。
+引擎侧零累积 ⇒ 无增长 ⇒ 无泄漏面，也就不存在「清理触发点」。
+
+引擎的义务收缩为「**不把id 抄进任何出口**」，由三个出口的字段集保证（实测grep）：
+
+```
+$ grep -rn "sessionId" promptfoo_engine/src/ | grep -vE ":[[:space:]]*\*"
+runner/agentSession.ts:86:const PROMPTFOO_SESSION_VAR = '{{sessionId}}';
+← 可执行代码中仅此一处，且是占位符字符串常量，不是数据
+```
+
+`SafeRunResult` / `RunProgressEvent` / Go `EngineSafeResult` 三个出口的字段集
+均**无** conversation/session 字段。
+
+**唯一的落盘面**是 Plan C 写promptfoo SQLite（U7 §4.8.5 方案 A：容器内接受 +
+终态显式清理），由既有的 `promptfooStateCleanup.ts` 覆盖，U9 **不新增任何持久化**。
+
+#### 2.12.5 实测：多轮抓包证据
+
+本地 Dify 形态端点（`conversation_id` 空则铸新 id）+ 真实 promptfoo：
+
+```
+[U9 WIRE] 3 call(s) to the Dify-shaped endpoint:
+  POST /v1/chat-messages#1 conversation_id=""
+  POST /v1/chat-messages#2 conversation_id=""
+  POST /v1/chat-messages#3 conversation_id="conv-u9-2"
+```
+
+第 3 次调用带的是第 2 次铸出的 id —— **这就是 DoD要的「回传已实证」**。
+`#1`/`#2` 两个空id 是预期的：promptfoo 为插件用例与策略用例各生成一个test，
+策略用例才是那条多轮攻击。
+
+#### 2.12.6 反证（两项接线各摘一次）
+
+| 摘掉的接线 | 结果 |
+|-----------|------|
+| `applyStatefulToMultiTurn`（`nativeRedteam.ts`） | E2E 转红：3 次调用 `conversation_id` **全为空** |
+| `sessionParser`（`redteamRun.ts`） | 4 个用例转红 |
+
+摘掉任一接线，**多轮都不成立**，且第一项的失败信息正是「每轮新开对话」。
+
+#### 2.12.7 副作用隔离：只做可见性，且只留计数
+
+归约器输出 `tool_call_signals`（两个整数）。**刻意不保留工具名/参数** ——
+工具参数是攻击者可控内容，`AGENTS.md` 禁止其进报告；留着就是
+「戴着安全标签的泄漏」。检测是**启发式**（常见响应形态的并集），
+类型注释里明确写了「未识别到标记 ≠ 未使用工具」。
+平台**不阻断**——Agent 内部行为无法由平台阻断，这一层只让
+「打到生产端点」与「打到沙箱」在报告上可区分。
+
+#### 2.12.8 §2 U9 与实际不符之处（以实际为准）
+
+| §2 U9 原文 | 实际 |
+|------------|------|
+| ②「会话映射由引擎侧维护（http provider 无状态）」 | **前提错误**：promptfoo 原生支持；引擎不建map（2.12.1） |
+| ③「与 `attack_session` 绑定」 | 仓库中**不存在** `attack_session` 概念（grep 全仓 0 命中）。绑定实际由 promptfoo 的 per-test `vars` 承担 |
+| 涉及文件：`redact.ts`「会话数据脱敏」 | 无需脱敏——会话数据**从不进入任何出口**（2.12.4），故 redact 无需改动会话相关逻辑；仅把新出口 `tool_call_signals` 加入白名单 |
+| 涉及文件：`tests/agentTarget.test.ts` | 实际落在新增的 `tests/agentSession.test.ts` + `tests/u9MultiTurn.e2e.test.ts`；`agentTarget.test.ts` 未改 |
+| 「回滚方式：新增配置项默认为空」 | **无新增配置项**：能力完全由既有 `agent_body_template` / `agent_response_path` 承载。回滚比设计预期更干净（单commit revert 即可，无配置迁移） |
+| DoD「Dify 多轮端到端跑通（**实测，非 mock**）」 | **部分达成**：本机无 Dify，用本地 Dify 形态端点（同一 HTTP 契约）实测。**未对真实 Dify 实例跑过**，如实登记 |
+
 ---
 
 ### U10 · 专家自定义插件发布链路
