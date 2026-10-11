@@ -311,6 +311,10 @@ rubric」「运行时 id 不在目录」留的显式出口。
 落库同样复用 `report.metadata`（不新增列、不新增 migration），非法值
 **fail-closed 拒绝写报告**（合法值集合 = 前缀 + 已知族名/插件名，故可校验形状）。
 
+| 插件 | 路径 | 本批结论 |
+|---|---|---|
+| `policy` | Plan C | 需用户提供策略文档（`config.policy`），否则 0 用例。**平台当前不提供该输入** → 登记为待修缺口（见 §2.9.5） |
+
 #### 2.9.4 本批实测发现的失效（登记与处置）
 
 **① `policy` 不能注入 `graderGuidance`—— U8 会引入的真实崩溃**
@@ -338,7 +342,16 @@ if (p.config) { if (p.id === "policy") { const policy = p.config?.policy;
   其代码路径调用 `promptForEmailUnverified()`，非 CI 下**阻塞在交互式 stdin**
   （`? Work email:`），CI 下则产出 0 条用例。因此 E2E **无法**断言该档；改由确定性
   单测覆盖。**未覆盖的缺口**是「`executeNativeRedteamRun` 若忘传 overrides」这一条接线，
-  已上报而非掩盖。彻底修需上游补丁或 promptfoo 升级。
+  已上报而非掩盖。彻底修需上游补丁或promptfoo 升级。
+
+> **⚠️ 上面这条「残余缺口」已被后续实测推翻，记录保留以留痕。** team-lead 指出
+> email gate 被 `if (!neverGenerateRemote())` 包着，而 C 方案下
+> `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=1` 使 `neverGenerateRemote()` 为 true，
+> **gate 根本不进入**。复核确认：**是观察环境错了，不是产品行为**——原E2E 第三个
+> 用例没有设那四个开关（只设了 `CI` 与 native-generation），靠同进程前一个用例的env
+> 残留才没暴露。**「阻塞 stdin」不是 C 方案生产形态的行为。**
+>
+> 在**开关设全**的独立进程里重测（7 组对照），真实结论见 §2.9.5。
 
 **② Plan C 的 `Eval.results` 运行时为空（U7 既有缺口 → U8 内必修）**
 
@@ -371,6 +384,46 @@ rows with metadata.pluginId  : 2/2
 **③ 一处设计文档表述已改写**：§2 U8 ③「保留 `SAFETY_RUBRIC` 作为兜底」——原设计只写了
 「不报错、不产出空判定」，没写另一半——**可观测**。已改为四档制（§2.9 正文）。
 
+### 2.9.5 `policy` 在 C 方案真实形态下的行为（开关设全，独立进程实测）
+
+复现方式：独立 node 进程，**先**设全四个开关再import 任何 promptfoo（否则会被
+ESM提升骗到，与 U7/U8 反复遇到的 import 时序同源），假生成+ 判定 LLM。
+
+```
+PROMPTFOO_DISABLE_REMOTE_GENERATION=1
+PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=1
+PROMPTFOO_DISABLE_TELEMETRY=1
+PROMPTFOO_DISABLE_SHARE=1
+（CI 未设置）
+```
+
+| # | 插件 config | 结果 |
+|---|---|---|
+| A | `policy`，无 config，无 CI | `run()` 返回 UNDEFINED（0 用例），**无 stdin 阻塞**，258ms |
+| B | `policy`，无 config，`CI=true` | UNDEFINED（0 用例），31ms |
+| C | `policy` + `config.policy` 文本 | **OK，1 条结果** |
+| D | `policy` + `config.policy` + `graderGuidance` | OK，1 条 |
+| E | `contracts`，无 config（对照组） | OK，1 条 |
+| F | **`policy` 只带 `graderGuidance`（= U8 注入后的真实形状）** | **`TypeError: Cannot read properties of undefined (reading 'trim')`** |
+| G | `contracts` 只带 `graderGuidance`（同形状对照组） | OK，1 条 |
+
+**三条结论**：
+
+1. **email gate 在 C 方案下不进入**（A/B 组：秒回、无 `? Work email:`）。
+   §2.9.4 ① 里「阻塞 stdin」的说法**作废**，原因是观察环境没设开关，不是产品行为。
+2. **`policy` 0 用例的真正原因是上游语义**：PolicyPlugin 需要一份**策略文档**
+   （`config.policy`）才有东西可测；不给就 0 用例（A/B vs C 的唯一差异就是这个字段）。
+   **平台当前不提供该输入** —— 故「选了 `policy` 却没给策略文档」应被当作**真实缺口**
+   显式报出，而不是静默 0 覆盖。**这不是 U8 能修的**，登记给后续批次。
+3. **「跳过注入」必须保留**：F vs G 是决定性对照 —— **同一形状的 config 挂到
+   `policy` 上崩、挂到 `contracts` 上正常**。team-lead 的判断（「注入必崩是事实，
+   所以跳过必须保留」）成立。
+
+> 顺带修正一处**我们自己的**测试缺陷：PolicyPlugin 的模板要求 `"Prompt: "`逐行输出
+> （`One prompt per line`），与 `contracts` 的措辞不同。假 LLM 最初只认后者，导致
+> `policy` 恒 0 用例，看起来像上游死路——**那是测试替身的问题，不是上游的**。
+> 修好替身后 `policy` 立刻能跑通（C 组），并因此得以把接线护栏补在生产出口上（见 §2.10.1）。
+
 ---
 
 ## 2.10 U8 沉淀的两条判据（超出本批，但适用于后续所有批次）
@@ -393,6 +446,21 @@ rows with metadata.pluginId  : 2/2
 **为什么这条值得单列**：本项目已多次出现同类形态 —— U3 的 `go fmt ./...`、
 §3.4.3 的类型注解解析陷阱、U6 的静默 0 覆盖。「全绿但护栏没接线」比「护栏不存在」
 更危险，因为它会让 review 误以为该处已被覆盖。
+
+**本批的第二次踩坑与补救（可作为操作范式）**：给 `judgeSourceOverrides` 接线时，
+我先写了单测（打 `nativeJudgeSourceOverrides` + reducer），摘掉接线后 **59 个测试全绿**。
+补救三步：
+1. 找到**能让该分支产生可观测产物**的输入——本例是发现「`policy` 需要策略文档」，
+   于是给它一份 `config.policy`，`policy` 就真的产出了探针；
+2. 把断言**移进生产出口**的用例（`executeNativeRedteamRun`），直接断言最终的
+   `plugin_stats[].judge_source` 与 `judge_sources`；
+3. 重做反证 —— 摘掉接线后**必须变红**，实测：
+   `expected 'category:industry' to be 'promptfoo:policy'`（1 failed | 2 passed）。
+
+**关键教训**：第 1 步往往需要先**实测**该分支能不能产出结果，而不是先假定它不能。
+我曾据「policy 产不出用例」写下条件断言（`if (policy !== undefined)`）—— 那是把
+「没测到」伪装成「测过了」。**如果一个分支在本环境里跑不出结果，正确做法是找出
+让它跑出来的输入；找不到就如实登记缺口，不能用条件断言把它变成假绿。**
 
 ### 2.10.2 配置类字段必须实测是否被消费（本批第三次验证）
 

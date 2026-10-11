@@ -395,7 +395,11 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
         res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ entities: [], purpose: 'e2e' }) } }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }));
         return;
       }
-      if (body.includes('Each line must begin with the string')) {
+      // PolicyPlugin's template asks for `"Prompt: "` lines ("One prompt per
+      // line"), NOT the contracts phrasing. Missing this made `policy` yield 0
+      // cases in this harness and looked like an upstream dead end — it was our
+      // fake LLM's gap, not promptfoo's.
+      if (body.includes('Each line must begin with the string') || body.includes('One prompt per line')) {
         res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Prompt: probe attack one' } }], usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 } }));
         return;
       }
@@ -421,7 +425,16 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
           platform_user_id: 'u8-user',
           purpose: 'U8 E2E',
           num_tests: 1,
-          plugins: [{ id: 'contracts' }, { id: 'hallucination' }],
+          plugins: [
+            { id: 'contracts' },
+            { id: 'hallucination' },
+            // `policy` carries a caller-supplied policy document. Without one
+            // PolicyPlugin has nothing to test against and yields 0 cases
+            // (measured) — which is why it needs a doc here, and also why the
+            // platform must treat "policy selected without a document" as a
+            // real gap rather than a silent 0-coverage run.
+            { id: 'policy', config: { policy: '不得给出退款承诺' } },
+          ],
           strategies: [],
           judge_mode: 'promptfoo_native' as const,
           credentials: {
@@ -432,6 +445,9 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
             plugins: [
               { id: 'contracts', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: RUBRIC_INJECTION, judge_source: 'category:industry' },
               { id: 'hallucination', category: 'hallucination', category_label: '幻觉与事实性', severity: 'medium', judge_criteria: RUBRIC_HARMFUL, judge_source: 'category:hallucination' },
+              // Same family as `contracts` on purpose: without the override the
+              // two would be indistinguishable in the report.
+              { id: 'policy', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: RUBRIC_INJECTION, judge_source: 'category:industry' },
             ],
             strategies: [],
           },
@@ -450,21 +466,24 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
       expect(byPlugin['hallucination']).toBe('category:hallucination');
       expect(result.judge_sources?.every((s) => !s.is_fallback)).toBe(true);
 
-      // KNOWN LIMITATION — `policy` is deliberately NOT exercised here.
-      // Its Plan C path is the one plugin that cannot be driven headlessly:
-      // promptfoo's policy code calls `promptForEmailUnverified()`, which either
-      // blocks on interactive stdin ("? Work email:") or, under CI=true, still
-      // produces 0 test cases ("Total tests: 3 / Generated 1 for contracts /
-      // Generated 1 for hallucination" — policy never appears). So an E2E here
-      // could not assert anything about it, and a conditional assertion would be
-      // a silent no-op — the very anti-pattern this suite already caught once
-      // (U8 counter-proof #3). The `promptfoo:policy` source is therefore pinned
-      // by the deterministic unit tests instead:
-      //   - nativeRedteam.test.ts → nativeJudgeSourceOverrides + reducer
-      //   - redteam_judge_source_test.go → NormalizeJudgeSource 的防后门校验
-      // Both assert the override changes the reported source. The residual gap —
-      // "executeNativeRedteamRun forgets to pass the overrides" — is not covered
-      // end-to-end and is reported to the team rather than papered over.
+      // U8 ①: `policy` must NOT claim the platform family standard — on this path
+      // promptfoo's own grader judged it. Asserted through the run (the unique
+      // exit), NOT through the helper: the previous version tested only the
+      // helper and deleting the wiring left the suite green — the exact trap
+      // this batch's §2.10.1 criterion is about.
+      //
+      // Driving `policy` at all required two measured fixes: the fake LLM must
+      // answer PolicyPlugin's `"Prompt: "` line format, and the plugin needs a
+      // policy document (PolicyPlugin yields 0 cases without one).
+      expect(byPlugin['policy']).toBe('promptfoo:policy');
+      // It is not the fallback tier: the platform does have a standard here, it
+      // just could not be delivered.
+      expect(result.judge_sources?.every((s) => !s.is_fallback)).toBe(true);
+      expect(result.judge_sources?.map((s) => s.source).sort()).toEqual([
+        'category:hallucination',
+        'category:industry',
+        'promptfoo:policy',
+      ]);
     } finally {
       delete process.env.PROMPTFOO_ENGINE_NATIVE_GENERATION;
       delete process.env.CI;
