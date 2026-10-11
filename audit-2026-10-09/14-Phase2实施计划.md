@@ -457,6 +457,69 @@ U1 建的是 `internal/maclaw/gen_frontend_options_test.go` 的**双向 id 集�
 - [ ] 覆盖率只升不降（`-coverpkg` 口径）
 - [ ] 一个语义化 commit 已推送，CI 5 job 全绿
 
+### 4.8 U7 落地结果（2026-10-11 实测，与 §4.1/§4.2 有出入之处以本节为准）
+
+**开关**：`PROMPTFOO_ENGINE_NATIVE_GENERATION`，**默认关闭**。与四个 fail-closed 开关**完全独立**（`env.test.ts` 有专项断言证明开启它不会放宽任何一个）。回滚 = 关开关，实测见下。
+
+#### 4.8.1 与设计不符之处（**以实际代码为准**）
+
+| §4 的说法 | 实测（promptfoo 0.123.0 dist） | 处置 |
+|---|---|---|
+| `runRedteam({target, provider})` 两个插槽 | **不成立**。`RedteamRunOptions` 没有 `provider`/`plugins`/`purpose` 参数；其 `target?: string` 是**过滤用的标签**，不是 provider | 两插槽实为**配置文档的两个键**：顶层 `targets[]` 与 `redteam.provider`。用 `options.config`（YAML 路径）传入 |
+| `applicationDefinition` 由原生生成消费 | **不成立**。该键只出现在 CLI（`dist/src/main.js`），且 `RedteamConfigSchema` 未声明 —— 传进去会被 zod **静默剥掉** | 引擎把 6 个子字段渲染进 `redteam.purpose`（库入口真正生效的通道）。数据仍是平台提供，**生成范式仍归 promptfoo** |
+| `injectVar` 在 `EngineRunRequest` | 成立，但 `RedteamConfigSchema.injectVar` 描述称"默认从 prompt 模板推断" | 显式下发，默认 `prompt`（与引擎单变量模板一致） |
+| 策略映射表由 U6 交付、U7 消费，**不另建一份** | **部分不成立**：U6 表的 `remote_gated_strategies` 只有 4 条（它只回答"是否需远程"），且平台 8 个自造维度 U6 根本没有记录 | 另建 `nativeStrategyMap.ts`（回答"原生 id 是什么/能否本地生成"）。**两表交集为空**并有断言钉死：4 个远程门控项**不得**出现在原生映射里 |
+
+#### 4.8.2 实测发现的**第三个静默失败**（U6 形态在上层复现）
+
+只填 `target` 不填 `provider` 时，promptfoo **不报错**：
+
+```
+Using default redteam provider: gpt-5.5-2026-04-23
+[RedteamProviderManager] Loaded default redteam provider: openai:gpt-5.5-2026-04-23
+Error ...: API key is not set. Set the OPENAI_API_KEY environment variable ...
+No test cases generated. Skipping scan.
+RESULT: undefined          ← 返回 undefined，没有 throw
+```
+
+根因：`resolveProviderCandidate()` 无 provider 时返回 `{source:'default'}`，`loadRedteamProvider()` 遂构造 `new OpenAiChatCompletionProvider('gpt-5.5-…')` —— **指向 api.openai.com**。有 key 就外泄，无 key 就是"绿色成功 + 0 覆盖"，正是 U6 要消灭的形态。
+
+三道闸：
+1. `assertNativeSlots()` —— 缺 `provider` 直接 `native_generation_provider_missing`，**不进入 promptfoo**
+2. `assertSafeProviderUrl()` —— 拒绝 `api.openai.com` / `api.promptfoo.app` 等 6 个厂商域名（含子域）
+3. `strict: true` —— 把 `handleFailedPlugins()` 的 warning 变成 `PartialGenerationError`；且 `runRedteam` 返回 `undefined` 一律视为 `native_generation_no_test_cases`
+
+另加**只增不减**的启动断言（不动原有四个）：开关打开时若存在 `OPENAI_API_KEY` / `PROMPTFOO_REMOTE_GENERATION_URL` / `PROMPTFOO_CONFIG_DIR` 则**拒绝启动** —— 这三者都会让 `shouldGenerateRemote()` 翻回 true。
+
+#### 4.8.3 「确实由 promptfoo 生成」的判据
+
+假想的 LLM 端点收到 4 次调用，第 1 次即 promptfoo 的实体抽取（`TASK: Extract only real-world entities…`，Plan A 从不调用），第 2 次是 **promptfoo 自己的 `ContractPlugin` 模板**：
+
+```
+You are an AI safety researcher conducting controlled evaluations to assess how AI
+systems handle contractual boundary scenarios. Your task is to generate test prompts…
+Create test scenarios that simulate situations where someone might ask an AI system to
+make business commitments or agree to contractual terms.
+```
+
+该文本由 `graders-*.js` 的 `ContractPlugin.getTemplate()` 按 `plugins:[{id:'contracts'}]` 选出，平台侧不含任何对应字符串。
+
+#### 4.8.4 实测结论
+
+- **回退**：开关关闭 → `generation_failed / attack generation failed: fetch failed`（Plan A 自己的错误码），全程未触达 `runRedteam`
+- **U6 护栏在 U7 路径仍生效**：`bestOfN/likert/citation/singleTurnComposite` 四个远程门控项进入原生策略的数量为 **0**
+- **覆盖率**：`3018` 块（U6 收尾 `2981`，**+37**）；语句块 `4262`（`4223`）
+- **凭据**：新模块零日志语句；含密钥的配置文档以 `0600` 写入 **per-run workdir**（终态 `rm -rf`），**不用 `liveRedteamConfig`**（它会 `yaml.dump` 进共享 `os.tmpdir()`）；三项新字段不进 `engine_runs`
+
+#### 4.8.5 ⚠️ 未解决项：Plan C 会写 promptfoo 的 SQLite（需在开启开关前决策）
+
+Plan A 明确承诺「不写 promptfoo 的 SQLite」（`redteamRun.ts` 头注释）。**Plan C 无法遵守**：`doRedteamRun()` 内部硬编码 `doEval({ cache: true, write: true })`，而 redteam 判定只在这条 eval 里接线。
+
+- **落点**：`getDbPath()` = `PROMPTFOO_CONFIG_DIR ?? '~/.promptfoo'` + `promptfoo.db` —— **在 per-run workdir 之外**，且 `WorkdirManager.cleanup()` **不会**清理它。
+- **为何本批不自行修**：唯一可用杠杆是 `PROMPTFOO_CONFIG_DIR`，而 promptfoo 只在模块加载时读一次进 module-global。指向 workdir 需在 run 内改 `process.env`，而 `TaskManager` 在单进程内并发多个 worker —— run A 的结果可能落进 run B 的目录。要安全就得串行化所有 run，那是比本批大得多的行为变更。
+- **当前影响面**：文件在引擎容器内、**不涉及出网**、开关默认关闭。**一旦在生产打开开关即成为真实的数据留存问题。**
+- **建议**：开开关前先定方案（二选一：串行化 + workdir 隔离 `PROMPTFOO_CONFIG_DIR`；或接受并在容器销毁时清理该卷）。代码内已在 `nativeRedteam.ts` 头注释显著标注。
+
 ---
 
 ## 5. 跨批次纪律（继承 U3，全部批次适用）

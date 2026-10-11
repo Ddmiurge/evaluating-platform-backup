@@ -230,6 +230,10 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		Credentials:    derefOrEmptyEngineCreds(MaterializeEngineCredentialsWithGeneration(target, generation)),
 		Catalog:        PromptfooEngineCatalog(),
 	}
+	// U7: enrich the request with the application description promptfoo's own
+	// generation reads. Ignored while Plan A is selected, so this is safe to
+	// send unconditionally and keeps one request shape for both paths.
+	ResolveEngineNativeGenerationInputs(engineReq, target.Metadata)
 	if err := b.engineRunner.CreateRun(ctx, engineReq); err != nil {
 		saved.Status = EnginePhaseFailed
 		saved.ErrorCode = engineRunnerErrorCode(err)

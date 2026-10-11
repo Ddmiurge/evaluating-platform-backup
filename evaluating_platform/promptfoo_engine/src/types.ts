@@ -64,6 +64,60 @@ export interface RunRequest {
    * back to its "unknown plugin" defaults (category=other / severity=medium).
    */
   catalog?: EngineCatalog;
+  /**
+   * U7 · What the application under test actually is.
+   *
+   * Plan A (platform-synthesized prompts) had no use for this; Plan C does not
+   * either, verbatim. promptfoo's library entrypoint never reads an
+   * `applicationDefinition` key — that field is only honoured by the CLI
+   * (`dist/src/main.js`), and `RedteamConfigSchema` does not even declare it, so
+   * a config carrying it would have the key silently stripped by zod.
+   *
+   * The engine therefore treats this as the platform's *own* structured
+   * description of the target and renders it into the promptfoo `purpose`
+   * string, which IS the channel the library honours
+   * (`resolveEffectivePurpose` → `redteamConfig.purpose`). The generation
+   * paradigm still belongs to promptfoo; this is only the "what am I attacking"
+   * input its plugin templates interpolate.
+   *
+   * Every field is optional: a thin `purpose` alone degrades to the old
+   * generic-attack behaviour rather than failing.
+   */
+  application_definition?: ApplicationDefinition;
+  /**
+   * U7 · Extra generation constraints (language, domain, things to avoid).
+   * Maps onto promptfoo's `redteam.testGenerationInstructions`, which is passed
+   * to every plugin's generation call.
+   */
+  test_generation_instructions?: string;
+  /**
+   * U7 · The prompt variable promptfoo injects generated payloads into.
+   *
+   * Without it promptfoo infers a name from the prompt template, and every
+   * strategy that rewrites the payload (encoding, multi-turn, …) has to guess
+   * where to write. Defaults to `prompt`, which is what the engine's own
+   * single-variable prompt template uses.
+   */
+  inject_var?: string;
+}
+
+/**
+ * U7 · The six application-description fields promptfoo's own docs define for
+ * `applicationDefinition`, kept as named fields rather than a free-form blob so
+ * the BFF can validate each one and so a missing one is visible in review.
+ *
+ * Field names are snake_case to match the engine's wire contract
+ * (`internal/maclaw.EngineApplicationDefinition`'s JSON tags) — the whole
+ * RunRequest is snake_case, and a camelCase spelling here would silently
+ * deserialize as `undefined` on both sides rather than fail loudly.
+ */
+export interface ApplicationDefinition {
+  purpose?: string;
+  features?: string;
+  has_access_to?: string;
+  does_not_have_access_to?: string;
+  user_types?: string;
+  security_requirements?: string;
 }
 
 /** One plugin family as classified by the backend catalog. */

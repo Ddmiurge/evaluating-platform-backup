@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { assertSecuritySwitches, loadEnv } from '../src/env.js';
+import {
+  assertNativeGenerationInvariants,
+  assertSecuritySwitches,
+  loadEnv,
+  nativeGenerationEnabled,
+} from '../src/env.js';
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return {
@@ -94,5 +99,111 @@ describe('loadEnv', () => {
     expect(out.workerCount).toBe(2);
     expect(out.maxQueueDepth).toBe(100);
     expect(out.port).toBe(8090);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * U7 · Plan A / Plan C path switch.
+ *
+ * The switch is NOT a security switch. It only chooses the generation
+ * path, it is OFF by default, and it is fully independent of the four
+ * fail-closed switches above — the tests below pin all three properties.
+ * ------------------------------------------------------------------ */
+describe('nativeGenerationEnabled (U7 path switch, default OFF)', () => {
+  it('is off when the variable is absent — Plan A is the default', () => {
+    expect(nativeGenerationEnabled(env({}))).toBe(false);
+    expect(loadEnv(env({})).nativeGeneration).toBe(false);
+  });
+
+  // A typo in a compose file must degrade to the known-good Plan A rather than
+  // silently enabling the new path.
+  it.each(['0', 'false', 'no', 'off', '', '  ', 'enabled', 'yes-please', '2'])(
+    'treats %j as off',
+    (value) => {
+      expect(nativeGenerationEnabled(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: value }))).toBe(false);
+    },
+  );
+
+  it.each(['1', 'true', 'yes', 'on', 'ON', ' True '])('treats %j as on', (value) => {
+    expect(nativeGenerationEnabled(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: value }))).toBe(true);
+  });
+});
+
+describe('assertNativeGenerationInvariants (additive, never relaxing)', () => {
+  it('does nothing while the switch is off', () => {
+    // Even with the dangerous variables present: Plan A never reaches
+    // promptfoo's generation path, so it must not block startup.
+    expect(() =>
+      assertNativeGenerationInvariants(
+        env({ OPENAI_API_KEY: 'sk-present', PROMPTFOO_REMOTE_GENERATION_URL: 'https://x' }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('passes when the switch is on and no vendor variable is set', () => {
+    expect(() =>
+      assertNativeGenerationInvariants(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1' })),
+    ).not.toThrow();
+  });
+
+  // Counter-proof: with the switch ON, a stray OPENAI_API_KEY would make
+  // promptfoo's shouldGenerateRemote() return true even with both remote
+  // switches disabled — re-opening the exact channel this engine is fail-closed
+  // on. Refusing to boot is the only honest response.
+  it('refuses to boot with OPENAI_API_KEY set', () => {
+    expect(() =>
+      assertNativeGenerationInvariants(
+        env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', OPENAI_API_KEY: 'sk-whatever' }),
+      ),
+    ).toThrow(/OPENAI_API_KEY/);
+  });
+
+  it('refuses to boot with PROMPTFOO_REMOTE_GENERATION_URL set', () => {
+    expect(() =>
+      assertNativeGenerationInvariants(
+        env({
+          PROMPTFOO_ENGINE_NATIVE_GENERATION: '1',
+          PROMPTFOO_REMOTE_GENERATION_URL: 'https://selfhosted.example',
+        }),
+      ),
+    ).toThrow(/PROMPTFOO_REMOTE_GENERATION_URL/);
+  });
+
+  it('refuses to boot when a Promptfoo Cloud login could be visible', () => {
+    expect(() =>
+      assertNativeGenerationInvariants(
+        env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_CONFIG_DIR: '/home/.promptfoo' }),
+      ),
+    ).toThrow(/PROMPTFOO_CONFIG_DIR/);
+  });
+
+  it('lists every offending variable at once', () => {
+    try {
+      assertNativeGenerationInvariants(
+        env({
+          PROMPTFOO_ENGINE_NATIVE_GENERATION: '1',
+          OPENAI_API_KEY: 'sk-x',
+          PROMPTFOO_REMOTE_GENERATION_URL: 'https://x',
+        }),
+      );
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toContain('OPENAI_API_KEY');
+      expect(msg).toContain('PROMPTFOO_REMOTE_GENERATION_URL');
+    }
+  });
+
+  // The independence property itself: turning the new path on must never let a
+  // fail-closed switch be relaxed.
+  it('still enforces the four fail-closed switches with native generation ON', () => {
+    expect(() =>
+      assertSecuritySwitches(
+        env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_DISABLE_TELEMETRY: '0' }),
+      ),
+    ).toThrow(/telemetry/);
+    expect(() => loadEnv(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_DISABLE_SHARE: '0' }))).toThrow(
+      /share\/cloud export/,
+    );
   });
 });

@@ -1,20 +1,28 @@
 /**
- * Runner: platform-generated attack tests executed through promptfoo's
- * evaluate mode (Plan A — see docs/architecture/promptfoo-generation-options.md).
+ * Runner: red-team runs executed through promptfoo.
+ *
+ * Two generation paths coexist behind one switch (U7):
+ *
+ *   - **Plan A** (default) — `generateTests.ts` synthesizes attack prompts with
+ *     the platform's generation LLM, and promptfoo only consumes them in
+ *     evaluate mode. promptfoo's own attack machinery is never involved.
+ *   - **Plan C** — `nativeRedteam.ts` calls `promptfoo.redteam.run()` and fills
+ *     the `provider` slot with the platform generation LLM, so promptfoo owns
+ *     the generation paradigm (plugin templates, entity extraction, strategy
+ *     transforms, graders).
+ *
+ * Selected by `PROMPTFOO_ENGINE_NATIVE_GENERATION`, which is off by default and
+ * independent of the four fail-closed switches. Both paths reduce through the
+ * same `reduceEvalToSafeResult`, so reporting and redaction are identical.
  *
  * Library surface used (verified against dist of promptfoo v0.123.0):
  *   import promptfoo from 'promptfoo';
- *   promptfoo.evaluate(testSuite, options)
- *     - testSuite: { prompts, providers, tests, defaultTest }
- *     - options: { cache, maxConcurrency, progressCallback, abortSignal }
- *     - returns an Eval object whose store.results carry gradingResult and
+ *   promptfoo.evaluate(testSuite, options)     // Plan A
+ *   promptfoo.redteam.run({ config, ... })     // Plan C
+ *     - Plan A returns an Eval whose store.results carry gradingResult and
  *       testCase.metadata.
- *
- * Attack prompts are synthesized here from the generation credentials the
- * BFF materialized out of the platform default MaClaw model config — promptfoo
- * never generates anything itself, so the fail-closed remote-generation
- * switches stay effective and untouched. No writeLatestResults / no redteam
- * config: nothing is written to promptfoo's SQLite database.
+ *   - Plan C takes a *path to a YAML config document*; its options object has no
+ *     plugins/provider/purpose fields (see nativeRedteam.ts for the details).
  *
  * The Eval results are reduced into a SafeRunResult (counts/severity/reasons
  * only). Raw prompts/responses never leave this module.
@@ -208,13 +216,32 @@ export interface RunnerResult {
 }
 
 /**
- * Execute one engine run for `record`: generate attack tests with the
- * platform generation LLM, run them against the target via promptfoo
- * evaluate, and judge each response with llm-rubric. Emits safe progress
- * events through `emit`. Throws on engine failure or abort (taskManager maps
- * to failed/canceled).
+ * Execute one engine run, choosing the generation path.
+ *
+ * `workdir` is the isolated per-run directory (created and wiped by
+ * WorkdirManager). Only Plan C needs it — it holds the promptfoo config
+ * document, which embeds the materialized generation credential. Plan A ignores
+ * it, which is exactly what makes "turn the switch off" a complete rollback.
  */
-export async function executeRedteamRun(record: RunRecord, emit: Emit): Promise<RunnerResult> {
+export async function executeRedteamRun(
+  record: RunRecord,
+  emit: Emit,
+  options: { nativeGeneration: boolean; workdir: string },
+): Promise<RunnerResult> {
+  if (options.nativeGeneration) {
+    const { executeNativeRedteamRun } = await import('./nativeRedteam.js');
+    return executeNativeRedteamRun(record, emit, options.workdir);
+  }
+  return executePlanARedteamRun(record, emit);
+}
+
+/**
+ * Plan A: generate attack tests with the platform generation LLM, run them
+ * against the target via promptfoo evaluate, and judge each response with
+ * llm-rubric. Emits safe progress events through `emit`. Throws on engine
+ * failure or abort (taskManager maps to failed/canceled).
+ */
+export async function executePlanARedteamRun(record: RunRecord, emit: Emit): Promise<RunnerResult> {
   const { request } = record;
   const { credentials } = request;
 

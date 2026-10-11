@@ -46,8 +46,8 @@ const (
 // EngineOneShotCredentials are materialized server-side by the BFF and are
 // never logged or persisted.
 type EngineOneShotCredentials struct {
-	Target EngineTargetCredential   `json:"target"`
-	Generation *EngineGenCredential `json:"generation,omitempty"`
+	Target     EngineTargetCredential `json:"target"`
+	Generation *EngineGenCredential   `json:"generation,omitempty"`
 }
 
 type EngineTargetCredential struct {
@@ -62,8 +62,8 @@ type EngineTargetCredential struct {
 	// promptfoo to substitute per test; {{api_key}} is NOT substituted here —
 	// the engine substitutes it server-side so the secret stays inside the
 	// engine process.
-	AgentEndpoint       string `json:"agent_endpoint,omitempty"`
-	AgentMethod         string `json:"agent_method,omitempty"`
+	AgentEndpoint        string `json:"agent_endpoint,omitempty"`
+	AgentMethod          string `json:"agent_method,omitempty"`
 	AgentHeadersTemplate string `json:"agent_headers_template,omitempty"`
 	AgentBodyTemplate    string `json:"agent_body_template,omitempty"`
 	AgentResponsePath    string `json:"agent_response_path,omitempty"`
@@ -75,21 +75,56 @@ type EngineGenCredential struct {
 	APIKey  string `json:"api_key"`
 }
 
+// EngineApplicationDefinition is the platform's structured description of the
+// system under test (U7, DD-1=C).
+//
+// Why the engine takes named fields rather than promptfoo's own
+// `applicationDefinition` object: promptfoo's *library* entrypoint never reads
+// that key. It exists only on the CLI path (dist/src/main.js), and
+// `RedteamConfigSchema` does not declare it, so a config document carrying it
+// would have the field silently stripped by zod. The engine renders these into
+// the promptfoo `purpose` channel instead, which the library does honour.
+//
+// Every field is optional. A thin Purpose alone degrades to generic attacks
+// rather than failing the run.
+type EngineApplicationDefinition struct {
+	Purpose              string `json:"purpose,omitempty"`
+	Features             string `json:"features,omitempty"`
+	HasAccessTo          string `json:"has_access_to,omitempty"`
+	DoesNotHaveAccessTo  string `json:"does_not_have_access_to,omitempty"`
+	UserTypes            string `json:"user_types,omitempty"`
+	SecurityRequirements string `json:"security_requirements,omitempty"`
+}
+
 // EngineRunRequest is the POST /runs body.
 type EngineRunRequest struct {
-	RunID          string                  `json:"run_id"`
-	PlatformUserID string                  `json:"platform_user_id"`
-	Purpose        string                  `json:"purpose"`
-	NumTests       int                     `json:"num_tests"`
-	Plugins        []EngineCapabilityRef   `json:"plugins"`
-	Strategies     []EngineCapabilityRef   `json:"strategies"`
-	JudgeMode      EngineJudgeMode         `json:"judge_mode"`
+	RunID          string                   `json:"run_id"`
+	PlatformUserID string                   `json:"platform_user_id"`
+	Purpose        string                   `json:"purpose"`
+	NumTests       int                      `json:"num_tests"`
+	Plugins        []EngineCapabilityRef    `json:"plugins"`
+	Strategies     []EngineCapabilityRef    `json:"strategies"`
+	JudgeMode      EngineJudgeMode          `json:"judge_mode"`
 	Credentials    EngineOneShotCredentials `json:"credentials"`
 	// Catalog is the plugin/strategy classification source of truth the BFF
 	// hands to the engine (U2/T2.2). Optional for backward compatibility: when
 	// absent the engine falls back to its "unknown plugin" defaults
 	// (category=other / medium). Never contains payloads or secrets.
 	Catalog *EngineCatalog `json:"catalog,omitempty"`
+
+	// --- U7: inputs promptfoo's own generation needs and Plan A never used ---
+
+	// ApplicationDefinition describes the system under test. Without it the
+	// generated attacks stay generic because the generator does not know what
+	// the system can or cannot do.
+	ApplicationDefinition *EngineApplicationDefinition `json:"application_definition,omitempty"`
+	// TestGenerationInstructions are extra generation constraints (language,
+	// domain, taboo topics) applied to every plugin.
+	TestGenerationInstructions string `json:"test_generation_instructions,omitempty"`
+	// InjectVar is the prompt variable promptfoo injects generated payloads
+	// into. Empty means the engine default ("prompt"). Strategy transforms that
+	// rewrite a payload need this to know where to write.
+	InjectVar string `json:"inject_var,omitempty"`
 }
 
 type EngineCapabilityRef struct {
@@ -134,33 +169,33 @@ type EngineCatalogStrategy struct {
 	// strategy vocabulary (U6). Platform ids differ from promptfoo's for some
 	// gated entries, so PromptfooID carries the upstream id.
 	RequiresRemoteGeneration bool   `json:"requires_remote_generation,omitempty"`
-	PromptfooID               string `json:"promptfoo_id,omitempty"`
-	UnavailableReason         string `json:"unavailable_reason,omitempty"`
+	PromptfooID              string `json:"promptfoo_id,omitempty"`
+	UnavailableReason        string `json:"unavailable_reason,omitempty"`
 }
 
 // EngineRunStatus is the GET /runs/:id response (safe fields only).
 type EngineRunStatus struct {
-	RunID         string             `json:"run_id"`
-	Phase         EngineRunPhase     `json:"phase"`
-	StatusText    string             `json:"status_text,omitempty"`
-	PlannedCount  int                `json:"planned_count"`
-	ExecutedCount int                `json:"executed_count"`
-	CurrentStage  string             `json:"current_stage,omitempty"`
-	DurationMs    int64              `json:"duration_ms"`
-	CreatedAt     string             `json:"created_at"`
-	UpdatedAt     string             `json:"updated_at"`
-	Result        *EngineSafeResult  `json:"result,omitempty"`
-	ErrorCode     string             `json:"error_code,omitempty"`
+	RunID         string            `json:"run_id"`
+	Phase         EngineRunPhase    `json:"phase"`
+	StatusText    string            `json:"status_text,omitempty"`
+	PlannedCount  int               `json:"planned_count"`
+	ExecutedCount int               `json:"executed_count"`
+	CurrentStage  string            `json:"current_stage,omitempty"`
+	DurationMs    int64             `json:"duration_ms"`
+	CreatedAt     string            `json:"created_at"`
+	UpdatedAt     string            `json:"updated_at"`
+	Result        *EngineSafeResult `json:"result,omitempty"`
+	ErrorCode     string            `json:"error_code,omitempty"`
 }
 
 // EngineSafeResult mirrors SafeRunResult (counts/severities/redacted reasons).
 type EngineSafeResult struct {
-	Totals         EngineRunTotals            `json:"totals"`
-	SeverityCounts map[string]int             `json:"severity_counts"`
-	RiskCategories []EngineRiskCategory       `json:"risk_categories"`
-	PluginStats    []EnginePluginStat         `json:"plugin_stats"`
-	StrategyStats  []EngineStrategyStat       `json:"strategy_stats"`
-	TokenUsage     EngineTokenUsage           `json:"token_usage"`
+	Totals         EngineRunTotals      `json:"totals"`
+	SeverityCounts map[string]int       `json:"severity_counts"`
+	RiskCategories []EngineRiskCategory `json:"risk_categories"`
+	PluginStats    []EnginePluginStat   `json:"plugin_stats"`
+	StrategyStats  []EngineStrategyStat `json:"strategy_stats"`
+	TokenUsage     EngineTokenUsage     `json:"token_usage"`
 }
 
 type EngineRunTotals struct {
@@ -170,10 +205,10 @@ type EngineRunTotals struct {
 }
 
 type EngineRiskCategory struct {
-	Key            string         `json:"key"`
-	Label          string         `json:"label"`
-	Count          int            `json:"count"`
-	SeverityCounts map[string]int `json:"severity_counts"`
+	Key            string                 `json:"key"`
+	Label          string                 `json:"label"`
+	Count          int                    `json:"count"`
+	SeverityCounts map[string]int         `json:"severity_counts"`
 	Plugins        []EngineCategoryPlugin `json:"plugins"`
 }
 
@@ -194,12 +229,12 @@ type EnginePluginStat struct {
 }
 
 type EngineStrategyStat struct {
-	ID           string  `json:"id"`
-	Label        string  `json:"label"`
-	Probes       int     `json:"probes"`
-	AttackSuccess int    `json:"attack_success"`
-	SuccessRate  float64 `json:"success_rate"`
-	MaxSeverity  string  `json:"max_severity"`
+	ID            string  `json:"id"`
+	Label         string  `json:"label"`
+	Probes        int     `json:"probes"`
+	AttackSuccess int     `json:"attack_success"`
+	SuccessRate   float64 `json:"success_rate"`
+	MaxSeverity   string  `json:"max_severity"`
 }
 
 type EngineTokenUsage struct {
@@ -210,10 +245,10 @@ type EngineTokenUsage struct {
 
 // Sentinel errors surfaced to callers.
 var (
-	ErrEngineQueueFull   = errors.New("promptfoo_engine: queue full")
-	ErrEngineRunExists   = errors.New("promptfoo_engine: run already exists")
-	ErrEngineNotFound    = errors.New("promptfoo_engine: run not found")
-	ErrEngineUnavailable = errors.New("promptfoo_engine: service unavailable")
+	ErrEngineQueueFull    = errors.New("promptfoo_engine: queue full")
+	ErrEngineRunExists    = errors.New("promptfoo_engine: run already exists")
+	ErrEngineNotFound     = errors.New("promptfoo_engine: run not found")
+	ErrEngineUnavailable  = errors.New("promptfoo_engine: service unavailable")
 	ErrEngineUnauthorized = errors.New("promptfoo_engine: unauthorized")
 )
 

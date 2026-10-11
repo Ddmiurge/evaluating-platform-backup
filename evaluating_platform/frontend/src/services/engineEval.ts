@@ -53,12 +53,38 @@ export interface EngineRun {
   result?: EngineRunResult
 }
 
+/**
+ * U7 · 被测应用的结构化描述。
+ *
+ * 原生生成（promptfoo 自己生成攻击用例）需要知道「被测的是什么」，
+ * 否则攻击载荷泛化而无针对性 —— 不知道系统能做什么、不能做什么。
+ *
+ * 六字段沿用 promptfoo `applicationDefinition` 的命名。注意：promptfoo 的
+ * **库入口**（本平台调用的 `redteam.run`）并不读取该键，它只存在于 CLI 路径，
+ * 且 `RedteamConfigSchema` 未声明它；引擎因此把这些字段渲染进 promptfoo 真正
+ * 生效的 `purpose` 通道。字段名保持一致，便于上游将来原生支持时识别。
+ */
+export interface EngineApplicationDefinition {
+  purpose?: string
+  features?: string
+  has_access_to?: string
+  does_not_have_access_to?: string
+  user_types?: string
+  security_requirements?: string
+}
+
 export interface EngineRunCreateInput {
   purpose: string
   num_tests: number
   plugins: Array<{ id: string }>
   strategies?: Array<{ id: string }>
   judge_mode?: string
+  /** U7：全部可选。留空则沿用目标配置里的 redteam_* 元数据。 */
+  application_definition?: EngineApplicationDefinition
+  /** U7：额外的生成约束（语言、领域、禁忌），作用于每个插件。 */
+  test_generation_instructions?: string
+  /** U7：promptfoo 注入攻击载荷的 prompt 变量名；留空用引擎默认值 `prompt`。 */
+  inject_var?: string
 }
 
 export const engineEvalService = {

@@ -8,6 +8,15 @@
  * The service refuses to start if any of these switches is missing or not
  * set to a truthy "disabled" value, so a misconfigured container can never
  * silently exfiltrate data.
+ *
+ * U7 adds a fifth switch, `PROMPTFOO_ENGINE_NATIVE_GENERATION`, which is NOT a
+ * security switch: it only chooses *which generation path* a run takes (Plan A
+ * platform-synthesized prompts vs Plan C promptfoo's own redteam generation).
+ * It is **off by default** and is deliberately independent of the four
+ * fail-closed switches above — turning it on must never relax any of them.
+ * See `assertNativeGenerationInvariants` for the (additive) invariants it does
+ * enforce, and nativeRedteam.ts for why they are load-bearing rather than
+ * decorative.
  */
 import process from 'node:process';
 
@@ -17,6 +26,8 @@ export interface EngineEnv {
   dataRoot: string;
   workerCount: number;
   maxQueueDepth: number;
+  /** U7: run promptfoo's own redteam generation instead of Plan A. Default false. */
+  nativeGeneration: boolean;
 }
 
 function parseBool(v: string | undefined): boolean {
@@ -50,6 +61,7 @@ export function assertSecuritySwitches(env: NodeJS.ProcessEnv = process.env): vo
 
 export function loadEnv(env: NodeJS.ProcessEnv = process.env): EngineEnv {
   assertSecuritySwitches(env);
+  assertNativeGenerationInvariants(env);
 
   const bearerToken = env.PROMPTFOO_ENGINE_BEARER_TOKEN ?? '';
   if (bearerToken.length < 16) {
@@ -69,5 +81,64 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): EngineEnv {
     dataRoot,
     workerCount: parseIntEnv(env.PROMPTFOO_ENGINE_WORKERS, 2, 1, 8),
     maxQueueDepth: parseIntEnv(env.PROMPTFOO_ENGINE_MAX_QUEUE, 100, 1, 1000),
+    nativeGeneration: nativeGenerationEnabled(env),
   };
+}
+
+/** The U7 path-selection switch. Anything other than a truthy value means Plan A. */
+export const NATIVE_GENERATION_SWITCH = 'PROMPTFOO_ENGINE_NATIVE_GENERATION';
+
+/**
+ * Whether Plan C (promptfoo's own redteam generation) is selected.
+ *
+ * Default-off by construction: `parseBool` maps both "unset" and every
+ * unrecognized spelling to false, so a typo in a compose file degrades to the
+ * known-good Plan A rather than to the new path. Rolling back U7 is therefore
+ * a one-variable operation — no code revert, no data migration.
+ */
+export function nativeGenerationEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseBool(env[NATIVE_GENERATION_SWITCH]);
+}
+
+/**
+ * U7 · additive invariants for the native-generation path.
+ *
+ * These do NOT relax anything in `assertSecuritySwitches`; they are extra
+ * refusals that only ever fire when the new switch is ON. Rationale, verified
+ * against the installed promptfoo 0.123.0 dist:
+ *
+ *  1. `OPENAI_API_KEY` must be absent. promptfoo's `shouldGenerateRemote()`
+ *     returns true when that variable is set even with both remote switches
+ *     disabled, which would re-open the remote-generation channel this engine
+ *     is fail-closed on. Its `loadRedteamProvider` would also silently fall
+ *     back to `openai:gpt-5.5-...` (i.e. api.openai.com) for the generation
+ *     slot. Refusing to boot is the only honest response.
+ *
+ *  2. `PROMPTFOO_REMOTE_GENERATION_URL` must be absent for the same reason:
+ *     `shouldGenerateRemote()` short-circuits to true when it is present.
+ *
+ *  3. No Promptfoo Cloud login may be visible to the engine. `isLoggedIntoCloud()`
+ *     is also a `shouldGenerateRemote()` trigger, and it reads a credentials
+ *     file rather than the environment, so it can only be asserted, not proven
+ *     absent. Pointing `PROMPTFOO_CONFIG_DIR` at a per-run-empty directory is
+ *     how an operator states that intent; the variable being set at all is
+ *     what we check, because a login is then the only cloud signal left.
+ */
+export function assertNativeGenerationInvariants(env: NodeJS.ProcessEnv = process.env): void {
+  if (!nativeGenerationEnabled(env)) return;
+
+  const offending: string[] = [];
+  if ((env.OPENAI_API_KEY ?? '').trim()) offending.push('OPENAI_API_KEY');
+  if ((env.PROMPTFOO_REMOTE_GENERATION_URL ?? '').trim()) offending.push('PROMPTFOO_REMOTE_GENERATION_URL');
+  if ((env.PROMPTFOO_CONFIG_DIR ?? '').trim()) {
+    offending.push('PROMPTFOO_CONFIG_DIR (would expose a Promptfoo Cloud login to the library)');
+  }
+  if (offending.length > 0) {
+    throw new Error(
+      `[FATAL] ${NATIVE_GENERATION_SWITCH} is on but ${offending.join(', ')} ${offending.length > 1 ? 'are' : 'is'} set. ` +
+        'Native generation talks only to the platform-supplied provider endpoint; promptfoo treats those variables as ' +
+        'consent to use its remote generation service, which this engine must never do. ' +
+        `Unset ${offending.join(', ')} or turn ${NATIVE_GENERATION_SWITCH} off.`,
+    );
+  }
 }

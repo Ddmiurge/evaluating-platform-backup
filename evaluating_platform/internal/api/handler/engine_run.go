@@ -54,11 +54,11 @@ type engineTargetProvider interface {
 }
 
 type EngineRunHandler struct {
-	engine       engineClient
-	runs         *maclaw.EngineRunService
-	targetConfig engineTargetProvider
+	engine             engineClient
+	runs               *maclaw.EngineRunService
+	targetConfig       engineTargetProvider
 	generationProvider maclaw.EngineGenerationProvider
-	enabled      bool
+	enabled            bool
 }
 
 func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.EngineRunService, targets engineTargetProvider, generationProvider maclaw.EngineGenerationProvider) *EngineRunHandler {
@@ -67,11 +67,11 @@ func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.Engi
 
 func newEngineRunHandler(engine engineClient, runs *maclaw.EngineRunService, targets engineTargetProvider, generationProvider maclaw.EngineGenerationProvider) *EngineRunHandler {
 	return &EngineRunHandler{
-		engine:       engine,
-		runs:         runs,
-		targetConfig: targets,
+		engine:             engine,
+		runs:               runs,
+		targetConfig:       targets,
 		generationProvider: generationProvider,
-		enabled:      engine != nil && engine.Enabled() && runs != nil,
+		enabled:            engine != nil && engine.Enabled() && runs != nil,
 	}
 }
 
@@ -96,13 +96,62 @@ func (h *EngineRunHandler) Health(c *gin.Context) {
 }
 
 type engineRunCreateInput struct {
-	SessionID string `json:"session_id"`
-	InstanceID string `json:"instance_id"`
-	Purpose   string `json:"purpose"`
-	NumTests  int    `json:"num_tests"`
-	JudgeMode string `json:"judge_mode"`
-	Plugins   []engineCapabilityInput `json:"plugins"`
+	SessionID  string                  `json:"session_id"`
+	InstanceID string                  `json:"instance_id"`
+	Purpose    string                  `json:"purpose"`
+	NumTests   int                     `json:"num_tests"`
+	JudgeMode  string                  `json:"judge_mode"`
+	Plugins    []engineCapabilityInput `json:"plugins"`
 	Strategies []engineCapabilityInput `json:"strategies"`
+	// U7: optional per-request application description. Fields left empty fall
+	// back to the target config's redteam_* metadata, so an operator can set
+	// them once per target and still override for a single run.
+	ApplicationDefinition *engineApplicationDefinitionInput `json:"application_definition"`
+	// U7: extra generation constraints passed to every plugin.
+	TestGenerationInstructions string `json:"test_generation_instructions"`
+	// U7: prompt variable promptfoo injects payloads into; empty = engine default.
+	InjectVar string `json:"inject_var"`
+}
+
+// engineApplicationDefinitionInput mirrors maclaw.EngineApplicationDefinition on
+// the browser contract, so the same six fields can arrive from either the target
+// config or a one-off run request.
+type engineApplicationDefinitionInput struct {
+	Purpose              string `json:"purpose"`
+	Features             string `json:"features"`
+	HasAccessTo          string `json:"has_access_to"`
+	DoesNotHaveAccessTo  string `json:"does_not_have_access_to"`
+	UserTypes            string `json:"user_types"`
+	SecurityRequirements string `json:"security_requirements"`
+}
+
+// nativeGenerationOverridesFromInput converts the optional request fields into
+// the override shape. A nil pointer means "not supplied, keep the target-level
+// value"; a non-nil pointer to "" means "explicitly blank this".
+func nativeGenerationOverridesFromInput(in engineRunCreateInput) *maclaw.NativeGenerationOverrides {
+	ov := &maclaw.NativeGenerationOverrides{}
+	if in.ApplicationDefinition != nil {
+		ov.ApplicationDefinition = &maclaw.EngineApplicationDefinition{
+			Purpose:              in.ApplicationDefinition.Purpose,
+			Features:             in.ApplicationDefinition.Features,
+			HasAccessTo:          in.ApplicationDefinition.HasAccessTo,
+			DoesNotHaveAccessTo:  in.ApplicationDefinition.DoesNotHaveAccessTo,
+			UserTypes:            in.ApplicationDefinition.UserTypes,
+			SecurityRequirements: in.ApplicationDefinition.SecurityRequirements,
+		}
+	}
+	if strings.TrimSpace(in.TestGenerationInstructions) != "" {
+		v := in.TestGenerationInstructions
+		ov.TestGenerationInstructions = &v
+	}
+	if strings.TrimSpace(in.InjectVar) != "" {
+		v := in.InjectVar
+		ov.InjectVar = &v
+	}
+	if ov.ApplicationDefinition == nil && ov.TestGenerationInstructions == nil && ov.InjectVar == nil {
+		return nil
+	}
+	return ov
 }
 
 type engineCapabilityInput struct {
@@ -176,11 +225,11 @@ func writeRemoteDepRejection(c *gin.Context, err error) {
 		return
 	}
 	c.JSON(http.StatusConflict, gin.H{
-		"error":               guard.Error(),
-		"code":                guard.Code,
-		"blocked_plugins":     guard.GatedPlugins,
-		"blocked_strategies":  guard.GatedStrategies,
-		"local_only_plugins":  guard.LocalOnlyHint,
+		"error":              guard.Error(),
+		"code":               guard.Code,
+		"blocked_plugins":    guard.GatedPlugins,
+		"blocked_strategies": guard.GatedStrategies,
+		"local_only_plugins": guard.LocalOnlyHint,
 	})
 }
 
@@ -284,9 +333,13 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		Plugins:        plugins,
 		Strategies:     strategies,
 		JudgeMode:      judgeMode,
-		Credentials: derefOrEmpty(maclaw.MaterializeEngineCredentialsWithGeneration(target, generation)),
-		Catalog:     maclaw.PromptfooEngineCatalog(),
+		Credentials:    derefOrEmpty(maclaw.MaterializeEngineCredentialsWithGeneration(target, generation)),
+		Catalog:        maclaw.PromptfooEngineCatalog(),
 	}
+	// U7: carry the application description through to the engine so promptfoo's
+	// native generation can aim at this system rather than attack generically.
+	maclaw.ResolveEngineNativeGenerationInputs(engineReq, target.Metadata)
+	maclaw.ApplyNativeGenerationOverrides(engineReq, nativeGenerationOverridesFromInput(in))
 	if err := h.engine.CreateRun(c.Request.Context(), engineReq); err != nil {
 		// Mark the local record failed so the UI does not show a ghost queued run.
 		saved.Status = maclaw.EnginePhaseFailed
@@ -402,7 +455,6 @@ func (h *EngineRunHandler) StreamRunEvents(c *gin.Context) {
 	})
 }
 
-
 // derefOrEmpty maps a nil materialized credential to the zero value. The
 // target is always non-nil here (validated above), but keep the call site
 // panic-free regardless.
@@ -424,21 +476,21 @@ func (h *EngineRunHandler) currentUserID(c *gin.Context) (uuid.UUID, bool) {
 // engineRunResponse maps a persisted record to the safe browser DTO.
 func engineRunResponse(record *maclaw.EngineRunRecord, extra map[string]interface{}) gin.H {
 	out := gin.H{
-		"id":            record.ID,
-		"session_id":    record.SessionID,
-		"instance_id":   record.InstanceID,
-		"source":        record.Source,
-		"purpose":       record.Purpose,
-		"judge_mode":    string(record.JudgeMode),
-		"num_tests":     record.NumTests,
-		"phase":         string(record.Status),
-		"planned_count": record.PlannedCount,
+		"id":             record.ID,
+		"session_id":     record.SessionID,
+		"instance_id":    record.InstanceID,
+		"source":         record.Source,
+		"purpose":        record.Purpose,
+		"judge_mode":     string(record.JudgeMode),
+		"num_tests":      record.NumTests,
+		"phase":          string(record.Status),
+		"planned_count":  record.PlannedCount,
 		"executed_count": record.ExecutedCount,
-		"current_stage": record.CurrentStage,
-		"duration_ms":   record.DurationMs,
-		"error_code":    record.ErrorCode,
-		"created_at":    record.CreatedAt,
-		"updated_at":    record.UpdatedAt,
+		"current_stage":  record.CurrentStage,
+		"duration_ms":    record.DurationMs,
+		"error_code":     record.ErrorCode,
+		"created_at":     record.CreatedAt,
+		"updated_at":     record.UpdatedAt,
 	}
 	plugins := make([]string, 0, len(record.Plugins))
 	for _, p := range record.Plugins {

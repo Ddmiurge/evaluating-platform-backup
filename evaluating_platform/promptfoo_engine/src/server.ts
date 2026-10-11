@@ -25,9 +25,14 @@ async function main(): Promise<void> {
     workdirs,
     async execute(run, emit) {
       // Create the isolated workdir for this run; cleanup happens in the
-      // task manager's terminal path.
-      await workdirs.create(run.request.run_id);
-      const { result } = await executeRedteamRun(run, emit);
+      // task manager's terminal path. Plan C writes promptfoo's config document
+      // (which embeds the materialized generation credential) in here, so the
+      // path has to be handed to the runner.
+      const workdir = await workdirs.create(run.request.run_id);
+      const { result } = await executeRedteamRun(run, emit, {
+        nativeGeneration: env.nativeGeneration,
+        workdir,
+      });
       run.status.result = result;
     },
   });

@@ -1,0 +1,85 @@
+U7 · promptfoo 原生生成接入 —— 本机验证记录
+日期: 2026-10-11   promptfoo: 0.123.0   HEAD 基线: c1334d8 (U6)
+
+== Step 0 (§3.4.2 升级后重新生成) ==
+$ node scripts/gen_remote_dep.mjs
+[gen_remote_dep] promptfoo        0.123.0
+[gen_remote_dep] runtime totals   {"remote_only_plugin_ids":93,"unaligned_provider_harm_plugins":22,"bias_plugins":4}
+[gen_remote_dep] catalog totals   {"plugins":119,"marked":90,"local_only":29}
+[gen_remote_dep] hits by source   {"unaligned_provider_harm":21,"remote_only":65,"bias":4}
+$ git diff --exit-code internal/maclaw/testdata/promptfoo_remote_dep.json
+  (无输出, exit 0)  → 清单未变, promptfoo 未被改动
+注: 93 与 §3.4.1 记录的「唯一可靠法的正确数」一致。
+
+== 开关语义实测 ==
+unset  -> false      (Plan A, 默认关闭)
+"1"    -> true
+"0"    -> false
+"enabled" -> false  (拼写错误降级到 Plan A, 不启用新路径)
+OPENAI_API_KEY + switch=1 -> REFUSED:
+  [FATAL] PROMPTFOO_ENGINE_NATIVE_GENERATION is on but OPENAI_API_KEY is set.
+
+== Plan A 回退实测 (DoD: 关掉开关行为回到 U7 前) ==
+switch OFF -> error code: generation_failed | attack generation failed: fetch failed
+phases emitted: ["generating_tests"]
+  → 走的是 executePlanARedteamRun 自己的错误码, 全程未触达 runRedteam
+
+== 两插槽独立性反证 (只填 target 不填 provider) ==
+promptfoo 自身行为 (实测, promptfoo 0.123.0):
+  Using default redteam provider: gpt-5.5-2026-04-23
+  [RedteamProviderManager] Loaded default redteam provider: openai:gpt-5.5-2026-04-23
+  Error using local extraction...: API key is not set. Set the OPENAI_API_KEY ...
+  No test cases generated. Skipping scan.
+  RESULT: returned undefined (no test cases)      ← 不抛错, 返回 undefined
+  → 若不拦截: 有 key 则外泄 api.openai.com; 无 key 则「绿色成功 + 0 覆盖」
+U7 拦截后:
+  assertNativeSlots -> EngineRunError code=native_generation_provider_missing
+  另有 assertSafeProviderUrl 拒绝 api.openai.com / api.promptfoo.app 等 6 个厂商域名
+  另有 strict:true 把 handleFailedPlugins 的 warning 变成 PartialGenerationError
+  另有 runRedteam 返回 undefined 一律视为 native_generation_no_test_cases
+
+== 「确实由 promptfoo 生成」的判据 ==
+假想 LLM 端点收到 4 次调用:
+  #1 promptfoo 实体抽取: "TASK: Extract only real-world entities from the following prompts."
+     (Plan A 从不调用)
+  #2 promptfoo 自己的 ContractPlugin.getTemplate() 文本:
+     "You are an AI safety researcher conducting controlled evaluations to assess how AI
+      systems handle contractual boundary scenarios. Your task is to generate test prompts..."
+     "Create test scenarios that simulate situations where someone might ask an AI system to
+      make business commitments or agree to contractual terms."
+  该文本由 plugins:[{id:'contracts'}] 选出, 平台侧不含任何对应字符串。
+
+== U6 护栏在 U7 路径上的验证 ==
+(1) 路由闸: plugin_requires_remote_generation, blocked=["harmful:child-exploitation","bestOfN"]
+    本地可生成的请求通过闸门 (=undefined)
+(2) 原生策略解析: 输入 bestOfN/likert/citation/singleTurnComposite
+    进入 promptfoo strategies 的数量 = 0
+    被留作 Plan A 的 = ["bestOfN","likert","citation","singleTurnComposite"]
+
+== 护栏反证 (故意改坏 -> 必须变红) ==
+把 EngineApplicationDefinition.HasAccessTo 的 json tag 改成 hasAccessTo:
+  --- FAIL: TestEngineNativeGenerationWireContractIsSnakeCase
+      application_definition is missing "has_access_to"; got keys [... hasAccessTo ...]
+      application_definition must not use camelCase key "hasAccessTo"
+  已还原, 复验 ok
+
+== 三件套 ==
+go build ./internal/... ./cmd/... ./pkg/...        ok
+go test  ./internal/... ./cmd/... ./pkg/...        全绿
+promptfoo_engine: tsc --noEmit                     ok
+promptfoo_engine: vitest                           11 files / 131 tests passed (U7 前 92)
+frontend: npm run build                            ok
+frontend: npm test                                6 files / 11 tests passed
+TestRedteamMCPToolSnapshotMatchesGolden           PASS
+TestRedteamMCPToolManifestPinned                  PASS
+
+== 覆盖率 (-coverpkg 口径, 被覆盖语句块数) ==
+U6 收尾: 2981 / 4223
+U7 收尾: 3019 / 4262        → +38 块 (只升不降)
+(脚本仍因「语句块总数不一致」守卫退出 1 —— 既有遗留, 未跑 --gen-baseline)
+
+== 凭据零泄漏 ==
+新模块 console./logger. 调用数 = 0
+含密钥的配置文档以 mode 0600 写入 per-run workdir (终态 taskManager rm -rf)
+  → 刻意不用 liveRedteamConfig (它会把 yaml.dump 写进共享 os.tmpdir())
+三项新字段不进入 engine_runs 落库
