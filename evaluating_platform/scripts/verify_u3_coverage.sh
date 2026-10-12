@@ -38,6 +38,16 @@
 #   该守卫一直误报，已作为遗留登记四个批次）。
 #   重建命令：./scripts/verify_u3_coverage.sh --gen-baseline
 #
+#   最近一次重建：U3-b T4.2 client.go 分层 —— **语句块与覆盖块均未变
+#   （4566/3275 → 4566/3275）**，两个常数无需改动。重建原因仅是
+#   **profile 里的文件名字段过期**：原 client.go 已按服务域拆成
+#   transport.go / client_evaluation.go / client_runtime.go / client_legacy.go，
+#   存档仍写 client.go 会让 `go tool cover` 报 "no such file or directory"
+#   （脚本头「前置断言」小节描述的正是这类假阴性风险）。
+#   上一次重建：U3-b Step A（4566/3271 → 4566/3275）——
+#   **U3-b Step A 路由快照护栏上线，探测表顺带补上 4 块真实覆盖，
+#   非口径变更**。详见 assert_known_baseline 上方注释。
+#
 # 用法：
 #   ./scripts/verify_u3_coverage.sh                  # 对比基线 vs 当前
 #   ./scripts/verify_u3_coverage.sh --gen-baseline   # 重新生成基线 + 下方两个常数
@@ -105,13 +115,19 @@ cover_ratio() {
 # 用法：assert_known_baseline <profile 文件>
 # 这两个常数与基线 profile **必须成对更新**（U7 裁定，见脚本头「基线何时重建」）：
 # 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
-# 永久拒绝出结论。当前值对应 U9 收尾（4566 块 / 3271 覆盖）：
-# U10 收尾 4563/3267（71.60%）→ U9 收尾 4566/3271（71.64%）。U9 只增不改：
-# agent_target.go 增加 AgentTargetWantsConversation 谓词与「会话模板必须有响应
-# 提取路径」的保存期校验（多轮配置缺 id 提取路径时，引擎会每轮发空 id、Agent
-# 每次新开对话，而报告仍显示多轮——只能在保存时拦），promptfoo_engine_client.go
-# 增加 tool_call_signals 的契约结构（两个整数，无工具名/参数），并各配测试，
-# 故语句块与覆盖块同步上升、覆盖率 +0.04pp（只升不降）。
+# 永久拒绝出结论。当前值对应 U3-b Step A 收尾（4566 块 / 3275 覆盖）：
+# U10 收尾 4563/3267（71.60%）→ U9 收尾 4566/3271（71.64%）→ U3-b Step A
+# 收尾 4566/3275（71.73%）。
+#
+# ⚠️ 语句块**总数未变**（4566 → 4566），变的只是已覆盖块数（3271 → 3275）。
+# 原因是 **U3-b Step A 路由快照护栏上线**：client_route_snapshot_test.go 的探测表
+# 对每个网关方法传入非零过滤条件（SessionID / Role 等），顺带走进了原有测试从未
+# 覆盖的 if 分支；ExportEvaluationReport 探针也走到了 filename 兜底。
+# 已用comm 比对两个 profile 的已覆盖块集合确认**零丢失**（新增 4 块：
+# client.go ListEvaluationJobs 的 session_id 分支、ListRuntimeMessages 的 role
+# 分支、filenameFromContentDisposition 的 fallback、capabilities.go normalized()
+# 的空 Profile 兜底）。**这是护栏的净收益，不是口径变更**，故只同步
+# KNOWN_BASELINE_COVERED 一个数，BLOCKS 保持 4566。
 #
 # 历史：U8 收尾 4407/3140（71.25%）→ U10 收尾 4563/3267（71.60%，+0.35pp）。
 #
@@ -120,7 +136,7 @@ cover_ratio() {
 # resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
 assert_known_baseline() {
   local known_blocks="${KNOWN_BASELINE_BLOCKS:-4566}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3271}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3275}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

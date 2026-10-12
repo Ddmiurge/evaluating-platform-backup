@@ -1,0 +1,921 @@
+package maclaw
+
+// client_route_snapshot_test.go — U3-b / T4.2 前置护栏：网关路由快照。
+//
+// ── 为什么 U2 的契约测试不够用 ────────────────────────────────────────
+//
+// gateway_contract_test.go 守住的是「接口方法集的增删」：它用 reflect 枚举
+// EvaluationGateway / SkillGateway / RuntimeGateway / GatewayClient 的方法名，
+// 双向比对注册表。它自己文件里写得很清楚：
+//
+//	The route strings are documentation, not assertions
+//
+// 也就是说 `gatewayClientOwnRoutes["GetRuntimeConfig"] = "GET /api/v1/config"`
+// 只是一段注释。T4.2 要把 client.go 的 41 个方法按服务域搬进4 个文件——
+// 如果搬迁时把 "/api/v1/config" 敲成 "/api/v1/configs"，或把
+// http.MethodPut 写成 http.MethodPost，U2 的契约测试**依然全绿**，
+// 因为方法名一个没少。而这是平台与 MaClaw 上游之间的唯一边界：
+// 路径打错 = 线上 404，且编译期与现有测试期都不会响。
+//
+// ── 本护栏的机制：运行时录制，而非源码解析 ──────────────────────────
+//
+// 快照不是手维护的，也不是 grep 源码得到的。它由generateRouteSnapshot()
+// **真实调用每个网关方法**、在一个记录型 http.RoundTripper 上观察
+// 实际发出的 method + path + query 而生成。这带来两个源码解析做不到的性质：
+//
+//  1. 忠实。路径是拼接、PathEscape、url.Values.Encode 之后的结果，
+//     正是线上真正发出的字节。
+//  2. 抗重构。搬迁文件只改行号与文件名，不改发出的请求 → 快照不红。
+//
+// 参数用哨兵值（__resource_id__ 等）传入，归一化后成为 {resource_id} 模板，
+// 因此快照记录的是「路由形状」而非某次具体调用的实例。
+//
+// ── 为什么探测表（probe）本身是手写的 ────────────────────────────────
+//
+// Go 没有「按名字反射调用方法并自动造参」的运行时能力，任何调用型护栏都
+// 必须有一张「方法名 → 如何调用」的探测表。**但路由不是手维护的**——
+// 探测表只回答「怎么调」，快照回答「调出去是什么」，后者由工具生成。
+// 探测表与实际方法集的漂移由 TestClientRouteSnapshotCoversEveryClientMethod
+// 双向堵死：新增方法而漏写探测 → 测试红。
+//
+// ── 重新生成（路由确已变更时）────────────────────────────────────────
+//
+//	cd evaluating_platform
+//	GO=/Users/huangqixu/sdk/go/bin/go   # 本机 go 未在 PATH
+//	"$GO" test ./internal/maclaw -run TestClientRouteSnapshot -update
+//
+// 生成物：internal/maclaw/testdata/client_routes.json（提交进仓库，CI 断言）。
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// updateGolden regenerates testdata/client_routes.json instead of asserting
+// against it. Deliberately a flag rather than an env var so that a stray
+// env var in CI cannot silently rewrite the guardrail's source of truth.
+var updateGolden = flag.Bool("update", false, "regenerate internal/maclaw/testdata/client_routes.json")
+
+const clientRoutesGoldenPath = "testdata/client_routes.json"
+
+// ── 哨兵参数 ────────────────────────────────────────────────────────────
+// 双下划线包裹的标识符。归一化正则把它换成 {snake_case} 路由模板。
+// 全部由 [a-z0-9_] 组成，因此 url.PathEscape 是恒等变换，不会引入
+// 百分号编码噪声。
+const (
+	sentinelResourceID = "__resource_id__"
+	sentinelTargetID   = "__target_id__"
+	sentinelJobID      = "__job_id__"
+	sentinelReportID   = "__report_id__"
+	sentinelEvidenceID = "__evidence_id__"
+	sentinelInstanceID = "__instance_id__"
+	sentinelSessionID  = "__session_id__"
+	sentinelRunID      = "__run_id__"
+)
+
+// sentinelPattern matches the sentinel arguments so recorded paths can be
+// turned into stable route templates.
+var sentinelPattern = regexp.MustCompile(`__([a-z0-9_]+)__`)
+
+// ── 记录型传输层 ────────────────────────────────────────────────────────
+
+// recordedRequest is one observed outbound HTTP request.
+type recordedRequest struct {
+	Method string
+	Path   string
+	Query  url.Values
+}
+
+// recordingTransport is an http.RoundTripper that records every outbound
+// request and answers 200 with a JSON object. Sitting underneath Client's
+// http.Client means it observes the request **after** path concatenation,
+// PathEscape and query encoding — i.e. the real wire bytes.
+type recordingTransport struct {
+	mu       sync.Mutex
+	requests []recordedRequest
+}
+
+// RoundTrip implements http.RoundTripper.
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.requests = append(rt.requests, recordedRequest{
+		Method: req.Method,
+		Path:   req.URL.Path,
+		Query:  req.URL.Query(),
+	})
+	rt.mu.Unlock()
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Request:    req,
+	}, nil
+}
+
+// recorded returns a copy of the captured requests.
+func (rt *recordingTransport) recorded() []recordedRequest {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	out := make([]recordedRequest, len(rt.requests))
+	copy(out, rt.requests)
+	return out
+}
+
+// ── 快照类型 ────────────────────────────────────────────────────────────
+
+// routeSnapshotEntry is the recorded wire contract of a single gateway method.
+type routeSnapshotEntry struct {
+	HTTPMethod string   `json:"http_method"`
+	Path       string   `json:"path"`
+	QueryKeys  []string `json:"query_keys"`
+	Note       string   `json:"note,omitempty"`
+}
+
+// routeSnapshot is the on-disk golden document.
+type routeSnapshot struct {
+	GeneratedBy string                        `json:"generated_by"`
+	Note        string                        `json:"note"`
+	Methods     map[string]routeSnapshotEntry `json:"methods"`
+}
+
+const routeSnapshotNote = "Generated by TestClientRouteSnapshot with -update. " +
+	"Records the exact HTTP method / path / query-key set each gateway method puts on the wire. " +
+	"Do not hand-edit: a route change must be made in the client implementation and regenerated here."
+
+// ── 探测表 ──────────────────────────────────────────────────────────────
+
+// routeProbe invokes one gateway method against a recording client. It returns
+// an error only for probe setup failures; a gateway error means the method
+// never reached the wire, which the caller reports as a probe defect.
+type routeProbe struct {
+	// Method is the *Client method name this probe exercises. It is the join
+	// key against the golden document and against reflect's method set.
+	Method string
+	// WireCall is false for methods that legitimately perform no I/O
+	// (pure local configuration checks).
+	WireCall bool
+	// Invoke calls the method. It must reach the wire when WireCall is true.
+	Invoke func(context.Context, *Client) error
+}
+
+// routeProbeContext is a fixed context for probes; probes never block on I/O
+// because the recording transport answers synchronously.
+func routeProbeContext() context.Context { return context.Background() }
+
+// routeProbes returns the exhaustive probe table for *Client.
+//
+// Coverage against reflect's exported method set is asserted by
+// TestClientRouteSnapshotCoversEveryClientMethod, so adding a method to Client
+// without adding a probe here fails the build.
+func routeProbes() []routeProbe {
+	return []routeProbe{
+		{
+			Method:   "Enabled",
+			WireCall: false,
+			Invoke: func(_ context.Context, c *Client) error {
+				if !c.Enabled() {
+					return fmt.Errorf("Enabled() = false on a configured client")
+				}
+				return nil
+			},
+		},
+		{
+			Method:   "GetRuntimeCapabilities",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetRuntimeCapabilities(ctx)
+				return err
+			},
+		},
+
+		// ── Evaluation：资源 ──
+		{
+			Method:   "SearchEvaluationResources",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.SearchEvaluationResources(ctx, EvaluationResourceQuery{
+					Kind:            EvaluationResourceKindSample,
+					Query:           "prompt",
+					IncludeInactive: true,
+					Limit:           7,
+					AssessmentTypes: []string{"llm_safety", "jailbreak"},
+				})
+				return err
+			},
+		},
+		{
+			Method:   "SaveEvaluationResource",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.SaveEvaluationResource(ctx, EvaluationResourceInput{Name: "n", Kind: EvaluationResourceKindSample})
+				return err
+			},
+		},
+		{
+			Method:   "PreviewEvaluationResource",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.PreviewEvaluationResource(ctx, sentinelResourceID)
+				return err
+			},
+		},
+		{
+			Method:   "MaterializeEvaluationResource",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.MaterializeEvaluationResource(ctx, sentinelResourceID)
+				return err
+			},
+		},
+
+		// ── Evaluation：目标 ──
+		{
+			Method:   "SearchEvaluationTargets",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.SearchEvaluationTargets(ctx, EvaluationTargetQuery{
+					Kind:            EvaluationTargetKindLLM,
+					Provider:        "openai",
+					Query:           "gpt",
+					IncludeInactive: true,
+					Limit:           5,
+				})
+				return err
+			},
+		},
+		{
+			Method:   "SaveEvaluationTarget",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.SaveEvaluationTarget(ctx, EvaluationTargetInput{Name: "n", Kind: EvaluationTargetKindLLM})
+				return err
+			},
+		},
+		{
+			Method:   "GetEvaluationTarget",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetEvaluationTarget(ctx, sentinelTargetID)
+				return err
+			},
+		},
+		{
+			Method:   "ProbeEvaluationTarget",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ProbeEvaluationTarget(ctx, sentinelTargetID)
+				return err
+			},
+		},
+
+		// ── Evaluation：运行 / 作业 ──
+		{
+			Method:   "StartEvaluationRun",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.StartEvaluationRun(ctx, EvaluationRunInput{
+					InstanceID: sentinelInstanceID,
+					SessionID:  sentinelSessionID,
+					TargetID:   sentinelTargetID,
+				})
+				return err
+			},
+		},
+		{
+			Method:   "ListEvaluationJobs",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ListEvaluationJobs(ctx, EvaluationJobQuery{
+					Kind:      EvaluationJobKindRun,
+					Status:    EvaluationJobStatusRunning,
+					SessionID: sentinelSessionID,
+					Limit:     9,
+				})
+				return err
+			},
+		},
+		{
+			Method:   "GetEvaluationJob",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetEvaluationJob(ctx, sentinelJobID)
+				return err
+			},
+		},
+		{
+			Method:   "CancelEvaluationJob",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.CancelEvaluationJob(ctx, sentinelJobID)
+				return err
+			},
+		},
+		{
+			Method:   "RetryEvaluationJob",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.RetryEvaluationJob(ctx, sentinelJobID)
+				return err
+			},
+		},
+		{
+			Method:   "ResumeEvaluationJob",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ResumeEvaluationJob(ctx, sentinelJobID)
+				return err
+			},
+		},
+		{
+			Method:   "GetEvaluationJobRecovery",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetEvaluationJobRecovery(ctx, sentinelJobID)
+				return err
+			},
+		},
+		{
+			Method:   "CancelEvaluationRun",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.CancelEvaluationRun(ctx, sentinelRunID)
+				return err
+			},
+		},
+		{
+			Method:   "StreamEvaluationRunEvents",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				stream, err := c.StreamEvaluationRunEvents(ctx, sentinelRunID)
+				if err != nil {
+					return err
+				}
+				return stream.Body.Close()
+			},
+		},
+
+		// ── Evaluation：报告 / 证据 ──
+		{
+			Method:   "GetEvaluationReport",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetEvaluationReport(ctx, sentinelReportID)
+				return err
+			},
+		},
+		{
+			Method:   "ExportEvaluationReport",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ExportEvaluationReport(ctx, sentinelReportID, "markdown")
+				return err
+			},
+		},
+		{
+			Method:   "ListEvaluationEvidence",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ListEvaluationEvidence(ctx, EvaluationEvidenceQuery{
+					InstanceID: sentinelInstanceID,
+					SessionID:  sentinelSessionID,
+					RunID:      sentinelRunID,
+					Kind:       EvaluationEvidenceKindArtifact,
+					Limit:      11,
+				})
+				return err
+			},
+		},
+		{
+			Method:   "GetEvaluationEvidence",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetEvaluationEvidence(ctx, sentinelEvidenceID)
+				return err
+			},
+		},
+
+		// ── Skill ──
+		{
+			Method:   "ListSkills",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ListSkills(ctx, 13)
+				return err
+			},
+		},
+		{
+			Method:   "SearchSkills",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.SearchSkills(ctx, SkillSearchInput{Query: "q"})
+				return err
+			},
+		},
+		{
+			Method:   "InstallSkill",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.InstallSkill(ctx, SkillInstallInput{Source: "github"})
+				return err
+			},
+		},
+
+		// ── Runtime：实例 / 会话 ──
+		{
+			Method:   "RefreshRuntimeInstanceReadiness",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				return c.RefreshRuntimeInstanceReadiness(ctx, sentinelInstanceID)
+			},
+		},
+		{
+			Method:   "ListRuntimeSessions",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ListRuntimeSessions(ctx, sentinelInstanceID, RuntimeSessionQuery{
+					Limit:           15,
+					IncludeArchived: true,
+				})
+				return err
+			},
+		},
+		{
+			Method:   "CreateRuntimeSession",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.CreateRuntimeSession(ctx, sentinelInstanceID, RuntimeSessionInput{
+					AgentID: sentinelRunID,
+					Title:   "t",
+				})
+				return err
+			},
+		},
+		{
+			Method:   "GetRuntimeSession",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetRuntimeSession(ctx, sentinelInstanceID, sentinelSessionID)
+				return err
+			},
+		},
+		{
+			Method:   "DeleteRuntimeSession",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				return c.DeleteRuntimeSession(ctx, sentinelInstanceID, sentinelSessionID)
+			},
+		},
+
+		// ── Runtime：消息 / 运行 ──
+		{
+			Method:   "ListRuntimeMessages",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ListRuntimeMessages(ctx, sentinelInstanceID, sentinelSessionID, RuntimeMessageQuery{
+					Limit: 17,
+					Role:  "user",
+				})
+				return err
+			},
+		},
+		{
+			Method:   "PostRuntimeMessage",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.PostRuntimeMessage(ctx, sentinelInstanceID, sentinelSessionID, RuntimeMessageInput{
+					Content:   "hello",
+					InputType: "text",
+				})
+				return err
+			},
+		},
+		{
+			Method:   "ConfirmRuntimePlan",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ConfirmRuntimePlan(ctx, sentinelInstanceID, sentinelSessionID, RuntimeMessageInput{
+					Content:  "go",
+					Metadata: map[string]string{"test_count": "3"},
+				})
+				return err
+			},
+		},
+		{
+			Method:   "CancelRuntimeRun",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.CancelRuntimeRun(ctx, sentinelInstanceID, sentinelRunID)
+				return err
+			},
+		},
+		{
+			Method:   "StreamRuntimeRunEvents",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				stream, err := c.StreamRuntimeRunEvents(ctx, sentinelInstanceID, sentinelRunID)
+				if err != nil {
+					return err
+				}
+				return stream.Body.Close()
+			},
+		},
+
+		// ── Config ──
+		{
+			Method:   "GetRuntimeConfig",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.GetRuntimeConfig(ctx)
+				return err
+			},
+		},
+		{
+			Method:   "UpdateRuntimeConfig",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.UpdateRuntimeConfig(ctx, RuntimeAppConfig{})
+				return err
+			},
+		},
+		{
+			Method:   "ValidateRuntimeConfig",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ValidateRuntimeConfig(ctx, nil)
+				return err
+			},
+		},
+		{
+			Method:   "TestRuntimeConfig",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.TestRuntimeConfig(ctx, nil)
+				return err
+			},
+		},
+	}
+}
+
+// clientUnexportedHelpers are the *Client methods that intentionally have no
+// route of their own because they are transport primitives, not gateway verbs.
+// They are excluded from the probe table by design, and listed here so that
+// TestClientRouteSnapshotCoversEveryClientMethod can assert the exclusion is
+// deliberate rather than accidental.
+var clientUnexportedHelpers = []string{"doJSON", "streamEvents"}
+
+// ── 生成 ────────────────────────────────────────────────────────────────
+
+// generateRouteSnapshot runs every probe against a recording transport and
+// returns the observed wire contract for each method.
+//
+// A probe that returns an error, or that issues a request count other than the
+// expected one, is a defect in the probe table itself and fails loudly rather
+// than silently recording an empty route.
+func generateRouteSnapshot(t *testing.T) map[string]routeSnapshotEntry {
+	t.Helper()
+
+	recorded := make(map[string]routeSnapshotEntry, len(routeProbes()))
+	for _, probe := range routeProbes() {
+		transport := &recordingTransport{}
+		client, err := NewClient(Config{
+			BaseURL:        "http://maclaw.invalid",
+			APIToken:       "snapshot-token",
+			TimeoutSeconds: 5,
+		})
+		if err != nil {
+			t.Fatalf("probe %s: NewClient: %v", probe.Method, err)
+		}
+		// Swap in the recording transport. This is the same http.Client the
+		// production constructor builds, so the request observed is the one
+		// that would reach MaClaw.
+		client.httpClient.Transport = transport
+
+		if err := probe.Invoke(routeProbeContext(), client); err != nil {
+			t.Fatalf("probe %s: invocation failed before reaching the wire: %v", probe.Method, err)
+		}
+
+		requests := transport.recorded()
+		if !probe.WireCall {
+			if len(requests) != 0 {
+				t.Fatalf("probe %s: declared WireCall=false but issued %d request(s): %+v",
+					probe.Method, len(requests), requests)
+			}
+			recorded[probe.Method] = routeSnapshotEntry{
+				QueryKeys: []string{},
+				Note:      "exempt: pure local check, no I/O",
+			}
+			continue
+		}
+
+		if len(requests) != 1 {
+			t.Fatalf("probe %s: expected exactly 1 outbound request, got %d: %+v",
+				probe.Method, len(requests), requests)
+		}
+
+		got := requests[0]
+		entry := routeSnapshotEntry{
+			HTTPMethod: got.Method,
+			Path:       sentinelPattern.ReplaceAllString(got.Path, "{$1}"),
+			QueryKeys:  sortedUniqueKeys(got.Query),
+		}
+		if !strings.HasPrefix(entry.Path, "/") {
+			t.Fatalf("probe %s: recorded path %q does not look like an absolute route", probe.Method, entry.Path)
+		}
+		recorded[probe.Method] = entry
+	}
+	return recorded
+}
+
+// sortedUniqueKeys returns the sorted, de-duplicated query parameter names.
+// Values are intentionally dropped: they are caller-supplied, whereas the
+// *set of filters sent* is part of the wire contract (dropping
+// `include_inactive` is a real regression).
+func sortedUniqueKeys(values url.Values) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]bool, len(values))
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ── 比对 ────────────────────────────────────────────────────────────────
+
+// routeSnapshotDrift returns a sorted, human-readable diff between the golden
+// snapshot and the freshly observed one. Empty means identical.
+//
+// Each issue names the offending method so a failure points straight at the
+// line of client code that has to change.
+func routeSnapshotDrift(want, got map[string]routeSnapshotEntry) []string {
+	issues := make([]string, 0)
+
+	for method, wantEntry := range want {
+		gotEntry, ok := got[method]
+		if !ok {
+			issues = append(issues, fmt.Sprintf(
+				"%s: present in the golden snapshot but no probe exercised it (method removed or renamed?)",
+				method))
+			continue
+		}
+		if wantEntry.HTTPMethod != gotEntry.HTTPMethod {
+			issues = append(issues, fmt.Sprintf(
+				"%s: HTTP method changed: snapshot %q, code now sends %q",
+				method, wantEntry.HTTPMethod, gotEntry.HTTPMethod))
+		}
+		if wantEntry.Path != gotEntry.Path {
+			issues = append(issues, fmt.Sprintf(
+				"%s: path changed: snapshot %q, code now sends %q",
+				method, wantEntry.Path, gotEntry.Path))
+		}
+		if strings.Join(wantEntry.QueryKeys, ",") != strings.Join(gotEntry.QueryKeys, ",") {
+			issues = append(issues, fmt.Sprintf(
+				"%s: query keys changed: snapshot %v, code now sends %v",
+				method, wantEntry.QueryKeys, gotEntry.QueryKeys))
+		}
+	}
+
+	for method := range got {
+		if _, ok := want[method]; !ok {
+			issues = append(issues, fmt.Sprintf(
+				"%s: gateway method is not in the golden snapshot — add a probe, then regenerate with -update",
+				method))
+		}
+	}
+
+	sort.Strings(issues)
+	return issues
+}
+
+// loadRouteSnapshot reads the golden document from testdata.
+func loadRouteSnapshot(t *testing.T) map[string]routeSnapshotEntry {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(clientRoutesGoldenPath))
+	if err != nil {
+		t.Fatalf("read golden snapshot: %v", err)
+	}
+	var doc routeSnapshot
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse golden snapshot: %v", err)
+	}
+	if len(doc.Methods) == 0 {
+		t.Fatalf("golden snapshot %s contains no methods", clientRoutesGoldenPath)
+	}
+	return doc.Methods
+}
+
+// writeRouteSnapshot regenerates the golden document on disk.
+func writeRouteSnapshot(t *testing.T, methods map[string]routeSnapshotEntry) {
+	t.Helper()
+	doc := routeSnapshot{
+		GeneratedBy: "internal/maclaw/client_route_snapshot_test.go -update",
+		Note:        routeSnapshotNote,
+		Methods:     methods,
+	}
+	raw, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatalf("encode golden snapshot: %v", err)
+	}
+	raw = append(raw, '\n')
+	if err := os.WriteFile(filepath.Clean(clientRoutesGoldenPath), raw, 0o644); err != nil {
+		t.Fatalf("write golden snapshot: %v", err)
+	}
+	t.Logf("regenerated %s (%d methods)", clientRoutesGoldenPath, len(methods))
+}
+
+// ── 测试 ────────────────────────────────────────────────────────────────
+
+// TestClientRouteSnapshot is the guardrail proper: every gateway method's
+// observed method + path + query-key set must equal the golden snapshot.
+//
+// This is what makes the client.go split safe. Moving a method between files
+// leaves this green; changing a path constant by one character turns it red
+// and names the method.
+func TestClientRouteSnapshot(t *testing.T) {
+	observed := generateRouteSnapshot(t)
+
+	if *updateGolden {
+		writeRouteSnapshot(t, observed)
+		return
+	}
+
+	want := loadRouteSnapshot(t)
+	if issues := routeSnapshotDrift(want, observed); len(issues) > 0 {
+		t.Fatalf("gateway route snapshot drift (%d issue(s)) — the platform↔MaClaw boundary changed:\n  - %s\n\n"+
+			"If the change is intended, regenerate with:\n  go test ./internal/maclaw -run TestClientRouteSnapshot -update",
+			len(issues), strings.Join(issues, "\n  - "))
+	}
+
+	t.Logf("verified %d gateway routes against %s", len(observed), clientRoutesGoldenPath)
+}
+
+// TestClientRouteSnapshotDetectsPathTypo is the counter-proof: it proves the
+// comparison actually bites by mutating a snapshot entry the way a file-move
+// regression would (one character off a path) and asserting the drift is
+// reported against the right method.
+//
+// Without this, a refactor that broke routeSnapshotDrift (e.g. a comparison
+// that silently returned nil) would leave TestClientRouteSnapshot green while
+// protecting nothing.
+func TestClientRouteSnapshotDetectsPathTypo(t *testing.T) {
+	want := loadRouteSnapshot(t)
+
+	// Pick a method that genuinely has a path, so the mutation is meaningful.
+	const target = "GetEvaluationJob"
+	entry, ok := want[target]
+	if !ok {
+		t.Fatalf("golden snapshot has no entry for %s", target)
+	}
+	if entry.Path == "" {
+		t.Fatalf("%s has no recorded path, cannot run the path-typo counter-proof", target)
+	}
+
+	// One character off: this is exactly the failure mode of moving a path
+	// constant between files by hand.
+	typo := map[string]routeSnapshotEntry{}
+	for method, e := range want {
+		typo[method] = e
+	}
+	mutated := entry.Path + "s"
+	typo[target] = routeSnapshotEntry{HTTPMethod: entry.HTTPMethod, Path: mutated, QueryKeys: entry.QueryKeys}
+
+	issues := routeSnapshotDrift(typo, want)
+	if len(issues) == 0 {
+		t.Fatalf("counter-proof failed: a one-character path typo on %s was not detected", target)
+	}
+	joined := strings.Join(issues, "\n")
+	if !strings.Contains(joined, target) {
+		t.Fatalf("counter-proof failed: drift did not name %s, got: %s", target, joined)
+	}
+	if !strings.Contains(joined, mutated) || !strings.Contains(joined, entry.Path) {
+		t.Fatalf("counter-proof failed: drift did not show expected vs actual path, got: %s", joined)
+	}
+	t.Logf("counter-proof OK: %s", strings.Join(issues, " | "))
+}
+
+// TestClientRouteSnapshotDetectsMissingMethod is the counter-proof for the
+// coverage direction: a gateway method absent from the snapshot must be
+// flagged, otherwise the guardrail would rot as methods are added.
+func TestClientRouteSnapshotDetectsMissingMethod(t *testing.T) {
+	want := loadRouteSnapshot(t)
+
+	observed := map[string]routeSnapshotEntry{}
+	for method, entry := range want {
+		observed[method] = entry
+	}
+	const dropped = "StreamEvaluationRunEvents"
+	delete(observed, dropped)
+
+	issues := routeSnapshotDrift(want, observed)
+	if len(issues) == 0 {
+		t.Fatalf("counter-proof failed: unrecorded method %s was not detected", dropped)
+	}
+	if joined := strings.Join(issues, "\n"); !strings.Contains(joined, dropped) {
+		t.Fatalf("counter-proof failed: drift did not name %s, got: %s", dropped, joined)
+	}
+}
+
+// TestClientRouteSnapshotCoversEveryClientMethod keeps the probe table honest.
+// reflect reports the exported method set of *Client; the probe table must
+// match it exactly. A new gateway method that nobody probed fails here rather
+// than silently escaping the route snapshot.
+func TestClientRouteSnapshotCoversEveryClientMethod(t *testing.T) {
+	clientType := reflect.TypeOf((*Client)(nil))
+	if clientType.Kind() != reflect.Ptr {
+		t.Fatalf("*Client is not a pointer type, got %s", clientType.Kind())
+	}
+
+	exported := make(map[string]bool, clientType.NumMethod())
+	for i := 0; i < clientType.NumMethod(); i++ {
+		exported[clientType.Method(i).Name] = true
+	}
+
+	probed := make(map[string]bool, len(routeProbes()))
+	for _, probe := range routeProbes() {
+		if probed[probe.Method] {
+			t.Errorf("probe table lists %s more than once", probe.Method)
+		}
+		probed[probe.Method] = true
+	}
+
+	issues := make([]string, 0)
+	for method := range exported {
+		if !probed[method] {
+			issues = append(issues, fmt.Sprintf(
+				"*Client method %q has no route probe — add one to routeProbes() so the route snapshot covers it", method))
+		}
+	}
+	for method := range probed {
+		if !exported[method] {
+			issues = append(issues, fmt.Sprintf(
+				"routeProbes() exercises %q, which is not an exported *Client method", method))
+		}
+	}
+	if len(issues) > 0 {
+		sort.Strings(issues)
+		t.Fatalf("probe table / *Client method set drift:\n  - %s", strings.Join(issues, "\n  - "))
+	}
+
+	// Every intentionally-unprobed method must be a declared transport helper.
+	// reflect cannot see unexported methods, so assert the helper list stays
+	// in sync with the source by checking each name actually exists.
+	for _, helper := range clientUnexportedHelpers {
+		if _, isExported := reflect.TypeOf(&Client{}).MethodByName(helper); isExported {
+			t.Errorf("clientUnexportedHelpers lists %q, but it is an exported method — probe it instead", helper)
+		}
+	}
+
+	t.Logf("probe table covers all %d exported *Client methods (%d declared transport helpers excluded)",
+		len(exported), len(clientUnexportedHelpers))
+}
+
+// TestMaclawSrvClientInheritsRouteMethods pins the embedding invariant that
+// T4.2 must not break: MaclawSrvClient embeds *Client, so every snapshotted
+// method must still be reachable on the outer type after the split. A move that
+// dropped a method from Client, or changed the embedding, fails here.
+func TestMaclawSrvClientInheritsRouteMethods(t *testing.T) {
+	outer := reflect.TypeOf((*MaclawSrvClient)(nil))
+	snapshot := loadRouteSnapshot(t)
+
+	methods := make([]string, 0, len(snapshot))
+	for method := range snapshot {
+		methods = append(methods, method)
+	}
+	sort.Strings(methods)
+
+	missing := make([]string, 0)
+	for _, method := range methods {
+		if _, ok := outer.MethodByName(method); !ok {
+			missing = append(missing, method)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("MaclawSrvClient no longer inherits %d snapshotted method(s) via *Client: %v",
+			len(missing), missing)
+	}
+	t.Logf("MaclawSrvClient inherits all %d snapshotted gateway methods", len(methods))
+}
