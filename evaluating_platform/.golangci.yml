@@ -1,0 +1,169 @@
+# golangci-lint configuration — evaluating_platform Go module
+#
+# ── Why this file exists ──────────────────────────────────────────────────────
+# The 2026-10-12 code audit found 15 occurrences of `_ = json.Unmarshal(...)` /
+# `_ = json.Marshal(...)`. The signature of that bug class:
+#
+#   // scanEngineRun reads a corrupted JSONB column
+#   _ = json.Unmarshal(raw, &run.Plugins)   // error returned, then DISCARDED
+#   return run, nil                          // caller gets a "healthy" record
+#
+# i.e. the error was explicitly assigned to the blank identifier, so the function
+# returned nil and the DB corruption became invisible. errcheck's `check-blank`
+# is precisely the check that catches this.
+#
+# ── READ THIS BEFORE "TIGHTENING" THE CONFIG ──────────────────────────────────
+# `errcheck.check-blank: false` is errcheck's DEFAULT. With the default, errcheck
+# reports **0 issues** on the snippet above. Verified empirically against this
+# repo — see the "verified" note next to the setting. If you ever see errcheck
+# reporting nothing at all, this flag is the first thing to check.
+#
+# ── Admission policy: WARNING FIRST, tighten later (2 phases) ────────────────
+# Phase 1 (this file, current): every issue is reported at severity `warning`
+# and the CI job does NOT fail on findings. Goal = visibility. The legacy
+# backlog is real and large; flipping to blocking today would just stall the
+# pipeline and tempt a mass "fix" that silences rather than solves.
+# Phase 2 (NOT done here, deliberately): make it blocking for NEW code only,
+# via `--new-from-rev` (exposed as LINT_NEW_FROM_REV in scripts/lint_go.sh).
+# Existing debt then decays naturally instead of requiring a risky bulk
+# refactor.
+#
+# Pinned to golangci-lint v2.6.2. v2 renamed/moved many keys vs v1
+# (`linters-settings` -> `linters.settings`, `run.skip-dirs` -> exclusions, ...).
+# Copying a v1-era config from the internet will not load. Verify with:
+#   golangci-lint config verify
+version: "2"
+
+run:
+  timeout: 5m
+  # Tests are included on purpose: several real defects (bad JSON fixtures) only
+  # surface in _test.go. `tests: false` is the tempting default that quietly
+  # halves coverage — do not add it without a specific reason.
+  tests: true
+  # Relative paths keep both the JSON report and the CI annotations stable
+  # regardless of which directory the linter is invoked from.
+  relative-path-mode: cfg
+
+linters:
+  # Explicit allow-list. `standard` would drag in gosec/staticcheck/ineffassign
+  # and bury the signal we actually care about in noise we cannot action yet.
+  default: none
+  enable:
+    # ── Core target: catches discarded error returns ──────────────────────────
+    - errcheck
+    # ── printf format bugs, lost struct tags, unreachable code ──────────────
+    - govet
+    # ── dead code (audit #28 flagged unused internals) ───────────────────────
+    - unused
+    # ── duplicated literals, e.g. repeated status/route strings ─────────────
+    # NOTE: audit #22 assumed goconst would surface "scattered timeout magic
+    # numbers". It does not. Measured on this repo with `numbers: true`:
+    # 86 goconst findings, ALL of them strings, zero numeric literals — because
+    # the timeouts are viper config fields (`timeout_seconds`,
+    # `engine_timeout_seconds` in pkg/config/config.go) populated from the
+    # environment, not literals in Go. If #22 still matters, it needs a
+    # different check, not a goconst tuning knob.
+    - goconst
+
+  settings:
+    errcheck:
+      # *** The load-bearing flag. ***
+      # false (default) = `_ = json.Unmarshal(...)` is NOT reported.
+      # true             = it IS reported. Verified on v2.6.2 with a minimal
+      # repro AND against this repo's own history (see ci.yml phase-2 note).
+      check-blank: true
+      # `a := b.(MyStruct)` is a different (and much noisier) class of finding.
+      # Left off deliberately; revisit with the phase-2 backlog.
+      check-type-assertions: false
+      # Keep errcheck's builtin exclusions: without them every `fmt.Fprintf`
+      # to an http.ResponseWriter and every `(*os.File).Close` is reported,
+      # which is exactly the "hundreds of pre-existing findings" trap this
+      # task is meant to avoid.
+      disable-default-exclusions: false
+
+    govet:
+      # `fieldalignment` is excluded: it is pure struct-layout advice with no
+      # correctness value, and it would flag nearly every model struct here.
+      enable-all: false
+      disable:
+        - fieldalignment
+
+    unused:
+      # Report unused unexported identifiers. Exported identifiers are part of
+      # the module's API surface and cannot be judged unused.
+      field-writes-are-uses: true
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+      # Kept on for completeness. Measured result on this repo: 0 numeric
+      # findings — see the goconst note above for why (timeouts live in viper
+      # config, not as literals). Do not tune this expecting timeout findings.
+      numbers: true
+      ignore-calls: true
+
+  exclusions:
+    # Nothing is excluded by path here except third-party trees that are not ours
+    # to fix. Generated files are handled via the `generated` toggle so policy
+    # stays in ONE place.
+    generated: lax
+    # `node_modules` genuinely contains Go source: `flatted` (a transitive npm
+    # dependency) ships a Go port at frontend/node_modules/flatted/golang/pkg/.
+    # Without this, golangci-lint type-checks and lints third-party vendored code
+    # and reports findings the team cannot action. Verified present in this repo.
+    paths:
+      - "frontend/node_modules"
+      - "promptfoo_engine/node_modules"
+      - "third_party"
+    presets:
+      # v2 equivalents of the classic exclude presets. These drop the known
+      # false-positive families (EXC0001 errcheck on os.Close, EXC0002 golint
+      # comment rules, EXC0011 stylecheck, ...). Removing them inflates the
+      # count with noise that hides the real signal.
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Test fixtures legitimately ignore encoding errors when building httptest
+      # bodies; errcheck on _test.go would emit ~150 findings and bury the
+      # production signal. This is a PATH rule — note it is not
+      # `ignore-string-values`, which matches literal values, not file paths.
+      # Re-enable in phase 2 if the production backlog reaches zero.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Non-test blank assignments are the actual audit finding — NOT excluded.
+
+issues:
+  # The defaults (max-issues-per-linter: 50, max-same-issues: 3) SILENTLY TRUNCATE
+  # the report. With them, goconst reported exactly "50" — which is the cap, not
+  # the true count. A backlog inventory built on truncated numbers is worse than
+  # no inventory, because it looks authoritative. 0 = unlimited.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+severity:
+  # Phase 1: everything is a warning. Note that severity is PRESENTATION ONLY;
+  # it does NOT change the process exit code. Verified in v2.6.2 source
+  # (run.go setExitCodeIfIssuesFound applies run.issues-exit-code regardless of
+  # severity). The non-blocking behaviour comes from --issues-exit-code=0 in
+  # scripts/lint_go.sh. Both are set explicitly so nobody has to guess why CI is
+  # green with warnings on the board.
+  default: warning
+  rules:
+    # Silence is the one thing that must not be downgraded: a misconfigured
+    # linter that errors out must still surface as an error. ci.yml enforces
+    # this independently via exit-code classification, and this rule makes the
+    # report itself honest about it.
+    - severity: error
+      linters:
+        - govet
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+      colors: false

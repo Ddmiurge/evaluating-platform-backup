@@ -98,6 +98,90 @@ jobs:
           fi
           echo "OK: no sensitive files tracked"
 
+  golangci:
+    name: golangci-lint (warn-only, fail-closed)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evaluating_platform
+    env:
+      # Pinned to an exact version, never `latest`. The linter's config schema,
+      # default settings and even linter names change between releases (v1 -> v2
+      # renamed most keys: linters-settings -> linters.settings, run.skip-dirs ->
+      # linters.exclusions.paths, ...). `latest` would let someone else's release
+      # silently change what this gate means, or fail the build on a schema
+      # rename. MUST stay in sync with the version documented in .golangci.yml.
+      GOLANGCI_LINT_VERSION: v2.6.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # lint_go.sh classifies the linter's exit code and (in phase 2) diffs
+          # against a base rev, which needs real history.
+          fetch-depth: 0
+
+      # setup-go's `cache` also covers GOCACHE, which is where golangci-lint v2
+      # keeps its analysis cache (it resolves os.UserCacheDir, verified in
+      # internal/go/cache/default.go). That is the expensive part of this job —
+      # re-type-checking the module — so it must not be left uncached.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: evaluating_platform/go.mod
+          cache-dependency-path: evaluating_platform/go.sum
+
+      # NOT using golangci/golangci-lint-action, deliberately:
+      #  - that action always RUNS the linter itself (runs.main = dist/run/index.js);
+      #    there is no install-only mode. Its own step would exit 1 on the 186
+      #    existing findings, which is exactly the phase-1 behaviour we are
+      #    avoiding. We need control over the exit code, not just the install.
+      #  - v6+ removed the action's `annotations` option and the `github-actions`
+      #    output format, so it cannot produce line annotations for us anyway.
+      # The official install.sh below is the same script that action uses.
+      - name: cache golangci-lint binary
+        id: gcl-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/gclbin
+          key: golangci-lint-${{ runner.os }}-${{ runner.arch }}-${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: install golangci-lint (${{ env.GOLANGCI_LINT_VERSION }})
+        if: steps.gcl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b /tmp/gclbin "${GOLANGCI_LINT_VERSION}"
+          /tmp/gclbin/golangci-lint --version
+
+      - name: expose golangci-lint on PATH
+        run: echo "/tmp/gclbin" >> "$GITHUB_PATH"
+
+      # Why a wrapper script instead of calling golangci-lint directly:
+      #  - FAIL-CLOSED: `golangci-lint run` exits 1 when it finds issues AND
+      #    exits 3 when it crashes (bad flag, unloadable config, type-check
+      #    error). A step that only treats "non-zero" as failure cannot tell
+      #    "your code has warnings" from "the linter never ran" — and the second
+      #    must never pass silently. lint_go.sh classifies the exit code and
+      #    hard-fails on anything that is not a clean run or a findings run.
+      #  - ANNOTATIONS: golangci-lint v2.6.2 has no `github-actions` output
+      #    format (verified against its shipped JSON schema: checkstyle,
+      #    code-climate, html, json, junit-xml, sarif, tab, teamcity, text), so
+      #    the ::warning file=,line= annotations are emitted by the script from
+      #    the JSON report rather than re-parsed out of human-readable text.
+      #
+      # Phase 1 = warn, do not block. Findings become ::warning annotations plus
+      # a job summary; the step passes. It still FAILS if the tool itself failed.
+      # That asymmetry is what makes adopting this safe before the backlog is
+      # triaged: the gate can already catch a broken linter, it just does not
+      # yet block on legacy findings.
+      - name: golangci-lint (non-blocking findings)
+        env:
+          # Phase 2 (deliberately NOT enabled): flip these to make NEW code
+          # blocking once the backlog is triaged. Do NOT reach for blanket
+          # exclusions to make the numbers look small instead.
+          # LINT_STRICT: '1'
+          # LINT_NEW_FROM_REV: 'origin/main'
+          LINT_STRICT: '0'
+        run: ./scripts/lint_go.sh
+
 # NOTE (product/architecture plan, see audit-2026-10-09/):
 #   - DD-7 (LANDED, U1): catalog-consistency assertion is in place. The backend
 #     job above runs `go test ./...`, which now executes
