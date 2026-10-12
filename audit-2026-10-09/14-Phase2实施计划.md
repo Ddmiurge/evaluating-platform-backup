@@ -19,6 +19,27 @@
 | **U4 / U5** | 判定分轨/ 引擎 job 落库 | ⬇️ **本文件纳入 Phase 2 序列，一并排期** |
 | U6~U10 | Phase 2 能力建设 | ▶ 本文件排期对象 |
 
+### 0.1 U3-b 回写（2026-10-11，`client.go` 分层落地）
+
+> 详细实测见 `11-U3结构治理详细设计.md` §7.7。本节只记**对本文件排期有影响**的结论。
+
+| 事项 | 结论 |
+|---|---|
+| `client.go` 分层 | ✅ **已完成**。1566 行 → `transport.go`(193) + `client_evaluation.go`(740) + `client_runtime.go`(487) + `client_legacy.go`(216)，方法集 **40/40 零丢失**、覆盖率 **3275/4566 零漂移** |
+| `artifact_service` / `llm_judge` 分层 | ❌ **未做，且当前架构下不可达**。实测依赖面 **10 个**（非规划的 7 个），搬入 `redteam/` 子包触发 `import cycle not allowed`（编译器实证，非推断）。**方案 B 裁定：维持现状**，「红队子包物理隔离」待后续单独立项 |
+| 对 U4 的影响 | U4 改`redteam_artifact_service.go` 时，**该文件仍在父包 `maclaw`**，不是子包。原文④「与 U3-b 已做的 `artifact_service`/`llm_judge` 分层对齐，改动落在新分层位置」**已失效并修正** |
+| 对 U9 的影响 | `RuntimeAppConfig` 现居 `client_runtime.go`（与 4 个配置方法同文件），U9 涉及其DTO 时按新位置定位 |
+
+**命名判据回写（对后续重构有普适价值）**：
+
+`transport.go` 承载原 `client.go` 骨架（Config / Client / 三网关接口 /收发原语），**不只是命名调整** —— 它是 **git rename 检测能认的继承者**。git 的 rename 检测逐 commit 判定并记入历史，相似度阈值默认 50%；拆分后 `transport.go` 只保留原文件 12% 内容，**低于阈值会导致 `git log --follow` 断链**。
+
+解法：拆成两个 commit（先纯 rename 100% 相似 → git 记为 `R`；再拆内容），实测 `git log --follow -- transport.go` 默认参数可追溯 **7/7 全通**。
+
+> **判据：文件重命名与拆分，以「能否保留 git 历史」为判据，而非以行数或语义占比。**
+> 若把原 `client.go` 整体改名为 `client_evaluation.go`，则 `transport.go` 反而成为断链的那个。
+> 同理，**纯 rename 只能保住一个文件的历史**，另外 3 个在 git 眼中是新增文件（`-M10%` 下可追溯）。
+
 **基线事实（2026-10-10 实测，本计划全部以此为准）**：
 
 | 事实 | 值 | 证据 |
@@ -104,7 +125,7 @@ graph TB
 | **批次目标** | 报告按**本次实际链路**显示判定口径，加`judge_track` 字段 + 页脚注说明两套口径差异；安全分按所选模式计算。承接 `04` DD-2=A（分列 + 脚注）、DD-5=A（复用同一 schema + `engine` 字段）。 |
 | **前置依赖** | 无（U1/U2 已让两侧 category/severity 同源，报告口径才可对齐） |
 | **涉及文件** |改：`internal/maclaw/redteam_artifact_service.go`（报告 schema + `reportSections`）、`internal/maclaw/promptfoo_engine_bridge.go`（写入 `judge_track=engine`）、`internal/maclaw/redteam_bridge.go`（写入 `judge_track=platform`）；报告前端组件（报告卡 + PDF 页脚）；`evaluating_platform/docs/architecture/*` |
-| **关键实现要点** | ① 报告 schema 增 `judge_track`（`platform` \| `engine`），**向后兼容**：旧报告该字段为空时按 `metadata.engine` 推断，不报错；② 报告卡与 PDF **页脚**加一句口径说明（不是正文，避免污染结论）；③ **不引入统一评分**（明确不做 DD-2 的 C 方案，避免过早收敛）；④ 与 U3-b 已做的 `artifact_service`/`llm_judge` 分层对齐，改动落在新分层位置。 |
+| **关键实现要点** | ① 报告 schema 增 `judge_track`（`platform` \| `engine`），**向后兼容**：旧报告该字段为空时按 `metadata.engine` 推断，不报错；② 报告卡与 PDF **页脚**加一句口径说明（不是正文，避免污染结论）；③ **不引入统一评分**（明确不做 DD-2 的 C 方案，避免过早收敛）；④ 改动落在 U3-b 分层后的位置（见下方 §0.1 回写）。 |
 | **验收标准** | ① 同一目标分别走两条链路，报告 `judge_track` 与分数口径**自洽**；② PDF 渲染正常（`redteam_report_pdf_layout_v2`）；③ 旧报告（字段为空）仍可渲染；④ 覆盖率不降（见 §4纪律） |
 | **可执行验收** | ```bash<br>cd evaluating_platform && /Users/huangqixu/sdk/go/bin/go build ./... && /Users/huangqixu/sdk/go/bin/go test ./...<br>cd frontend && npm run build && npm test``` |
 | **风险等级** | 🟠 中（触及报告渲染） |
