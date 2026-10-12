@@ -117,17 +117,22 @@ cover_ratio() {
 # 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
 # 永久拒绝出结论。当前值对应 Phase 3 开篇收尾（4753 块 / 3434 覆盖，72.25%）：
 # U10 收尾 4563/3267（71.60%）→ U9 收尾 4566/3271（71.64%）→ U3-b Step A
-# 收尾 4566/3275（71.73%）→ Phase 3 开篇 4753/3434（72.25%，+0.52pp）。
+# 收尾 4566/3275（71.73%）→ Phase 3 开篇 4753/3434（72.25%，+0.52pp）
+# → Task #20 P1 审计修复收尾 4756/3437（72.27%）。
 #
-# ⚠️ 本次**语句块总数变化**（4566 → 4753，+187），因此 profile 与两个常数
-# 一起重建。变化来自 Phase 3 的新增代码，不是口径变更：
-#   - promptfoo_strategy_catalog.go（动态发现的策略目录 + 可用性判定）
-#   - promptfoo_custom_strategy.go / _resolver.go（策略包发布校验与治理）
-#   - 相应测试：promptfoo_strategy_catalog_test.go、promptfoo_custom_strategy_test.go、
-#     promptfoo_custom_strategy_bridge_test.go（含生产出口治理）
-# 覆盖率**上升** 0.52pp（3275→3434 覆盖块），是护栏的净收益：新代码全部带测试，
-# 且新增测试打的是生产出口（PreparePromptfooEngineRun / SaveResource）而非 helper。
+# ⚠️ 最近一次**语句块总数变化**（4753 → 4756，+3），因此 profile 与两个常数
+# 一起重建。变化来自 P1 审计修复（JSONB 损坏不再被静默吞掉）的新增代码，
+# 不是口径变更：
+#   - internal/maclaw/data_corruption.go（跨层降级契约 + IsPartialCorruption）
+#   - internal/maclaw/resource_store_service.go（ListResources 降级放行分支）
+#   - internal/maclaw/data_corruption_test.go（对应测试）
+# 覆盖率**上升** 0.02pp（3434 → 3437 覆盖块，3 块新增语句全部带测试），
+# 是护栏的净收益：新代码全部有测试，且测试打在降级判定这个**唯一授权点**上
+# （正向识别 + 反向拒绝两个方向都断言 —— 只测一个方向等于半边护栏）。
 # 阈值 0.5pp **未放宽**，本次是靠真实上升而非调宽阈值通过的。
+#
+# 更早一次：Phase 3 开篇（4566 → 4753，+187），来自策略目录/自定义策略包
+# 等Phase 3 新增代码；此前 Phase 3 过程中的两次重建见下方历史行。
 #
 # 历史：U8 收尾 4407/3140（71.25%）→ U10 收尾 4563/3267（71.60%，+0.35pp）。
 #
@@ -135,8 +140,8 @@ cover_ratio() {
 # resolveCustomPlugins 职责重叠）而重取一次基线 —— 那次删除同时移除了对应的
 # resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4753}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3434}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4756}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3437}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

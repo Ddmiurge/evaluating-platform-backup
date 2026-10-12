@@ -39,6 +39,18 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 		logger.SetLevel(logger.INFO)
 	}
+
+	// P1-5（审计 2026-10-12）：release 模式下强制校验 JWT_SECRET /
+	// CRYPTO_MASTER_KEY，不满足即拒绝启动（fail-closed）。
+	//
+	// 放在 logger 初始化之后、任何 DB / Redis / 存储连接之前：密钥不达标时
+	// 不应该先把外部依赖拉起来再失败，那会在日志里留下「像是启动成功」的
+	// 假象。原先这里对 master_key 只 Warn，服务照常启动，部署者不会知道自己
+	// 在无密钥状态下运行 —— 见 pkg/config/secrets.go 的判据说明。
+	if err := cfg.ValidateProductionSecrets(); err != nil {
+		log.Fatalf("[FATAL] %v", err)
+	}
+
 	logger.Info("config loaded", map[string]interface{}{
 		"mode":  cfg.Server.Mode,
 		"port":  cfg.Server.Port,

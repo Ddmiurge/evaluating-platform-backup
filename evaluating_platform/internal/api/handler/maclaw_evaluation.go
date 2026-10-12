@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"evaluating_platform/internal/maclaw"
+	"evaluating_platform/pkg/logger"
 )
 
 type MaclawEvaluationHandler struct {
@@ -76,9 +77,16 @@ func (h *MaclawEvaluationHandler) ListResources(c *gin.Context) {
 		IncludeInactive: includeInactive,
 		Limit:           limit,
 	})
-	if err != nil {
+	if err != nil && !maclaw.IsPartialCorruption(err) {
 		writeMaclawError(c, err)
 		return
+	}
+	// 降级放行：部分资源行因DB 脏数据被跳过，items 仍然可用。
+	// 记 ERROR 后继续返回 200，不让一条脏行把整个资源列表打成 500。
+	if err != nil {
+		logger.Error("maclaw resource list partially degraded", map[string]interface{}{
+			"err": err.Error(),
+		})
 	}
 	if h.resourceProjection != nil && isEnterpriseLikeRole(c.GetString("user_role")) {
 		items, err = h.resourceProjection.ListEnterpriseCatalog(c.Request.Context(), items, maclaw.EvaluationResourceQuery{

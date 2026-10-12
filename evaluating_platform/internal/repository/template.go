@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"evaluating_platform/internal/model"
+	"evaluating_platform/pkg/logger"
 )
 
 type TemplateRepository struct {
@@ -23,9 +25,13 @@ func NewTemplateRepository(pool *pgxpool.Pool) *TemplateRepository {
 const tplSelectCols = ` id, expert_id, upload_batch_id, upload_batch_name, sub_type, name, description, content, variables,
     status, visibility, created_at, updated_at `
 
-func scanTemplate(row interface {
-	Scan(dest ...interface{}) error
-}) (*model.Template, error) {
+// scanTemplate 把一行 templates 映射成领域对象。
+//
+// 审计 #6：原先是 `_ = json.Unmarshal(varsJSON, &t.Variables)`。variables
+// 是提示词模板声明的占位符 —— 它损坏后归零，意味着渲染时不做任何替换，
+// 于是**真正发往靶场的攻击文本与被评审的那份悄悄不同**：评测照跑，
+// 测的却是另一个东西。因此归类为关键列，fail-closed。
+func scanTemplate(row rowScanner) (*model.Template, error) {
 	var t model.Template
 	var varsJSON []byte
 	err := row.Scan(
@@ -43,20 +49,26 @@ func scanTemplate(row interface {
 		&t.CreatedAt,
 		&t.UpdatedAt,
 	)
-	if err == nil && len(varsJSON) > 0 {
-		_ = json.Unmarshal(varsJSON, &t.Variables)
+	if err != nil {
+		return nil, err
 	}
-	return &t, err
+	if err := decodeCriticalJSONB("templates", t.ID.String(), "variables", varsJSON, &t.Variables); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 func (r *TemplateRepository) Create(ctx context.Context, t *model.Template) error {
-	varsJSON, _ := json.Marshal(t.Variables)
+	varsJSON, err := json.Marshal(t.Variables)
+	if err != nil {
+		return fmt.Errorf("marshal template variables: %w", err)
+	}
 	query := `
         INSERT INTO templates
             (id, expert_id, upload_batch_id, upload_batch_name, sub_type, name, description, content, variables, status, visibility)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     `
-	_, err := r.pool.Exec(ctx, query,
+	_, err = r.pool.Exec(ctx, query,
 		t.ID,
 		t.ExpertID,
 		t.UploadBatchID,
@@ -85,7 +97,10 @@ func (r *TemplateRepository) GetByID(ctx context.Context, id uuid.UUID) (*model.
 }
 
 func (r *TemplateRepository) Update(ctx context.Context, t *model.Template) error {
-	varsJSON, _ := json.Marshal(t.Variables)
+	varsJSON, err := json.Marshal(t.Variables)
+	if err != nil {
+		return fmt.Errorf("marshal template variables: %w", err)
+	}
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE templates SET name=$1, description=$2, content=$3, variables=$4,
          sub_type=$5, updated_at=NOW()
@@ -142,14 +157,11 @@ func (r *TemplateRepository) ListByExpert(ctx context.Context, expertID uuid.UUI
 	defer rows.Close()
 
 	templates := make([]model.Template, 0)
-	for rows.Next() {
-		t, err := scanTemplate(rows)
-		if err != nil {
-			return nil, 0, fmt.Errorf("scan template: %w", err)
-		}
-		templates = append(templates, *t)
+	corrupt, err := scanTemplateRows(rows, &templates)
+	if err != nil {
+		return nil, 0, err
 	}
-	return templates, total, nil
+	return templates, total, newPartialCorruptionError("templates", corrupt)
 }
 
 func (r *TemplateRepository) ListPublished(ctx context.Context, subType string, limit, offset int) ([]model.Template, int, error) {
@@ -173,12 +185,37 @@ func (r *TemplateRepository) ListPublished(ctx context.Context, subType string, 
 	defer rows.Close()
 
 	templates := make([]model.Template, 0)
+	corrupt, err := scanTemplateRows(rows, &templates)
+	if err != nil {
+		return nil, 0, err
+	}
+	return templates, total, newPartialCorruptionError("templates", corrupt)
+}
+
+// scanTemplateRows 逐行扫描模板列表，坏行跳过并记录定位信息。
+//
+// 为什么列表不因一行坏模板整体失败：与 engine_runs 同理 —— 已经落库的
+// 历史脏数据不应让整个模板列表页打不开。降级事实以 PartialCorruptionError
+// 上抛，由调用方决定「记日志 + 返回 200」还是「500」。
+func scanTemplateRows(rows rowsScanner, out *[]model.Template) ([]*CorruptRowError, error) {
+	var corrupt []*CorruptRowError
 	for rows.Next() {
 		t, err := scanTemplate(rows)
 		if err != nil {
-			return nil, 0, fmt.Errorf("scan template: %w", err)
+			var bad *CorruptRowError
+			if errors.As(err, &bad) {
+				logger.Error("skipping corrupt template row", map[string]interface{}{
+					"table":  bad.Table,
+					"row":    bad.RowID,
+					"column": bad.Field,
+					"err":    bad.Err.Error(),
+				})
+				corrupt = append(corrupt, bad)
+				continue
+			}
+			return corrupt, fmt.Errorf("scan template: %w", err)
 		}
-		templates = append(templates, *t)
+		*out = append(*out, *t)
 	}
-	return templates, total, nil
+	return corrupt, rows.Err()
 }

@@ -13,6 +13,7 @@ import (
 
 	"evaluating_platform/internal/maclaw"
 	"evaluating_platform/internal/model"
+	"evaluating_platform/pkg/logger"
 )
 
 type MaclawResourcePublicationRepository struct {
@@ -333,8 +334,23 @@ func (r *MaclawResourceShadowRepository) Count(ctx context.Context) (int, error)
 	return count, nil
 }
 
-func scanResourcePublications(rows pgx.Rows) ([]model.MaclawResourcePublication, error) {
+// scanResourcePublications 逐行扫描资源发布记录。
+//
+// 分级（判据见 json_columns.go）：
+//   - assessment_types → CRITICAL。它经 resource_projection /
+//     capability_catalog 的 capabilityListFromMetadata 回退链变成能力卡片的
+//     RiskTypes（capability_catalog.go:291）。归零等于向能力目录误报
+//     「这个资源不覆盖任何风险类型」，即治理判断失去依据。
+//   - tags / metadata → degradable，但 metadata 同样不是纯展示：它是
+//     risk_types / target_types / languages 的回退来源（capability_catalog.go:291-293），
+//     归零会静默丢掉这些标注。因此按可观测降级处理（记 ERROR），
+//     而不是当作无害字段放过。
+//
+// 结构与 scanEngineRunRows 同构：坏行跳过 + 累积，好行返回，
+// 降级事实以 PartialCorruptionError 上抛。
+func scanResourcePublications(rows rowsScanner) ([]model.MaclawResourcePublication, error) {
 	items := []model.MaclawResourcePublication{}
+	var corrupt []*CorruptRowError
 	for rows.Next() {
 		var item model.MaclawResourcePublication
 		var assessmentTypesRaw, tagsRaw, metadataRaw []byte
@@ -357,9 +373,23 @@ func scanResourcePublications(rows pgx.Rows) ([]model.MaclawResourcePublication,
 		); err != nil {
 			return nil, fmt.Errorf("scan maclaw resource publication: %w", err)
 		}
-		_ = json.Unmarshal(assessmentTypesRaw, &item.AssessmentTypes)
-		_ = json.Unmarshal(tagsRaw, &item.Tags)
-		_ = json.Unmarshal(metadataRaw, &item.Metadata)
+		rowID := item.SourceResourceID
+		if err := decodeCriticalJSONB("maclaw_resource_publications", rowID, "assessment_types", assessmentTypesRaw, &item.AssessmentTypes); err != nil {
+			logger.Error("skipping corrupt maclaw resource publication", map[string]interface{}{
+				"table":  "maclaw_resource_publications",
+				"row":    rowID,
+				"column": "assessment_types",
+				"err":    err.Error(),
+			})
+			var bad *CorruptRowError
+			if errors.As(err, &bad) {
+				corrupt = append(corrupt, bad)
+				continue
+			}
+			return nil, err
+		}
+		decodeDegradableJSONB("maclaw_resource_publications", rowID, "tags", tagsRaw, &item.Tags)
+		decodeDegradableJSONB("maclaw_resource_publications", rowID, "metadata", metadataRaw, &item.Metadata)
 		if item.Metadata == nil {
 			item.Metadata = map[string]string{}
 		}
@@ -368,5 +398,5 @@ func scanResourcePublications(rows pgx.Rows) ([]model.MaclawResourcePublication,
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate maclaw resource publications: %w", err)
 	}
-	return items, nil
+	return items, newPartialCorruptionError("maclaw_resource_publications", corrupt)
 }

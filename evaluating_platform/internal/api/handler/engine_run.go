@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 
 	"evaluating_platform/internal/maclaw"
+	"evaluating_platform/pkg/logger"
 )
 
 const (
@@ -365,9 +366,18 @@ func (h *EngineRunHandler) ListRuns(c *gin.Context) {
 	}
 	sessionID := strings.TrimSpace(c.Query("session_id"))
 	records, err := h.runs.List(c.Request.Context(), userID, sessionID, limit)
-	if err != nil {
+	if err != nil && !maclaw.IsPartialCorruption(err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list engine runs"})
 		return
+	}
+	// 降级放行：DB 里个别历史行的 JSONB 已损坏时，repository 跳过它们并
+	// 上抛可观测的降级错误。这里记ERROR 后仍然返回 200 + 好行 ——
+	// 让一条脏数据把整个 run 列表打成 500，代价远大于少显示一行。
+	// 绝不静默：降级事实必须留痕（见 internal/maclaw/data_corruption.go）。
+	if err != nil {
+		logger.Error("engine run list partially degraded", map[string]interface{}{
+			"err": err.Error(),
+		})
 	}
 	items := make([]gin.H, 0, len(records))
 	for i := range records {

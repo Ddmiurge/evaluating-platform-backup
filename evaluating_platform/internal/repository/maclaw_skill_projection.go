@@ -13,6 +13,7 @@ import (
 
 	"evaluating_platform/internal/maclaw"
 	"evaluating_platform/internal/model"
+	"evaluating_platform/pkg/logger"
 )
 
 type MaclawSkillPublicationRepository struct {
@@ -210,8 +211,23 @@ func normalizeSkillVersionForStore(version string) string {
 	return version
 }
 
-func scanSkillPublications(rows pgx.Rows) ([]model.MaclawSkillPublication, error) {
+// scanSkillPublications 逐行扫描技能发布记录。
+//
+// 分级（判据见 json_columns.go）：
+//   - assessment_types → CRITICAL。经 capability_catalog.go:314 变成能力
+//     卡片的 RiskTypes，归零 = 向能力目录误报「不覆盖任何风险类型」。
+//   - triggers → CRITICAL。经 capability_catalog.go:317 变成 UseWhen，
+//     即**技能选用条件**（"什么时候该用这个技能"）。归零会让红队智能体
+//     在该技能该出手时不出手，或反之——这是选择逻辑被静默改写，
+//     比标签丢失严重得多。
+//   - tags / metadata → degradable，但 metadata 是 risk_types /
+//     target_types / languages / use_when 的回退来源（capability_catalog.go:315-317），
+//     归零会静默丢掉能力标注，因此记 ERROR 而非无声放过。
+//
+// 结构与 scanResourcePublications 同构。
+func scanSkillPublications(rows rowsScanner) ([]model.MaclawSkillPublication, error) {
 	items := []model.MaclawSkillPublication{}
+	var corrupt []*CorruptRowError
 	for rows.Next() {
 		var item model.MaclawSkillPublication
 		var triggersRaw, tagsRaw, assessmentTypesRaw, metadataRaw []byte
@@ -233,10 +249,37 @@ func scanSkillPublications(rows pgx.Rows) ([]model.MaclawSkillPublication, error
 		); err != nil {
 			return nil, fmt.Errorf("scan maclaw skill publication: %w", err)
 		}
-		_ = json.Unmarshal(triggersRaw, &item.Triggers)
-		_ = json.Unmarshal(tagsRaw, &item.Tags)
-		_ = json.Unmarshal(assessmentTypesRaw, &item.AssessmentTypes)
-		_ = json.Unmarshal(metadataRaw, &item.Metadata)
+		rowID := item.SourceSkillName
+		if err := decodeCriticalJSONB("maclaw_skill_publications", rowID, "assessment_types", assessmentTypesRaw, &item.AssessmentTypes); err != nil {
+			logger.Error("skipping corrupt maclaw skill publication", map[string]interface{}{
+				"table":  "maclaw_skill_publications",
+				"row":    rowID,
+				"column": "assessment_types",
+				"err":    err.Error(),
+			})
+			var bad *CorruptRowError
+			if errors.As(err, &bad) {
+				corrupt = append(corrupt, bad)
+				continue
+			}
+			return nil, err
+		}
+		if err := decodeCriticalJSONB("maclaw_skill_publications", rowID, "triggers", triggersRaw, &item.Triggers); err != nil {
+			logger.Error("skipping corrupt maclaw skill publication", map[string]interface{}{
+				"table":  "maclaw_skill_publications",
+				"row":    rowID,
+				"column": "triggers",
+				"err":    err.Error(),
+			})
+			var bad *CorruptRowError
+			if errors.As(err, &bad) {
+				corrupt = append(corrupt, bad)
+				continue
+			}
+			return nil, err
+		}
+		decodeDegradableJSONB("maclaw_skill_publications", rowID, "tags", tagsRaw, &item.Tags)
+		decodeDegradableJSONB("maclaw_skill_publications", rowID, "metadata", metadataRaw, &item.Metadata)
 		if item.Metadata == nil {
 			item.Metadata = map[string]string{}
 		}
@@ -245,5 +288,5 @@ func scanSkillPublications(rows pgx.Rows) ([]model.MaclawSkillPublication, error
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate maclaw skill publications: %w", err)
 	}
-	return items, nil
+	return items, newPartialCorruptionError("maclaw_skill_publications", corrupt)
 }

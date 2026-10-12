@@ -13,6 +13,7 @@ import (
 
 	"evaluating_platform/internal/maclaw"
 	"evaluating_platform/internal/model"
+	"evaluating_platform/pkg/logger"
 )
 
 type MaclawResourceRecordRepository struct {
@@ -160,47 +161,87 @@ func (r *MaclawResourceRecordRepository) GetResource(ctx context.Context, userID
 	return &items[0], nil
 }
 
-func scanMaclawResourceRecords(rows pgx.Rows) ([]model.MaclawResourceRecord, error) {
+// scanOneMaclawResourceRecord 扫描单行。返回 *CorruptRowError 表示该行
+// 的关键列（assessment_types）损坏。
+//
+// P1-3（审计 2026-10-12）：此函数原先对三个 JSONB 列全部丢弃 Unmarshal
+// 错误，其中两处还用了 `if err == nil` 保护而第三处没有 —— 风格不统一，
+// 且被保护的那两处同样在静默零值化。本批次统一走
+// decodeCriticalJSONB / decodeDegradableJSONB，不再有裸 `_ =`。
+func scanOneMaclawResourceRecord(row rowsScanner) (*model.MaclawResourceRecord, error) {
+	var item model.MaclawResourceRecord
+	var assessmentTypesRaw, tagsRaw, metadataRaw []byte
+	if err := row.Scan(
+		&item.ID,
+		&item.OwnerUserID,
+		&item.OwnerMaclawTenantID,
+		&item.Handle,
+		&item.Name,
+		&item.Description,
+		&item.Kind,
+		&item.Version,
+		&item.Status,
+		&item.Enabled,
+		&item.HealthStatus,
+		&assessmentTypesRaw,
+		&tagsRaw,
+		&item.Summary,
+		&item.EncryptedPayload,
+		&item.PayloadKeyID,
+		&metadataRaw,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, pgx.ErrNoRows
+		}
+		return nil, fmt.Errorf("scan maclaw resource: %w", err)
+	}
+
+	// 关键列：声明该资源适用哪些评测套件，损坏即 fail-closed。
+	// 归一化：失败时用 item.ID.String() 定位（此时 ID 已由 Scan 填好）。
+	if err := decodeCriticalJSONB("maclaw_resources", item.ID.String(), "assessment_types", assessmentTypesRaw, &item.AssessmentTypes); err != nil {
+		return nil, err
+	}
+	// 展示性列：标签与自由键值，损坏降级并记日志。
+	decodeDegradableJSONB("maclaw_resources", item.ID.String(), "tags", tagsRaw, &item.Tags)
+	decodeDegradableJSONB("maclaw_resources", item.ID.String(), "metadata", metadataRaw, &item.Metadata)
+	if item.Metadata == nil {
+		item.Metadata = map[string]string{}
+	}
+	return &item, nil
+}
+
+// scanMaclawResourceRecords 逐行扫描资源列表。
+//
+// 与 scanEngineRunRows 同构：坏行跳过 + 记日志，好行返回，并把降级事实
+// 作为 PartialCorruptionError 与结果并存地上抛（理由见 json_columns.go）。
+func scanMaclawResourceRecords(rows rowsScanner) ([]model.MaclawResourceRecord, error) {
 	items := []model.MaclawResourceRecord{}
+	var corrupt []*CorruptRowError
 	for rows.Next() {
-		var item model.MaclawResourceRecord
-		var assessmentTypesRaw, tagsRaw, metadataRaw []byte
-		if err := rows.Scan(
-			&item.ID,
-			&item.OwnerUserID,
-			&item.OwnerMaclawTenantID,
-			&item.Handle,
-			&item.Name,
-			&item.Description,
-			&item.Kind,
-			&item.Version,
-			&item.Status,
-			&item.Enabled,
-			&item.HealthStatus,
-			&assessmentTypesRaw,
-			&tagsRaw,
-			&item.Summary,
-			&item.EncryptedPayload,
-			&item.PayloadKeyID,
-			&metadataRaw,
-			&item.CreatedAt,
-			&item.UpdatedAt,
-		); err != nil {
+		item, err := scanOneMaclawResourceRecord(rows)
+		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("scan maclaw resource: %w", err)
+			var bad *CorruptRowError
+			if errors.As(err, &bad) {
+				logger.Error("skipping corrupt maclaw resource row", map[string]interface{}{
+					"table":  bad.Table,
+					"row":    bad.RowID,
+					"column": bad.Field,
+					"err":    bad.Err.Error(),
+				})
+				corrupt = append(corrupt, bad)
+				continue
+			}
+			return nil, err
 		}
-		_ = json.Unmarshal(assessmentTypesRaw, &item.AssessmentTypes)
-		_ = json.Unmarshal(tagsRaw, &item.Tags)
-		_ = json.Unmarshal(metadataRaw, &item.Metadata)
-		if item.Metadata == nil {
-			item.Metadata = map[string]string{}
-		}
-		items = append(items, item)
+		items = append(items, *item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate maclaw resources: %w", err)
 	}
-	return items, nil
+	return items, newPartialCorruptionError("maclaw_resources", corrupt)
 }

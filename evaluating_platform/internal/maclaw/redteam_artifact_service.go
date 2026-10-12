@@ -151,14 +151,16 @@ func (s *RedteamArtifactService) ListEvidence(ctx context.Context, userID uuid.U
 		return nil, errors.New("platform user id is required")
 	}
 	records, err := s.store.ListEvidence(ctx, userID, q)
-	if err != nil {
+	// 降级放行：DB 里个别证据行的 JSONB 损坏时，records 仍可用，
+	// 不应让整个证据列表 500（见 data_corruption.go）。
+	if err != nil && !IsPartialCorruption(err) {
 		return nil, err
 	}
 	out := make([]EvaluationEvidenceSummary, 0, len(records))
 	for i := range records {
 		out = append(out, evidenceSummaryFromRecord(&records[i]))
 	}
-	return out, nil
+	return out, err
 }
 
 func (s *RedteamArtifactService) GetEvidence(ctx context.Context, userID uuid.UUID, evidenceID string) (*EvaluationEvidenceSummary, error) {

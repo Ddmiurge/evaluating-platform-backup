@@ -157,14 +157,16 @@ func (s *ResourceStoreService) ListResources(ctx context.Context, userID uuid.UU
 		return nil, err
 	}
 	records, err := s.store.ListResources(ctx, userID, q)
-	if err != nil {
+	// 降级放行：部分行因DB 脏数据被跳过时，records 仍然有效，
+	// 不应让整个资源列表 500（见 data_corruption.go）。
+	if err != nil && !IsPartialCorruption(err) {
 		return nil, err
 	}
 	out := make([]EvaluationResourceSummary, 0, len(records))
 	for i := range records {
 		out = append(out, *resourceSummaryFromRecord(&records[i]))
 	}
-	return out, nil
+	return out, err
 }
 
 func (s *ResourceStoreService) PreviewResource(ctx context.Context, userID uuid.UUID, idOrHandle string) (*EvaluationResourcePreview, error) {
