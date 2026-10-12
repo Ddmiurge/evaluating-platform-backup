@@ -55,16 +55,29 @@ func TestPromptfooStrategyCatalogL1Expansion(t *testing.T) {
 	for _, id := range ids {
 		byID[id] = true
 	}
+	// Phase 3 开篇 · 任务 1: `simba`、`retry`、`mathPrompt` are no longer
+	// required, because they are no longer offered — all three fail or do
+	// nothing when forwarded (see promptfoo_plugin_catalog.go for the measured
+	// reasons). Their absence is asserted below so a future edit cannot quietly
+	// re-add a strategy that cannot run.
 	for _, want := range []string{
 		"direct", "role-play", "encoding", "multi-turn",
 		"crescendo", "assumed-knowledge", "few-shot", "homoglyph", "many-shot", "translate",
 		"base64", "rot13", "hex", "leetspeak", "otherEncodings",
-		"goat", "hydra", "goblin", "simba", "iterative", "iterative:tree", "iterative:meta",
-		"bestOfN", "retry", "likert", "citation", "mathPrompt",
+		"goat", "hydra", "goblin", "iterative", "iterative:tree", "iterative:meta",
+		"bestOfN", "likert", "citation",
 		"mischievousUser", "authoritativeMarkupInjection", "singleTurnComposite",
+		// Newly reachable through discovery.
+		"morse", "piglatin", "camelcase", "emoji", "jailbreak-templates", "layer",
 	} {
 		if !byID[want] {
 			t.Fatalf("missing strategy id %q in %v", want, ids)
+		}
+	}
+	for _, withdrawn := range []string{"simba", "retry", "mathPrompt"} {
+		if byID[withdrawn] {
+			t.Errorf("strategy %q is offered again, but it provably cannot run here "+
+				"(simba: deprecated no-op; retry: needs targetIds; mathPrompt: needs an OpenAI key)", withdrawn)
 		}
 	}
 }

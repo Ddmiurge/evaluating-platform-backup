@@ -117,6 +117,37 @@ export interface RunRequest {
    * `assertNoCustomPluginsOnPlanA`.
    */
   custom_plugins?: EngineCustomPlugin[];
+
+  /**
+   * Phase 3 开篇 · 任务 2 · Expert-published strategy packages.
+   *
+   * Unlike `custom_plugins` there is no workdir file and no `file://`
+   * reference: a custom strategy is inlined into `redteam.strategies` as
+   * `{ id: "custom:<variant>", config: { strategyText } }`, which is the only
+   * form promptfoo accepts without executing code (a `file://` strategy is
+   * necessarily `.js`/`.ts` — `loadStrategy` enforces `isJavascriptFile`).
+   *
+   * **Plan C only**, for the same reason as plugins: Plan A synthesizes attack
+   * prompts itself and never invokes promptfoo's strategy machinery, so a
+   * package's `strategyText` would be silently ignored there. See
+   * `assertNoCustomStrategiesOnPlanA`.
+   */
+  custom_strategies?: EngineCustomStrategy[];
+}
+
+/**
+ * Phase 3 开篇 · 任务 2 · One published strategy package, as shipped by the BFF.
+ *
+ * `handle` is the publication handle admin governance acts on and the package's
+ * identity; `strategy_id` is the `custom:<variant>` id promptfoo receives;
+ * `definition` is the canonical YAML, inlined rather than written to disk.
+ */
+export interface EngineCustomStrategy {
+  handle: string;
+  strategy_id: string;
+  definition: string;
+  source_expert_user_id?: string;
+  version?: string;
 }
 
 /**

@@ -263,18 +263,47 @@ export const ENGINE_STRATEGY_OPTIONS: ReadonlyArray<EngineCatalogOption> = [
 { id: 'goat', name: 'GOAT 多轮越狱' },
 { id: 'hydra', name: 'Hydra 多分支越狱' },
 { id: 'goblin', name: 'Goblin 多轮攻击' },
-{ id: 'simba', name: 'Simba 攻击链' },
 { id: 'iterative', name: '迭代越狱' },
 { id: 'iterative:tree', name: '树搜索越狱' },
 { id: 'iterative:meta', name: '元提示越狱' },
 { id: 'bestOfN', name: 'Best-of-N 多次采样', requires_remote_generation: true },
-{ id: 'retry', name: '重试攻击' },
 { id: 'likert', name: 'Likert 量表包装', requires_remote_generation: true },
 { id: 'citation', name: '引用包装', requires_remote_generation: true },
-{ id: 'mathPrompt', name: '数学题包装' },
 { id: 'mischievousUser', name: '顽劣用户' },
 { id: 'authoritativeMarkupInjection', name: '权威标记注入' },
 { id: 'singleTurnComposite', name: '单轮组合攻击', requires_remote_generation: true },
+/* ---- Phase 3 开篇 · 任务 1 · 由 promptfoo 动态发现得到的原生策略 ----
+ *
+ * 这 7 项此前用户根本选不到：平台的策略清单是手写的 30 条，而 promptfoo
+ * 0.123.0 有 35 条原生策略。手写清单没有漂移机制，漏掉的就是不可用。
+ * 清单本体由 `scripts/gen_remote_dep.mjs` 同级脚本 gen_strategy_catalog.mjs
+ * 从 promptfoo 运行时求得（不是 grep 字面量），前端这一份必须与后端
+ * `promptfooStrategyCatalog` 逐条一致 —— 由 gen_frontend_options_test.go 断言。
+ *
+ * 同时移除了三条**看似可选、实则跑不通**的旧项（Phase 3 实测发现）：
+ *   simba      —— promptfoo 已废弃，执行体 log 一句就返回空用例数组，
+ *                 运行成功但覆盖为 0（U6 要消除的静默 0 覆盖）
+ *   retry      —— 需要 config.targetIds，平台只下发 id 字段，
+ *                 promptfoo 在评测进行中抛 "No target IDs found in config"
+ *   mathPrompt —— 远程生成屏蔽后回落到直连 OpenAI 的分支，报 "API key is not set"
+ * 这三条都不在 U6 的远程依赖表里，所以此前一直没被拦住。
+ */
+{ id: 'morse', name: '摩斯电码' },
+{ id: 'piglatin', name: '猪拉丁文' },
+{ id: 'camelcase', name: '驼峰拆分' },
+{ id: 'emoji', name: 'Emoji 替换' },
+{ id: 'jailbreak-templates', name: '越狱模板库' },
+{ id: 'layer', name: '多层组合' },
+{ id: 'indirect-web-pwn', name: '间接网页注入' },
+{ id: 'custom', name: '自定义策略' },
+/* ---- 已废弃但仍可用的上游别名 ----
+ *
+ * promptfoo 只 log 一句 deprecated 警告、并不拒绝，所以它们仍然能跑。
+ * 保留但明确标注，避免与它们真正委派到的目标（越狱模板库 / 元提示越狱）
+ * 看起来像两种不同手法。
+ */
+{ id: 'jailbreak', name: '元提示越狱（旧别名）' },
+{ id: 'prompt-injection', name: '提示注入模板（旧别名）' },
 ]
 
 /* ------------------------------------------------------------------ *

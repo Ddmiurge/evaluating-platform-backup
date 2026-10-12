@@ -70,6 +70,22 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 		in.Payload = canonical
 		in.Metadata = CustomPluginPublicationMetadata(def, in.Metadata)
 	}
+	// Phase 3 · 任务 2: strategy packages, guarded at the same single write
+	// exit and for the same reason — the shadow-copy path re-saves a published
+	// package through this store with no handler in the path, so a guard in the
+	// HTTP handler alone would be defeated.
+	if in.Kind == EvaluationResourceKindPromptfooStrategy {
+		def, strategyID, err := ValidateAndParseCustomStrategyPublication(in)
+		if err != nil {
+			return nil, err
+		}
+		canonical, err := marshalCustomStrategyDefinition(def)
+		if err != nil {
+			return nil, err
+		}
+		in.Payload = canonical
+		in.Metadata = CustomStrategyPublicationMetadata(strategyID, in.Metadata)
+	}
 	userID, err := normalizeUserID(userID)
 	if err != nil {
 		return nil, err

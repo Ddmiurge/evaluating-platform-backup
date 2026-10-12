@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import promptfoo from 'promptfoo';
 import {
   assertNativeSlots,
   assertSafeProviderUrl,
@@ -139,15 +140,16 @@ describe('resolveNativeStrategies — platform ids → promptfoo ids', () => {
       { id: 'hydra' },
       { id: 'mischievousUser' },
       { id: 'authoritativeMarkupInjection' },
-      { id: 'mathPrompt' },
     ]);
     expect(native.map((s) => s.id)).toEqual([
       'jailbreak:tree',
       'jailbreak:hydra',
       'mischievous-user',
       'authoritative-markup-injection',
-      'math-prompt',
     ]);
+    // `iterative` and `iterative:tree` share one promptfoo id and promptfoo
+    // rejects duplicates, so the collapse is intentional — asserted here because
+    // it means a selection of five yields four forwarded strategies.
     expect(planAOnly).toEqual([]);
   });
 
@@ -202,18 +204,50 @@ describe('nativeStrategyMap — single source of truth, no overlap with U6', () 
     },
   );
 
-  it('classifies exactly the platform-invented dimensions as Plan-A-only', () => {
+  // Phase 3 · `simba`, `retry` and `mathPrompt` join this list. None of them is a
+  // platform-invented dimension — promptfoo really has all three ids — but all
+  // three fail or do nothing when the platform forwards them, and each was
+  // previously mapped as `native`:
+  //
+  //   simba       -> deprecated stub; action logs "will be skipped", returns [].
+  //                  A green run with the strategy reported as applied.
+  //   retry       -> invariant "No target IDs found in config", thrown after
+  //                  the run record is persisted. Needs config the platform
+  //                  does not send.
+  //   math-prompt -> with remote generation fail-closed it calls an OpenAI
+  //                  provider directly and dies with "API key is not set".
+  //
+  // U6's remote-dependency table gates none of them, so none was caught before
+  // this discovery pass. Reclassifying keeps each id resolvable (Plan A
+  // synthesis plus a reason) without forwarding a strategy that cannot run.
+  it('classifies exactly the platform-invented dimensions and the unusable natives as Plan-A-only', () => {
     expect(planAOnlyStrategyIds()).toEqual([
       'assumed-knowledge',
       'direct',
       'encoding',
       'few-shot',
       'many-shot',
+      'mathPrompt',
       'multi-turn',
       'otherEncodings',
+      'retry',
       'role-play',
+      'simba',
       'translate',
     ]);
+  });
+
+  // The `simba` reclassification is a correctness fix, so it is pinned here
+  // rather than left to the list assertion above: this states the property that
+  // matters, which is that no strategy whose action provably returns no cases is
+  // ever forwarded to promptfoo.
+  it('never forwards a strategy that generates zero cases', () => {
+    for (const strategy of promptfoo.redteam.Strategies) {
+      const body = strategy.action.toString();
+      // Only the self-contained empty implementations are provable from source.
+      if (!/return\s*\[\s*\]\s*;?\s*}/.test(body)) continue;
+      expect(nativeStrategyMapping(strategy.id)?.disposition).not.toBe('native');
+    }
   });
 
   it('gives every Plan-A-only entry a human-readable reason', () => {

@@ -205,25 +205,42 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	}
 	plugins = resolved.engineRefs
 	customPlugins := resolved.packages
+	// Phase 3 · 任务 2: the same treatment for expert-published strategy
+	// packages. Placed at the same seam for the same reason — this is the one
+	// function every confirmed engine run passes through, so a strategy package
+	// an admin disabled cannot reach the engine by any other route, and the
+	// refusal happens before credentials are materialized and before the run
+	// record is persisted.
+	strategyRes, err := b.resolveCustomStrategies(ctx, userID, strategies)
+	if err != nil {
+		return nil, err
+	}
+	strategies = strategyRes.engineRefs
+	customStrategies := strategyRes.packages
 	sessionID := firstNonEmptyString(in.ExecutionSessionID, in.SessionID, in.Metadata["session_id"])
 	normalized := PromptfooEngineRunInput{
 		RunID:              strings.TrimSpace(in.RunID),
 		Purpose:            purpose,
 		NumTests:           numTests,
 		Plugins:            resolved.recordIDs,
-		Strategies:         engineRefIDs(strategies),
+		Strategies:         strategyRes.recordIDs,
 		JudgeMode:          string(judgeMode),
 		ExecutionUserID:    userID,
 		ExecutionSessionID: sessionID,
 	}
 
-	// The persisted run record must name the package's own plugin id, never the
-	// `promptfoo-custom:` marker. The marker is a transport detail between this
-	// process and the engine, and the record is what the report and the browser
-	// are built from.
+	// The persisted run record must name the resolved ids, never a transport
+	// marker. Two markers exist and both are internal: `promptfoo-custom:` for
+	// plugin packages and `pf_strategy:` for strategy packages. Using either
+	// here would put a transport detail into the record the report and the
+	// browser are built from.
 	recordRefs := make([]EngineCapabilityRef, 0, len(resolved.recordIDs))
 	for _, id := range resolved.recordIDs {
 		recordRefs = append(recordRefs, EngineCapabilityRef{ID: id})
+	}
+	recordStrategyRefs := make([]EngineCapabilityRef, 0, len(strategyRes.recordIDs))
+	for _, id := range strategyRes.recordIDs {
+		recordStrategyRefs = append(recordStrategyRefs, EngineCapabilityRef{ID: id})
 	}
 
 	stageDurations := map[string]int64{}
@@ -249,7 +266,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if isKnownEngineRunSource(in.Source) {
 		runSource = in.Source
 	}
-	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordRefs, strategies)
+	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordRefs, recordStrategyRefs)
 	saved, err := b.engineRuns.Save(ctx, record)
 	if err != nil {
 		return nil, fmt.Errorf("persist engine run: %w", err)
@@ -270,6 +287,11 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		// engine's job is to write each definition into its per-run workdir and
 		// point promptfoo at it.
 		CustomPlugins: customPlugins,
+		// Phase 3 · 任务 2: the resolved strategy packages. No workdir entry —
+		// a strategy is inlined into `redteam.strategies` as
+		// `custom:<variant>` plus its `strategyText`, which is the only form
+		// promptfoo accepts without executing code.
+		CustomStrategies: customStrategies,
 	}
 	// U7: enrich the request with the application description promptfoo's own
 	// generation reads. Ignored while Plan A is selected, so this is safe to
@@ -347,6 +369,48 @@ func (b *RedteamToolBridge) resolveCustomPlugins(
 		})
 	}
 	return &customPluginResolution{engineRefs: engineRefs, recordIDs: recordIDs, packages: packages}, nil
+}
+
+// resolveCustomStrategies applies Phase 3 governance to a run's strategy refs.
+//
+// Structurally identical to resolveCustomPlugins — same resolver, same
+// publication table, same `enabled = true AND status = 'published'` filter —
+// because both features answer the same three questions (is it available, get
+// the payload, hand it over in an engine-loadable form). The differences are in
+// the answers: a strategy carries no workdir path and no `file://` reference,
+// only the `pf_strategy:` marker the engine swaps for `custom:<variant>` plus
+// the inline config.
+func (b *RedteamToolBridge) resolveCustomStrategies(
+	ctx context.Context,
+	userID uuid.UUID,
+	refs []EngineCapabilityRef,
+) (*customStrategyResolution, error) {
+	recordIDs := make([]string, 0, len(refs))
+	engineRefs := make([]EngineCapabilityRef, 0, len(refs))
+	var packages []EngineCustomStrategy
+	for _, ref := range refs {
+		if !IsCustomStrategyRef(ref.ID) {
+			recordIDs = append(recordIDs, ref.ID)
+			engineRefs = append(engineRefs, ref)
+			continue
+		}
+		if b == nil || b.customPlugins == nil || !b.customPlugins.Enabled() {
+			return nil, &CustomPluginRefError{
+				Code: CustomStrategyErrRefUnavailable,
+				Ref:  ref.ID,
+				Message: "自定义策略 " + CustomStrategyRefTarget(ref.ID) + " 无法加载：平台未启用自定义策略发布链路。" +
+					"请联系管理员确认加密资源存储（maclaw_resources KeyStore）与发布表已配置。",
+			}
+		}
+		pkg, err := b.customPlugins.resolveOneStrategy(ctx, userID, ref.ID)
+		if err != nil {
+			return nil, err
+		}
+		packages = append(packages, *pkg)
+		recordIDs = append(recordIDs, pkg.StrategyID)
+		engineRefs = append(engineRefs, EngineCapabilityRef{ID: CustomStrategyRef(pkg.Handle)})
+	}
+	return &customStrategyResolution{engineRefs: engineRefs, recordIDs: recordIDs, packages: packages}, nil
 }
 
 func engineRefIDs(refs []EngineCapabilityRef) []string {

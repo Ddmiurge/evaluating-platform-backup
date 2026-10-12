@@ -106,6 +106,7 @@ import {
   reportPluginID,
   type MaterializedCustomPlugin,
 } from './customPlugin.js';
+import { applyCustomStrategyRefs, isPromptfooCustomStrategyId, resolveCustomStrategies, type EngineCustomStrategy } from './customStrategy.js';
 
 type Emit = (event: RunProgressEvent) => void;
 
@@ -223,6 +224,28 @@ export function resolveNativeStrategies(
   for (const ref of strategies ?? []) {
     const id = (ref?.id ?? '').trim();
     if (!id) continue;
+    // Phase 3 · 任务 2: `custom:<variant>` ids are minted per published package
+    // and so cannot be enumerated in nativeStrategyMap.ts. They are promptfoo's
+    // own custom-strategy hook — `isCustomStrategy()` accepts exactly this
+    // shape — and they are forwarded unchanged.
+    //
+    // They are deliberately NOT taken on faith: `available` holds promptfoo's
+    // executable ids, and `custom` is one of them, so an id is forwarded only if
+    // its `custom` base is a strategy this promptfoo build actually exposes. A
+    // build that dropped the `custom` hook would otherwise accept the id and
+    // then throw inside `validateStrategies()` after the run record was written.
+    if (isPromptfooCustomStrategyId(id)) {
+      if (!available.has('custom')) {
+        throw new EngineRunError(
+          NATIVE_ERR_CONFIG,
+          `strategy ${id} is a promptfoo custom strategy, but this promptfoo build does not expose the custom strategy hook`,
+        );
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      native.push({ id });
+      continue;
+    }
     const mapping = nativeStrategyMapping(id);
     if (!mapping || mapping.disposition !== 'native' || !mapping.promptfooId) {
       planAOnly.push(id);
@@ -524,6 +547,8 @@ export async function buildNativeRedteamConfig(input: {
    * having the write live at a call site.
    */
   materialized?: MaterializedCustomPlugin[];
+  /** Phase 3 · 任务 2 · Expert-published YAML strategy packages. */
+  customStrategies?: EngineCustomStrategy[];
 }): Promise<NativeRedteamConfig> {
   const target = buildTargetProvider(input.credentials.target);
   const provider = buildGenerationProviderOptions(input.credentials.generation!);
@@ -571,6 +596,17 @@ export async function buildNativeRedteamConfig(input: {
   const materialized = input.materialized ?? (await materializeCustomPlugins(input.customPlugins, requireWorkdir(input.workdir, input.customPlugins)));
   const resolvedPlugins = applyCustomPluginRefs(input.plugins, materialized);
 
+  // Phase 3 · 任务 2: inline expert strategy packages as promptfoo `custom`
+  // strategy refs. Done inside the builder for U8's reason — a second path that
+  // could produce a config document still carrying a `pf_strategy:` marker would
+  // be a `validateStrategies()` throw mid-run.
+  //
+  // Order matters relative to `applyStatefulToMultiTurn` above: that step runs on
+  // the request's strategies before packages are inlined, so a package is not
+  // silently marked `stateful`. CustomProvider takes `stateful` from the
+  // package's own validated config, which is the expert's explicit choice.
+  const resolvedStrategies = applyCustomStrategyRefs(strategies, resolveCustomStrategies(input.customStrategies));
+
   return {
     description: `platform-native-redteam-${input.runId}`,
     prompts: [`{{${input.injectVar}}}`],
@@ -590,7 +626,7 @@ export async function buildNativeRedteamConfig(input: {
       // and one that would only surface as "the numbers changed after the
       // upgrade".
       plugins: withPluginJudgeRubrics(resolvedPlugins, buildJudgeRubricMap(input.catalog)),
-      strategies,
+      strategies: resolvedStrategies,
       injectVar: input.injectVar,
       provider,
       ...(instructions ? { testGenerationInstructions: instructions } : {}),
@@ -785,6 +821,10 @@ export async function executeNativeRedteamRun(
     catalog: request.catalog,
     workdir,
     materialized,
+    // Phase 3 · 任务 2: inlined into the config document as `custom:<variant>`
+    // strategy refs. No workdir entry — see customStrategy.ts for why the
+    // yaml-native form is the only non-executable one.
+    customStrategies: request.custom_strategies,
   });
 
   // Written into the per-run workdir (wiped on terminal state), never into a

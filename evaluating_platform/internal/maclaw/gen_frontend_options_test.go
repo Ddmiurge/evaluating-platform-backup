@@ -148,11 +148,38 @@ func TestFrontendOptionsConsistency(t *testing.T) {
 	for _, entry := range promptfooPluginCatalog {
 		backendPluginIDs = append(backendPluginIDs, entry.ID)
 	}
-	backendStrategyIDs := make([]string, 0, len(promptfooStrategyCatalog))
-	for _, entry := range promptfooStrategyCatalog {
+	// Phase 3 开篇 · 任务 1: the strategy side is no longer the hand-written list
+	// alone. `allPromptfooStrategyEntries()` is what the capability catalogue
+	// offers — the platform's own dimensions plus every native strategy
+	// discovered from promptfoo — so comparing against `promptfooStrategyCatalog`
+	// here would let the two drift apart silently, which is the whole failure
+	// this test exists to catch. Comparing against the shorter list is how the
+	// 7 newly reachable strategies would have been dropped from the UI without
+	// anything going red.
+	backendStrategyEntries := allPromptfooStrategyEntries()
+	backendStrategyIDs := make([]string, 0, len(backendStrategyEntries))
+	for _, entry := range backendStrategyEntries {
+		// Strategies withheld from the selector are absent from the UI on
+		// purpose — a strategy that provably generates nothing must not occupy
+		// a slot. U6's remote-gated ones are the exception: they stay visible
+		// and greyed so the user learns "exists but blocked here".
+		if entry.Unavailable && !entry.RequiresRemoteGeneration {
+			continue
+		}
 		backendStrategyIDs = append(backendStrategyIDs, entry.ID)
 	}
 
 	assertIDSetsMatch(t, "ENGINE_PLUGIN_OPTIONS vs promptfooPluginCatalog", frontendPluginIDs, backendPluginIDs)
-	assertIDSetsMatch(t, "ENGINE_STRATEGY_OPTIONS vs promptfooStrategyCatalog", frontendStrategyIDs, backendStrategyIDs)
+	assertIDSetsMatch(t, "ENGINE_STRATEGY_OPTIONS vs allPromptfooStrategyEntries", frontendStrategyIDs, backendStrategyIDs)
+
+	// And the front end must not offer anything the backend has withdrawn for a
+	// reason U6 does not cover. Asserted separately because the id-set
+	// comparison above cannot express "this id must not be here at all".
+	for _, id := range []string{"simba", "retry", "mathPrompt"} {
+		for _, offered := range backendStrategyIDs {
+			if offered == id {
+				t.Errorf("strategy %q is withdrawn by the backend but still counted as offered", id)
+			}
+		}
+	}
 }

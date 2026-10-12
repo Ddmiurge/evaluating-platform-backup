@@ -345,6 +345,31 @@ export function assertNoCustomPluginsOnPlanA(customPlugins: Array<{ handle: stri
 }
 
 /**
+ * Phase 3 开篇 · 任务 2 · Error code for a published strategy package requested
+ * on the Plan A path.
+ */
+export const PLAN_A_ERR_CUSTOM_STRATEGY = 'custom_strategy_requires_native_generation';
+
+/**
+ * Refuse a published strategy package on the Plan A path.
+ *
+ * Same reasoning as `assertNoCustomPluginsOnPlanA`, and the same reason the check
+ * is on the resolved payloads rather than on ids: a `pf_strategy:` marker cannot
+ * be distinguished from a built-in strategy id by string alone, and Plan A would
+ * hand it to the generation LLM as a strategy family that does not exist.
+ */
+export function assertNoCustomStrategiesOnPlanA(customStrategies: Array<{ handle: string }> | undefined): void {
+  if (!customStrategies || customStrategies.length === 0) return;
+  const handles = customStrategies.map((s) => s.handle).filter(Boolean);
+  throw new EngineRunError(
+    PLAN_A_ERR_CUSTOM_STRATEGY,
+    `自定义策略（${handles.join(', ')}）只能由 promptfoo 原生生成执行，当前平台生成路径不会调用策略引擎，` +
+      '照常运行会得到一份绿色报告，但专家策略的 strategyText 从未被送出（选中能力、零覆盖且无法察觉）。' +
+      '请开启 PROMPTFOO_ENGINE_NATIVE_GENERATION，或在本次评测中不使用自定义策略。',
+  );
+}
+
+/**
  * Plan A: generate attack tests with the platform generation LLM, run them
  * against the target via promptfoo evaluate, and judge each response with
  * llm-rubric. Emits safe progress events through `emit`. Throws on engine
@@ -366,6 +391,10 @@ export async function executePlanARedteamRun(record: RunRecord, emit: Emit): Pro
   // PROMPTFOO_ENGINE_NATIVE_GENERATION makes the same request work, and the
   // message says so.
   assertNoCustomPluginsOnPlanA(request.custom_plugins);
+  // Phase 3 · 任务 2: a strategy package has the same Plan A problem as a plugin
+  // package — `strategyText` is only read by promptfoo's custom strategy
+  // provider, which Plan A never invokes.
+  assertNoCustomStrategiesOnPlanA(request.custom_strategies);
 
   if (!credentials.generation) {
     // Plan A requires a generation LLM; the BFF fail-fasts on this too, so

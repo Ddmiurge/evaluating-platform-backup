@@ -115,19 +115,19 @@ cover_ratio() {
 # 用法：assert_known_baseline <profile 文件>
 # 这两个常数与基线 profile **必须成对更新**（U7 裁定，见脚本头「基线何时重建」）：
 # 结构性增删代码后语句块总数必然变化，只重建 profile 而不同步常数会让本守卫
-# 永久拒绝出结论。当前值对应 U3-b Step A 收尾（4566 块 / 3275 覆盖）：
+# 永久拒绝出结论。当前值对应 Phase 3 开篇收尾（4753 块 / 3434 覆盖，72.25%）：
 # U10 收尾 4563/3267（71.60%）→ U9 收尾 4566/3271（71.64%）→ U3-b Step A
-# 收尾 4566/3275（71.73%）。
+# 收尾 4566/3275（71.73%）→ Phase 3 开篇 4753/3434（72.25%，+0.52pp）。
 #
-# ⚠️ 语句块**总数未变**（4566 → 4566），变的只是已覆盖块数（3271 → 3275）。
-# 原因是 **U3-b Step A 路由快照护栏上线**：client_route_snapshot_test.go 的探测表
-# 对每个网关方法传入非零过滤条件（SessionID / Role 等），顺带走进了原有测试从未
-# 覆盖的 if 分支；ExportEvaluationReport 探针也走到了 filename 兜底。
-# 已用comm 比对两个 profile 的已覆盖块集合确认**零丢失**（新增 4 块：
-# client.go ListEvaluationJobs 的 session_id 分支、ListRuntimeMessages 的 role
-# 分支、filenameFromContentDisposition 的 fallback、capabilities.go normalized()
-# 的空 Profile 兜底）。**这是护栏的净收益，不是口径变更**，故只同步
-# KNOWN_BASELINE_COVERED 一个数，BLOCKS 保持 4566。
+# ⚠️ 本次**语句块总数变化**（4566 → 4753，+187），因此 profile 与两个常数
+# 一起重建。变化来自 Phase 3 的新增代码，不是口径变更：
+#   - promptfoo_strategy_catalog.go（动态发现的策略目录 + 可用性判定）
+#   - promptfoo_custom_strategy.go / _resolver.go（策略包发布校验与治理）
+#   - 相应测试：promptfoo_strategy_catalog_test.go、promptfoo_custom_strategy_test.go、
+#     promptfoo_custom_strategy_bridge_test.go（含生产出口治理）
+# 覆盖率**上升** 0.52pp（3275→3434 覆盖块），是护栏的净收益：新代码全部带测试，
+# 且新增测试打的是生产出口（PreparePromptfooEngineRun / SaveResource）而非 helper。
+# 阈值 0.5pp **未放宽**，本次是靠真实上升而非调宽阈值通过的。
 #
 # 历史：U8 收尾 4407/3140（71.25%）→ U10 收尾 4563/3267（71.60%，+0.35pp）。
 #
@@ -135,8 +135,8 @@ cover_ratio() {
 # resolveCustomPlugins 职责重叠）而重取一次基线 —— 那次删除同时移除了对应的
 # resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4566}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3275}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4753}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3434}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

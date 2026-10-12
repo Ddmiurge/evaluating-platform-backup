@@ -140,6 +140,22 @@ type EngineRunRequest struct {
 	// per-run workdir and references it by `file://` path, which is the form
 	// promptfoo's CustomPlugin actually loads.
 	CustomPlugins []EngineCustomPlugin `json:"custom_plugins,omitempty"`
+
+	// --- Phase 3 开篇 · 任务 2: expert-published YAML strategy packages ---
+
+	// CustomStrategies carries the resolved strategy packages for this run. The
+	// BFF has already applied admin governance, validated the document against
+	// the schema the engine re-checks, and re-serialized it canonically — so
+	// `Definition` is exactly the document that was validated, byte for byte.
+	//
+	// Shipped inline because that is how promptfoo consumes a strategy: a custom
+	// strategy is `redteam.strategies[] = { id: "custom:<variant>", config:
+	// { strategyText } }`. There is no file, no workdir entry and no `file://`
+	// reference — on promptfoo 0.123.0 a file-based strategy is necessarily
+	// JS/TS (`loadStrategy` enforces `isJavascriptFile`), which would be
+	// arbitrary code execution inside the engine process. The yaml-native form
+	// removes that path entirely rather than guarding it.
+	CustomStrategies []EngineCustomStrategy `json:"custom_strategies,omitempty"`
 }
 
 type EngineCapabilityRef struct {

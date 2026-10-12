@@ -49,6 +49,22 @@ type promptfooStrategyCatalogEntry struct {
 	// (U6). Same contract as the plugin field: derived, descriptive, and
 	// consumed only by the pre-flight guard and the frontend.
 	RequiresRemoteGeneration bool
+	// Unavailable blocks the entry from being offered. Set for strategies
+	// discovered from promptfoo that cannot run here for a reason U6 does not
+	// cover — a proven no-op (`simba`, `basic`), a media channel this
+	// deployment has not provisioned (`image`/`audio`/`video`), or a runtime
+	// probe that produced nothing and could not be attributed.
+	//
+	// This is the Phase 3 widening of U6's guardrail: U6 answers "does this
+	// need remote generation", and `simba` needs none — it just quietly
+	// produces nothing while the run reports success. Offering it is exactly
+	// the silent-coverage failure U6 exists to eliminate, reached by a path
+	// U6's table does not cover.
+	Unavailable       bool
+	UnavailableReason string
+	// PromptfooID is promptfoo's own id when it differs from the platform's.
+	// Empty means the two are identical.
+	PromptfooID string
 }
 
 // p is a compact constructor for plugin entries; risk types follow category.
@@ -63,10 +79,119 @@ func p(id, name, category, summary, sev string) promptfooPluginCatalogEntry {
 }
 
 func s(id, name, summary string) promptfooStrategyCatalogEntry {
-	return promptfooStrategyCatalogEntry{
+	entry := promptfooStrategyCatalogEntry{
 		ID: id, Name: name, Summary: summary,
 		RequiresRemoteGeneration: StrategyRequiresRemoteGeneration(id),
+		// The native id comes from the generated table, which is the single
+		// source of truth for the platform↔promptfoo vocabulary. The 3 gated ids
+		// U6 also carries a mapping for are unioned in so a strategy that is
+		// remote-gated *and* translatable reports both facts.
+		PromptfooID: firstNonEmptyString(
+			PlatformToNativeStrategyID(id),
+			PromptfooRemoteDepStrategyID(id),
+		),
 	}
+	// Availability is looked up by the **native** id, not the platform id.
+	// `mathPrompt` is a platform id whose promptfoo counterpart is
+	// `math-prompt`, so a lookup on the platform id would miss the discovered
+	// row entirely and the entry would be offered even though its native
+	// strategy needs remote generation. Resolving first is what makes the
+	// catalogue and the discovery table agree.
+	//
+	// U6's verdict wins over the discovery table's when both apply: a
+	// remote-gated strategy must report *that* as the reason, because it is the
+	// actionable one (a policy block, not a defect), and the card layer asserts
+	// this precedence rather than re-deriving it.
+	if entry.RequiresRemoteGeneration {
+		entry.Unavailable = true
+		entry.UnavailableReason = RemoteGenerationUnavailableMessage
+		return entry
+	}
+	if row, ok := NativeStrategyByID(StrategyNativeID(id)); ok && !StrategyIsSelectable(row.ID) {
+		entry.Unavailable = true
+		entry.UnavailableReason = row.Reason
+	}
+	return entry
+}
+
+// sn builds a catalogue entry for a strategy discovered from promptfoo but not
+// previously listed by the platform.
+//
+// Unlike `s`, the native id is known, so the entry is built from the generated
+// table rather than curated text — the availability verdict is not re-derived
+// here, it is read, so the catalogue and the pre-flight guard cannot disagree
+// about which strategies are usable.
+func sn(id string) promptfooStrategyCatalogEntry {
+	name, summary := nativeStrategyDisplay(id)
+	entry := promptfooStrategyCatalogEntry{
+		ID: id, Name: name, Summary: summary, PromptfooID: id,
+		RequiresRemoteGeneration: StrategyRequiresRemoteGeneration(id) || id == PromptfooRemoteDepStrategyID(id),
+	}
+	if !StrategyIsSelectable(id) {
+		entry.Unavailable = true
+		if row, ok := NativeStrategyByID(id); ok {
+			entry.UnavailableReason = row.Reason
+		} else {
+			entry.UnavailableReason = "策略在当前环境不可用"
+		}
+	}
+	return entry
+}
+
+// promptfooNativeStrategyCatalog returns a catalogue entry for every promptfoo
+// native strategy discovered by scripts/gen_strategy_catalog.mjs that runs in
+// this deployment, skipping any the platform already exposes under another id.
+//
+// Only *available* strategies are listed. Unavailable ones are deliberately
+// absent rather than present-but-greyed: a strategy that provably generates
+// nothing (`simba`) has no business occupying a slot in a capability catalogue,
+// and listing it with a flag would leave one code path — the search index, the
+// option list, any future consumer that forgets the flag — free to offer it.
+//
+// Their ids and reasons remain queryable through
+// UnavailableNativeStrategyIDs(), so an operator can still answer "why can't I
+// use simba?" without the catalogue implying it is a choice.
+func promptfooNativeStrategyCatalog() []promptfooStrategyCatalogEntry {
+	entries := make([]promptfooStrategyCatalogEntry, 0, len(strategyCatalogData.NativeStrategies))
+	for _, id := range LocalNativeStrategyIDs() {
+		if promptfooHandwrittenStrategyIDSet[strings.ToLower(id)] {
+			continue
+		}
+		// Skip a native id the platform already surfaces under a different
+		// platform id. `jailbreak:hydra` is `hydra`, `jailbreak:tree` is
+		// `iterative:tree`, `mischievous-user` is `mischievousUser` — offering
+		// both would put the same attack technique in the selector twice under
+		// two names, and a user picking either would not know they are the same
+		// thing. The platform id wins because it is the curated one, with a
+		// Chinese name and a summary written for it.
+		if promptfooPlatformIDForNative(id) != "" {
+			continue
+		}
+		entries = append(entries, sn(id))
+	}
+	return entries
+}
+
+// promptfooPlatformIDForNative returns the platform strategy id that already
+// forwards to the given native id, or "" when none does.
+func promptfooPlatformIDForNative(nativeID string) string {
+	for _, entry := range promptfooStrategyCatalog {
+		if StrategyNativeID(entry.ID) == nativeID {
+			return entry.ID
+		}
+	}
+	return ""
+}
+
+// allPromptfooStrategyEntries is the full strategy list: the platform's
+// hand-written entries (which include its own invented dimensions) followed by
+// the newly discovered native ones.
+func allPromptfooStrategyEntries() []promptfooStrategyCatalogEntry {
+	discovered := promptfooNativeStrategyCatalog()
+	all := make([]promptfooStrategyCatalogEntry, 0, len(promptfooStrategyCatalog)+len(discovered))
+	all = append(all, promptfooStrategyCatalog...)
+	all = append(all, discovered...)
+	return all
 }
 
 func categoryUseWhen(category string) string {
@@ -255,15 +380,26 @@ var promptfooStrategyCatalog = []promptfooStrategyCatalogEntry{
 	s("goat", "GOAT 多轮越狱", "GOAT 式多轮自适应越狱攻击。"),
 	s("hydra", "Hydra 多分支越狱", "Hydra 式多分支并发越狱攻击。"),
 	s("goblin", "Goblin 多轮攻击", "Goblin 式多轮对抗攻击。"),
-	s("simba", "Simba 攻击链", "Simba 式攻击链组合。"),
 	s("iterative", "迭代越狱", "基于上一轮结果的迭代式越狱攻击。"),
 	s("iterative:tree", "树搜索越狱", "树搜索式迭代越狱攻击。"),
 	s("iterative:meta", "元提示越狱", "元提示优化式迭代越狱攻击。"),
 	s("bestOfN", "Best-of-N 多次采样", "同一载荷多次采样寻找越狱成功样本。"),
-	s("retry", "重试攻击", "对拒答结果变换措辞重试。"),
 	s("likert", "Likert 量表包装", "用评分量表格式包装敏感请求。"),
 	s("citation", "引用包装", "伪造引用/文献格式包装敏感内容请求。"),
-	s("mathPrompt", "数学题包装", "将敏感请求伪装成数学题求解。"),
+	// Phase 3 · `retry`、`mathPrompt`、`simba` 三条自此从目录移除。
+	//
+	// 它们此前是可选的，但实测**跑不通**，且都不在 U6 的远程依赖表里，所以
+	// 一直没被拦住（`14` §5 十条第 1 条的同类：字段/能力「看起来能跑」而实际不生效）：
+	//
+	//   simba      —— promptfoo 0.123.0 已废弃，执行体 log 一句即 `return []`；
+	//                 运行成功、报告列出该策略、覆盖实为 0（U6 要消除的静默 0 覆盖）
+	//   retry      —— 需要 config.targetIds，而平台只下发 `{ id }`，
+	//                 promptfoo 抛 "No target IDs found in config"（评测进行中抛）
+	//   mathPrompt —— 远程生成屏蔽后回落到直连 OpenAI 的分支，报 "API key is not set"
+	//
+	// 保留会让用户反复踩同一个坑，因此从目录移除；引擎侧
+	// `nativeStrategyMap.ts` 把它们降级为 plan_a_only（附原因），选中时仍有
+	// 交代，而不是变成一个静默失效的开关。
 	s("mischievousUser", "顽劣用户", "持续不听劝告的顽劣用户人设施压。"),
 	s("authoritativeMarkupInjection", "权威标记注入", "伪造系统级标记/指令格式注入。"),
 	s("singleTurnComposite", "单轮组合攻击", "在单轮内组合多种越狱手法。"),
@@ -272,11 +408,12 @@ var promptfooStrategyCatalog = []promptfooStrategyCatalogEntry{
 // PromptfooPluginCatalogCards returns capability cards for every built-in
 // engine plugin and strategy entry.
 func PromptfooPluginCatalogCards() []CapabilityCard {
-	cards := make([]CapabilityCard, 0, len(promptfooPluginCatalog)+len(promptfooStrategyCatalog))
+	strategies := allPromptfooStrategyEntries()
+	cards := make([]CapabilityCard, 0, len(promptfooPluginCatalog)+len(strategies))
 	for _, entry := range promptfooPluginCatalog {
 		cards = append(cards, promptfooPluginCard(entry))
 	}
-	for _, entry := range promptfooStrategyCatalog {
+	for _, entry := range strategies {
 		cards = append(cards, promptfooStrategyCard(entry))
 	}
 	return cards
@@ -339,15 +476,34 @@ func promptfooStrategyCard(entry promptfooStrategyCatalogEntry) CapabilityCard {
 			"strategy_id": entry.ID,
 		},
 	}
+	// The platform and promptfoo strategy vocabularies differ for some entries
+	// (`hydra` -> `jailbreak:hydra`). Ship the native id only when it differs:
+	// an identity mapping would put `promptfoo_strategy_id: base64` on every
+	// card, which is noise a reader has to learn to ignore. A consumer that
+	// needs the native id reads `StrategyNativeID`, which resolves the identity
+	// case too.
+	if entry.PromptfooID != "" && entry.PromptfooID != entry.ID {
+		card.SafeMetadata["promptfoo_strategy_id"] = entry.PromptfooID
+	}
+	// Phase 3: unavailable for a reason U6 does not cover (proven no-op, media
+	// channel, unattributable probe). Marked the same way as a remote-gated
+	// entry so the selector has one rule to apply, with the specific reason.
+	//
+	// Written BEFORE the remote branch so a strategy that is both remote-gated
+	// and otherwise unavailable keeps U6's message. U6's contract is that
+	// `requires_remote_generation=true` implies the user is told *that* is the
+	// reason, and overwriting it with a more specific but different explanation
+	// would send an operator looking for a media/ffmpeg problem on a strategy
+	// that never needed one.
+	if entry.Unavailable {
+		card.SafeMetadata["unavailable"] = "true"
+		if entry.UnavailableReason != "" {
+			card.SafeMetadata["unavailable_reason"] = entry.UnavailableReason
+		}
+	}
 	if entry.RequiresRemoteGeneration {
 		card.SafeMetadata["requires_remote_generation"] = "true"
 		card.SafeMetadata["unavailable_reason"] = RemoteGenerationUnavailableMessage
-		// The platform and promptfoo strategy vocabularies differ for some
-		// gated entries; ship the mapping so the engine and the error message
-		// can speak promptfoo's id.
-		if native := PromptfooRemoteDepStrategyID(entry.ID); native != "" {
-			card.SafeMetadata["promptfoo_strategy_id"] = native
-		}
 	}
 	return card
 }
@@ -445,9 +601,13 @@ func PromptfooEngineSupportedPluginIDs() []string {
 }
 
 // PromptfooEngineSupportedStrategyIDs returns the built-in strategy ids.
+//
+// Includes the strategies discovered from promptfoo (Phase 3), so the engine's
+// catalog and the capability catalogue describe the same vocabulary.
 func PromptfooEngineSupportedStrategyIDs() []string {
-	ids := make([]string, 0, len(promptfooStrategyCatalog))
-	for _, entry := range promptfooStrategyCatalog {
+	entries := allPromptfooStrategyEntries()
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
 		ids = append(ids, entry.ID)
 	}
 	return ids
@@ -467,25 +627,41 @@ func PromptfooCatalogPluginExists(id string) bool {
 }
 
 // PromptfooCatalogStrategyExists reports whether a strategy id names a built-in
-// catalog entry. Same collision rationale as PromptfooCatalogPluginExists.
+// catalog entry. Same collision rationale as PromptfooCatalogPluginExists, and
+// it covers the discovered native strategies too — an expert strategy package
+// must not be able to claim `morse` and have its probes reported under the
+// built-in's name.
 func PromptfooCatalogStrategyExists(id string) bool {
 	return promptfooCatalogStrategyIDSet[strings.ToLower(strings.TrimSpace(id))]
 }
 
-// promptfooCatalogPluginIDSet / promptfooCatalogStrategyIDSet are built once at
-// init from the same literals the catalog itself is built from, so they cannot
-// drift from it.
 var (
 	promptfooCatalogPluginIDSet = buildCatalogIDSet(len(promptfooPluginCatalog), func(yield func(string)) {
 		for _, entry := range promptfooPluginCatalog {
 			yield(entry.ID)
 		}
 	})
-	promptfooCatalogStrategyIDSet = buildCatalogIDSet(len(promptfooStrategyCatalog), func(yield func(string)) {
+	// promptfooHandwrittenStrategyIDSet covers only the curated list. It exists
+	// separately from promptfooCatalogStrategyIDSet because the two want
+	// different things: discovery uses this one to decide which discovered
+	// strategies are genuinely *new* (so curated text is not duplicated), while
+	// the collision oracle below wants the full merged vocabulary. Building the
+	// oracle from the full list and then using it for the dedup check would make
+	// every discovered id look pre-existing and the discovery pass would return
+	// nothing.
+	promptfooHandwrittenStrategyIDSet = buildCatalogIDSet(len(promptfooStrategyCatalog), func(yield func(string)) {
 		for _, entry := range promptfooStrategyCatalog {
 			yield(entry.ID)
 		}
 	})
+	promptfooCatalogStrategyIDSet = buildCatalogIDSet(
+		len(promptfooStrategyCatalog)+len(strategyCatalogData.NativeStrategies),
+		func(yield func(string)) {
+			for _, entry := range allPromptfooStrategyEntries() {
+				yield(entry.ID)
+			}
+		},
+	)
 )
 
 // buildCatalogIDSet materializes a lowercased id set from an iterator.

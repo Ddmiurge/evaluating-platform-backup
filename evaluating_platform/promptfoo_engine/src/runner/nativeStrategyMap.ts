@@ -66,6 +66,32 @@ const PLAN_A_ONLY: Readonly<Record<string, string>> = {
   'many-shot': '多样本诱导是平台自造的提示词维度，promptfoo 无对应策略',
   translate: '翻译绕过是平台自造的提示词维度；promptfoo 用 language 配置而非 strategy 表达',
   otherEncodings: '其他编码变体是平台对 morse/piglatin/camelcase/emoji 等的聚合项，无法映射为单一原生 id',
+  // Phase 3 · `simba` used to be mapped `simba → simba` below. That was wrong
+  // and is the reason this list is worth reading: promptfoo 0.123.0 keeps
+  // `simba` only as a deprecated stub whose action logs
+  // "The \"simba\" strategy has been deprecated and removed. This strategy will
+  // be skipped" and returns `[]`. Forwarding it produced a green run in which
+  // the strategy provably generated zero cases and the report still listed it as
+  // applied — the silent-0-coverage shape U6 exists to eliminate, reached
+  // through a path U6's remote-dependency table does not cover (simba needs no
+  // remote generation; it simply does nothing).
+  //
+  // Reclassified rather than deleted so the id still resolves to a decision:
+  // an expert who selected it gets Plan A synthesis plus this reason instead of
+  // a strategy that silently generates nothing.
+  simba: 'promptfoo 0.123.0 已废弃并移除该策略（实际生成 0 条用例），平台不再转发；请改用 jailbreak:hydra',
+
+  // `retry` needs `config.targetIds`, which the platform does not send (it
+  // forwards `{ id }` only), so promptfoo throws *"No target IDs found in
+  // config"* — mid-run, after the run record exists. U6's table does not gate it
+  // because it needs no remote generation; the dependency is on caller-supplied
+  // config instead, which is a different failure U6 does not model.
+  retry: '需要调用方提供 targetIds 配置，平台当前不下发，promptfoo 会在评测进行中抛错',
+
+  // `math-prompt` falls back to a local path that calls an OpenAI provider
+  // directly when remote generation is disabled, so it fails with "API key is
+  // not set" in this deployment. Measured, not inferred.
+  mathPrompt: '当前部署下需要可用的 OpenAI 凭据（远程生成已屏蔽），无法执行',
 };
 
 /**
@@ -89,14 +115,65 @@ const NATIVE: Readonly<Record<string, string>> = {
   goat: 'goat',
   hydra: 'jailbreak:hydra',
   goblin: 'jailbreak:goblin',
-  simba: 'simba',
   iterative: 'jailbreak:tree',
   'iterative:tree': 'jailbreak:tree',
   'iterative:meta': 'jailbreak:meta',
-  retry: 'retry',
-  mathPrompt: 'math-prompt',
+  // `retry` and `mathPrompt` used to be mapped here. Both abort or fail when the
+  // platform forwards them, because the platform sends `{ id }` with **no**
+  // strategy config (`resolveNativeStrategies` builds the id only), and:
+  //
+  //   retry       -> invariant "No target IDs found in config. The retry
+  //                  strategy requires at least one target ID" — thrown after
+  //                  the run record is persisted.
+  //   math-prompt -> needs an OPENAI_API_KEY: with remote generation fail-closed
+  //                  it falls through to a local path that calls an OpenAI
+  //                  provider directly, and dies with "API key is not set".
+  //
+  // U6's remote-dependency table gates neither, so neither was caught before
+  // this discovery pass. Both are reclassified below rather than deleted, so an
+  // expert who selects them gets Plan A synthesis plus a reason instead of a
+  // mid-run abort.
   mischievousUser: 'mischievous-user',
   authoritativeMarkupInjection: 'authoritative-markup-injection',
+
+  // ---- Phase 3 · identity mappings for strategies found by discovering
+  // promptfoo's catalogue instead of hand-listing 30 ids.
+  //
+  // These need no translation: promptfoo already calls them by these names.
+  // They were unreachable before only because the platform's list was
+  // hand-maintained and had drifted, not because anything blocked them.
+  //
+  // Every id below is asserted to exist in the installed promptfoo by
+  // assertNativeStrategyMapIsCurrent(), and the platform only offers the ones
+  // its own generated table classifies as runnable — so a strategy that cannot
+  // generate here never reaches this map from the API. The four that cannot
+  // (best-of-n, citation, jailbreak:composite, jailbreak:likert) stay absent
+  // for U6's reason; simba/basic/media stay absent for the reasons recorded in
+  // PLAN_A_ONLY and in the platform's catalogue table.
+  morse: 'morse',
+  piglatin: 'piglatin',
+  camelcase: 'camelcase',
+  emoji: 'emoji',
+  'jailbreak-templates': 'jailbreak-templates',
+  layer: 'layer',
+  'indirect-web-pwn': 'indirect-web-pwn',
+  // Deprecated upstream aliases that still work. Kept mapped because they do
+  // generate cases; promptfoo logs a deprecation warning naming the
+  // replacement, which is advice, not a refusal.
+  'prompt-injection': 'prompt-injection',
+  jailbreak: 'jailbreak',
+
+  // `custom` is promptfoo's own yaml-native custom-strategy hook: a strategy
+  // whose id is `custom` or `custom:<variant>` and whose `config.strategyText`
+  // is the attacker's instruction. Phase 3 任务 2 publishes expert-authored
+  // strategy packages into it — no `file://`, no JS. It is mapped here so a
+  // `custom:<handle>` reference forwarded by the BFF resolves to itself.
+  //
+  // Only the bare `custom` id is listed. `custom:<variant>` ids are generated
+  // per published package and are resolved by `resolveNativeStrategies` before
+  // this table is consulted (see isCustomStrategyRef), because a per-package id
+  // cannot be enumerated here.
+  custom: 'custom',
 };
 
 /** The whole table, keyed by platform strategy id. */
