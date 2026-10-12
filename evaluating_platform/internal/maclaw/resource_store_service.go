@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -27,7 +26,6 @@ type ResourceStore interface {
 type ResourceStoreService struct {
 	store    ResourceStore
 	keyStore *appcrypto.KeyStore
-	now      func() time.Time
 }
 
 func NewResourceStoreService(store ResourceStore, keyStore *appcrypto.KeyStore) *ResourceStoreService {

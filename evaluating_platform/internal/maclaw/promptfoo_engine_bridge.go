@@ -413,14 +413,6 @@ func (b *RedteamToolBridge) resolveCustomStrategies(
 	return &customStrategyResolution{engineRefs: engineRefs, recordIDs: recordIDs, packages: packages}, nil
 }
 
-func engineRefIDs(refs []EngineCapabilityRef) []string {
-	ids := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		ids = append(ids, ref.ID)
-	}
-	return ids
-}
-
 // RunPromptfooRedteamEvaluation orchestrates one confirmed engine run:
 // materialize credentials server-side, submit, poll to terminal state, save
 // safe evidence, and compile the engine-dimension report.

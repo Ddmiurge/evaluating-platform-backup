@@ -38,13 +38,18 @@
 #   该守卫一直误报，已作为遗留登记四个批次）。
 #   重建命令：./scripts/verify_u3_coverage.sh --gen-baseline
 #
-#   最近一次重建：U3-b T4.2 client.go 分层 —— **语句块与覆盖块均未变
+#   最近一次重建：2026-10-12 lint 口径加固 + 死代码清理 —— 语句块 4773 → 4770
+#   （纯删死代码：engineRefIDs 零引用函数 3 块 + `now` 字段从未被读/被写 + 两个
+#   未被任何测试引用的 fake 类型及其方法）。**被覆盖块 3452 → 3452 零变化**，
+#   覆盖率 72.32% → 72.37% 纯属分母变小，非覆盖变好。两个常数成对同步为
+#   4770 / 3452，DRIFT_THRESHOLD 仍为 0.5pp（未放宽）。
+#   上一次重建：U3-b T4.2 client.go 分层 —— **语句块与覆盖块均未变
 #   （4566/3275 → 4566/3275）**，两个常数无需改动。重建原因仅是
 #   **profile 里的文件名字段过期**：原 client.go 已按服务域拆成
 #   transport.go / client_evaluation.go / client_runtime.go / client_legacy.go，
 #   存档仍写 client.go 会让 `go tool cover` 报 "no such file or directory"
 #   （脚本头「前置断言」小节描述的正是这类假阴性风险）。
-#   上一次重建：U3-b Step A（4566/3271 → 4566/3275）——
+#   再上一次：U3-b Step A（4566/3271 → 4566/3275）——
 #   **U3-b Step A 路由快照护栏上线，探测表顺带补上 4 块真实覆盖，
 #   非口径变更**。详见 assert_known_baseline 上方注释。
 #
@@ -139,8 +144,17 @@ cover_ratio() {
 # 注：中途曾因删除一处重复实现（CustomPluginResolver.Resolve，与桥接层
 # resolveCustomPlugins 职责重叠）而重取一次基线 —— 那次删除同时移除了对应的
 # resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
+#
+# 注：2026-10-12 「lint 口径加固 + 死代码清理」再次重取基线，原因是**纯删死代码**：
+#   - internal/maclaw/promptfoo_engine_bridge.go:416 engineRefIDs（零引用函数，3 块）
+#   - internal/maclaw/resource_store_service.go:30 字段 now（从未被读，也从未被写）
+#   - internal/maclaw/promptfoo_custom_plugin_test.go 两个 fake 类型 + 两个方法（_test.go，不计入本 profile）
+# 语句块 4773 → 4770（-3，全部来自 engineRefIDs），**被覆盖块 3452 → 3452 零变化** ——
+# 这正是死代码的定义：从未被执行过，所以删除它不可能减少覆盖。
+# 覆盖率因此从 72.32% 微升到 72.37%（分母变小），不是"覆盖变好"，是分母效应。
+# 阈值 DRIFT_THRESHOLD 保持 0.5pp，未放宽。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4773}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4770}"
   local known_covered="${KNOWN_BASELINE_COVERED:-3452}"
   local got
   got="$(cover_ratio "$1")" || return 1

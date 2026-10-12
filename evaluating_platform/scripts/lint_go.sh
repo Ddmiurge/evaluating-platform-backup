@@ -29,6 +29,28 @@
 # forever. The intended switch is `--new-from-rev`, wired via LINT_NEW_FROM_REV
 # below; do not reach for blanket exclusions to make the numbers look small.
 #
+# ── READING THE ISSUE COUNT (do not skip this) ─────────────────────────────
+# The total printed by this script is a MEASUREMENT, and it is only comparable
+# against another run of the SAME configuration. Before concluding "my change
+# added N issues", read docs/lint-measurement.md. The two traps, abbreviated:
+#
+#   * `uniq-by-line` (now false in .golangci.yml) — golangci-lint's own dedup
+#     merges same-text findings that land on the same LINE, while goconst
+#     reports per OCCURRENCE. One gofmt'd blank line shifts every line number
+#     below it, so unrelated findings collide and the total moves +/-1 with zero
+#     change in code quality. Turning the flag OFF raised the baseline
+#     184 -> 198 (all 14 in goconst). THAT RISE IS CORRECT, not a regression.
+#   * Caching — golangci-lint v2 replays cached findings from os.UserCacheDir.
+#     `setup-go`'s `cache: true` intentionally keeps it warm here (re-type-
+#     checking the module is the slow part), which is fine for speed but means
+#     the absolute count is only trustworthy on a cold cache. Never compare a
+#     warm-cache run against a cold-cache run.
+#
+# The trustworthy signal is the PER-LINTER breakdown, not the total: a real
+# regression moves one linter's count, while a line shift moves the total while
+# every per-linter count stays put. docs/lint-measurement.md has a diff recipe
+# that ignores line numbers entirely.
+#
 # Environment:
 #   LINT_NEW_FROM_REV   Optional git rev. When set, only issues introduced after
 #                       that rev are reported (phase-2 gate).

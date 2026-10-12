@@ -22,7 +22,6 @@ import (
 	"github.com/google/uuid"
 
 	appcrypto "evaluating_platform/internal/crypto"
-	"evaluating_platform/internal/model"
 	"evaluating_platform/pkg/config"
 )
 
@@ -48,34 +47,6 @@ func (s *customPluginFakeStore) GetResource(_ context.Context, _ uuid.UUID, idOr
 		}
 	}
 	return nil, nil
-}
-
-type customPluginFakePublicationLookup struct {
-	ResourcePublicationStore
-	pub *model.MaclawResourcePublication
-	err error
-	// queried records the handle the resolver asked for, so a test can prove
-	// governance was consulted rather than bypassed.
-	queried string
-}
-
-func (l *customPluginFakePublicationLookup) GetPublishedByHandle(_ context.Context, handle string) (*model.MaclawResourcePublication, error) {
-	l.queried = handle
-	return l.pub, l.err
-}
-
-type customPluginFakeMaterializer struct {
-	payloads map[string]string
-	asked    []string
-}
-
-func (m *customPluginFakeMaterializer) MaterializeResource(_ context.Context, _ uuid.UUID, idOrHandle string) (*EvaluationResourceMaterialization, error) {
-	m.asked = append(m.asked, idOrHandle)
-	payload, ok := m.payloads[idOrHandle]
-	if !ok {
-		return nil, nil
-	}
-	return &EvaluationResourceMaterialization{Handle: idOrHandle, Payload: payload}, nil
 }
 
 // newCustomPluginStoreService builds a store service over a fake store with a

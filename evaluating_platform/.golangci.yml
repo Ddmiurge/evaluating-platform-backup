@@ -143,6 +143,44 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 
+  # *** The measurement-integrity flag. Read before comparing two lint runs. ***
+  #
+  # `uniq-by-line` is golangci-lint's OWN cross-linter de-duplication pass and it
+  # defaults to TRUE: two findings of the same text landing on the same LINE are
+  # reported once. goconst, however, reports per OCCURRENCE — three copies of the
+  # same literal on three different lines are three legitimate findings.
+  #
+  # The combination is a trap that manufactures phantom regressions:
+  #   1. gofmt (or any edit) removes one blank line.
+  #   2. Every following line number in that file shifts by one.
+  #   3. Two findings that were on DIFFERENT lines are now on the SAME line ->
+  #      merged, count drops by 1. Or one finding splits into two -> count rises.
+  #   => The TOTAL moves by +/-1 with ZERO change in code quality, and the
+  #      direction depends on the edit, not on the code.
+  #
+  # Measured on this repo at 7f94dd1 (cache cleaned both times, same commit):
+  #   uniq-by-line=true  -> 184 issues (errcheck 91 + goconst 87+ unused 6)
+  #   uniq-by-line=false -> 198 issues (errcheck 91 + goconst 101 + unused 6)
+  # The 14-issue gap is entirely goconst: the default was hiding one finding per
+  # same-line collision. errcheck and unused are unaffected because they report
+  # at distinct lines by construction.
+  #
+  # ==> A HIGHER count after this change is the CORRECT number, NOT a regression.
+  #==> Do NOT "fix" a count increase caused by turning this off.
+  #
+  # HOW TO TELL WHETHER YOUR CHANGE INTRODUCED NEW LINT ISSUES (see also
+  # scripts/lint_go.sh and docs/lint-measurement.md):
+  #   1. ALWAYS pass `--uniq-by-line=false` explicitly on BOTH sides.
+  #   2. ALWAYS `golangci-lint cache clean` before BOTH runs. A warm cache can
+  #      replay a stale result set, which shifts BOTH numbers and makes the
+  #      absolute value untrustworthy in both directions.
+  #   3. Compare like-for-like in the same commit (A/B on one tree), not across
+  #      commits — line numbers move between commits for unrelated reasons.
+  # The reliable signal is the PER-LINTER breakdown, not the total: a real
+  # regression moves one linter's count, a line-shift moves the total by 1 while
+  # every per-linter count stays put.
+  uniq-by-line: false
+
 severity:
   # Phase 1: everything is a warning. Note that severity is PRESENTATION ONLY;
   # it does NOT change the process exit code. Verified in v2.6.2 source
