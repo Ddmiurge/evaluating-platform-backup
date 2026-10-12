@@ -157,11 +157,11 @@ func (h *BillingHandler) Recharge(c *gin.Context) {
 // GET /api/v1/billing/prices
 func (h *BillingHandler) GetToolPrices(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"prices":                  billing.ToolPrices,
-		"token_cost_per_1k":       billing.TokenCostPer1K,
-		"min_assessment_balance":  billing.MinAssessmentBalance,
-		"expert_share_ratio":      billing.ExpertShareRatio,
-		"currency":                "CNY",
+		"prices":                 billing.ToolPrices,
+		"token_cost_per_1k":      billing.TokenCostPer1K,
+		"min_assessment_balance": billing.MinAssessmentBalance,
+		"expert_share_ratio":     billing.ExpertShareRatio,
+		"currency":               "CNY",
 	})
 }
 

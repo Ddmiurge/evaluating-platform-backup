@@ -648,4 +648,3 @@ func skillIsPublished(item SkillSummary) bool {
 	status := strings.TrimSpace(item.Status)
 	return status == "" || status == "active" || status == "published" || status == "enabled"
 }
-

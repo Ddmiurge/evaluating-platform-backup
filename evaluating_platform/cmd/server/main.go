@@ -173,25 +173,25 @@ func main() {
 	redteamToolBridge.SetArtifactService(maclawRedteamArtifactService)
 	redteamToolBridge.SetLLMAttackJudge(maclawpkg.NewRuntimeConfigLLMAttackJudge(maclawRuntimeConfigService))
 	redteamToolBridge.SetTargetConcurrency(cfg.Maclaw.RedteamTargetConcurrency)
-		// Phase 1: expose the promptfoo engine to MaClaw through the bridge MCP tools.
+	// Phase 1: expose the promptfoo engine to MaClaw through the bridge MCP tools.
 	redteamToolBridge.SetPromptfooEngine(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
-		// U10: resolve expert-published YAML plugin packages and apply admin
-		// governance (启停/下架/归档 → 引擎立即不可用).
-		//
-		// Wired here rather than inside SetPromptfooEngine so the two concerns
-		// stay separable: a deployment that does not publish custom packages can
-		// leave the resolver nil, and every run that names no package behaves
-		// exactly as it did before U10.
-		//
-		// The publication repo filters on `enabled = true AND status =
-		// 'published'`, so a package an admin took down resolves to nil and is
-		// refused — that is the whole mechanism, and it is re-read per run rather
-		// than cached, which is what makes the effect immediate.
+	// U10: resolve expert-published YAML plugin packages and apply admin
+	// governance (启停/下架/归档 → 引擎立即不可用).
+	//
+	// Wired here rather than inside SetPromptfooEngine so the two concerns
+	// stay separable: a deployment that does not publish custom packages can
+	// leave the resolver nil, and every run that names no package behaves
+	// exactly as it did before U10.
+	//
+	// The publication repo filters on `enabled = true AND status =
+	// 'published'`, so a package an admin took down resolves to nil and is
+	// refused — that is the whole mechanism, and it is re-read per run rather
+	// than cached, which is what makes the effect immediate.
 	redteamToolBridge.SetCustomPluginResolver(maclawpkg.NewCustomPluginResolver(maclawResourcePublicationRepo, maclawResourceStoreService))
-		// Phase 1 confirm fast path: shared platform engine job store.
-		platformEngineJobs := maclawpkg.NewPlatformEngineJobStore()
-		maclawRuntimeHandler.SetPromptfooEngine(redteamToolBridge, platformEngineJobs, engineRunService)
-		maclawEvaluationHandler.SetPromptfooEngineJobs(platformEngineJobs, engineRunService)
+	// Phase 1 confirm fast path: shared platform engine job store.
+	platformEngineJobs := maclawpkg.NewPlatformEngineJobStore()
+	maclawRuntimeHandler.SetPromptfooEngine(redteamToolBridge, platformEngineJobs, engineRunService)
+	maclawEvaluationHandler.SetPromptfooEngineJobs(platformEngineJobs, engineRunService)
 	if sampleLoader != nil && composedAttackLoader != nil {
 		payloadProvider := maclawpkg.NewPlatformRedteamPayloadProvider(sampleLoader, tplRepo, composedAttackLoader)
 		payloadProvider.SetPublicationStores(sampleRepo, tplRepo, composedAttackRepo)

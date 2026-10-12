@@ -103,4 +103,3 @@ func verifyRedteamExecutionGrantPayload(secret, token, userID string, now time.T
 	}
 	return payload, nil
 }
-

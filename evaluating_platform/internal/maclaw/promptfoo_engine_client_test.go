@@ -81,11 +81,11 @@ func TestEngineClientHealth(t *testing.T) {
 
 func TestEngineClientCreateRun(t *testing.T) {
 	cases := []struct {
-		name     string
-		status   int
-		body     string
-		want     error
-		generic  bool // expect non-sentinel error
+		name    string
+		status  int
+		body    string
+		want    error
+		generic bool // expect non-sentinel error
 	}{
 		{name: "accepted", status: http.StatusAccepted, want: nil},
 		{name: "queue full", status: http.StatusConflict, body: `{"error":"queue_full"}`, want: ErrEngineQueueFull},
@@ -277,10 +277,10 @@ func TestParseSSEStream(t *testing.T) {
 
 func TestEscapePathSegment(t *testing.T) {
 	cases := map[string]string{
-		"run-123_ABC": "run-123_ABC",
+		"run-123_ABC":      "run-123_ABC",
 		"../../etc/passwd": "etcpasswd",
-		"run with spaces": "runwithspaces",
-		"":                "",
+		"run with spaces":  "runwithspaces",
+		"":                 "",
 	}
 	for in, want := range cases {
 		if got := escapePathSegment(in); got != want {

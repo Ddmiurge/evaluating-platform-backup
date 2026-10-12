@@ -136,7 +136,6 @@ func parseLegacyCSV(csvData []byte) ([]model.AttackPayload, error) {
 	return payloads, nil
 }
 
-
 // Preview 预览样本前 N 条（不返回完整内容）
 func (l *Loader) Preview(ctx context.Context, sampleID uuid.UUID, n int) ([]model.AttackPayload, error) {
 	loaded, err := l.LoadSamples(ctx, sampleID)

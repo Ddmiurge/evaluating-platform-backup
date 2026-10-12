@@ -40,7 +40,7 @@ func MaterializeEngineCredentialsWithGeneration(target *EvaluationTargetInput, g
 			// to the target as garbage headers.
 			Headers: copyEngineHeaders(engineTargetRequestHeaders(target.Metadata)),
 			// Agent targets: forward the custom HTTP template verbatim (templates
-				// contain only placeholders, never the secret itself).
+			// contain only placeholders, never the secret itself).
 			AgentEndpoint:        strings.TrimSpace(target.Metadata[TargetMetadataAgentEndpoint]),
 			AgentMethod:          strings.TrimSpace(target.Metadata[TargetMetadataAgentMethod]),
 			AgentHeadersTemplate: strings.TrimSpace(target.Metadata[TargetMetadataAgentHeadersTmpl]),

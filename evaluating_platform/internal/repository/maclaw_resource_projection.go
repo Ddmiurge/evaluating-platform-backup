@@ -229,9 +229,9 @@ const resourcePublicationColumns = `source_expert_user_id, source_maclaw_tenant_
 // queryFirstPublication 统一单条发布的查询/扫描/空结果语义（P2-13）。
 func (r *MaclawResourcePublicationRepository) queryFirstPublication(ctx context.Context, whereSQL string, arg any) (*model.MaclawResourcePublication, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT ` + resourcePublicationColumns + `
+		SELECT `+resourcePublicationColumns+`
 		FROM maclaw_resource_publications
-		WHERE ` + whereSQL, arg)
+		WHERE `+whereSQL, arg)
 	if err != nil {
 		return nil, fmt.Errorf("query maclaw resource publication: %w", err)
 	}

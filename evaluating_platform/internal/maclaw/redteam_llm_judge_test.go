@@ -189,10 +189,10 @@ func TestRuntimeConfigLLMAttackJudgeLimitsResponsesOutputTokens(t *testing.T) {
 
 	judge := NewRuntimeConfigLLMAttackJudge(nil)
 	got, err := judge.callProvider(context.Background(), RuntimeLLMProvider{
-		URL:      server.URL + "/v1",
-		Model:    "judge-model",
-		WireAPI:  "responses",
-		Key:      "sk-test",
+		URL:        server.URL + "/v1",
+		Model:      "judge-model",
+		WireAPI:    "responses",
+		Key:        "sk-test",
 		TimeoutSec: 2,
 	}, "{}")
 	if err != nil {

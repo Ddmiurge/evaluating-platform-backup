@@ -88,23 +88,23 @@ func TestPromptfooPluginCatalogCategoryMetadata(t *testing.T) {
 		t.Fatal("no catalog cards")
 	}
 	cases := map[string]string{
-		"promptfoo_plugin:harmful:cybercrime":            "harmful",
-		"promptfoo_plugin:ascii-smuggling":               "injection",
-		"promptfoo_plugin:excessive-agency":              "injection",
-		"promptfoo_plugin:hallucination":                 "hallucination",
-		"promptfoo_plugin:off-topic":                     "off-topic",
-		"promptfoo_plugin:competitors":                   "brand",
-		"promptfoo_plugin:security-exploit":              "security-exploit",
-		"promptfoo_plugin:politics":                      "sensitive",
+		"promptfoo_plugin:harmful:cybercrime":                            "harmful",
+		"promptfoo_plugin:ascii-smuggling":                               "injection",
+		"promptfoo_plugin:excessive-agency":                              "injection",
+		"promptfoo_plugin:hallucination":                                 "hallucination",
+		"promptfoo_plugin:off-topic":                                     "off-topic",
+		"promptfoo_plugin:competitors":                                   "brand",
+		"promptfoo_plugin:security-exploit":                              "security-exploit",
+		"promptfoo_plugin:politics":                                      "sensitive",
 		"promptfoo_plugin:teen-safety:age-restricted-goods-and-services": "sensitive",
-		"promptfoo_plugin:beavertails":                   "dataset",
-		"promptfoo_plugin:harmbench":                     "dataset",
-		"promptfoo_plugin:medical:hallucination":         "industry",
-		"promptfoo_plugin:financial:sox-compliance":      "industry",
-		"promptfoo_plugin:telecom:cpni-disclosure":       "industry",
-		"promptfoo_plugin:realestate:steering":           "industry",
-		"promptfoo_plugin:ecommerce:pci-dss":             "industry",
-		"promptfoo_plugin:cross-session-leak":            "privacy",
+		"promptfoo_plugin:beavertails":                                   "dataset",
+		"promptfoo_plugin:harmbench":                                     "dataset",
+		"promptfoo_plugin:medical:hallucination":                         "industry",
+		"promptfoo_plugin:financial:sox-compliance":                      "industry",
+		"promptfoo_plugin:telecom:cpni-disclosure":                       "industry",
+		"promptfoo_plugin:realestate:steering":                           "industry",
+		"promptfoo_plugin:ecommerce:pci-dss":                             "industry",
+		"promptfoo_plugin:cross-session-leak":                            "privacy",
 	}
 	for _, card := range cards {
 		want, ok := cases[card.SourceRef]
@@ -126,17 +126,17 @@ func TestPromptfooPluginCatalogSeverityTiers(t *testing.T) {
 		severity[entry.ID] = entry.DefaultSev
 	}
 	for id, want := range map[string]string{
-		"harmful:child-exploitation": "critical",
-		"harmful:weapons:ied":        "critical",
-		"medical:hallucination":      "critical",
+		"harmful:child-exploitation":  "critical",
+		"harmful:weapons:ied":         "critical",
+		"medical:hallucination":       "critical",
 		"pharmacy:dosage-calculation": "critical",
-		"harmful":                    "high",
-		"pii":                        "high",
-		"telecom:cpni-disclosure":    "high",
-		"ecommerce:pci-dss":          "high",
-		"bias":                       "medium",
-		"realestate:steering":        "high",
-		"xstest":                     "low",
+		"harmful":                     "high",
+		"pii":                         "high",
+		"telecom:cpni-disclosure":     "high",
+		"ecommerce:pci-dss":           "high",
+		"bias":                        "medium",
+		"realestate:steering":         "high",
+		"xstest":                      "low",
 	} {
 		if severity[id] != want {
 			t.Fatalf("%s severity = %q, want %q", id, severity[id], want)
@@ -206,16 +206,16 @@ func TestPromptfooEngineCatalogBuilder(t *testing.T) {
 
 	// Values mirrored by promptfoo_engine/tests/catalogClassification.test.ts.
 	for id, want := range map[string][2]string{
-		"harmful:cybercrime":                            {"harmful", "critical"},
-		"medical:hallucination":                         {"industry", "critical"},
-		"pharmacy:dosage-calculation":                   {"industry", "critical"},
-		"harmful":                                       {"harmful", "high"},
-		"telecom:cpni-disclosure":                       {"industry", "high"},
-		"beavertails":                                   {"dataset", "high"},
-		"hallucination":                                 {"hallucination", "medium"},
-		"competitors":                                   {"brand", "low"},
-		"wordplay":                                      {"off-topic", "low"},
-		"xstest":                                        {"dataset", "low"},
+		"harmful:cybercrime":          {"harmful", "critical"},
+		"medical:hallucination":       {"industry", "critical"},
+		"pharmacy:dosage-calculation": {"industry", "critical"},
+		"harmful":                     {"harmful", "high"},
+		"telecom:cpni-disclosure":     {"industry", "high"},
+		"beavertails":                 {"dataset", "high"},
+		"hallucination":               {"hallucination", "medium"},
+		"competitors":                 {"brand", "low"},
+		"wordplay":                    {"off-topic", "low"},
+		"xstest":                      {"dataset", "low"},
 		"teen-safety:age-restricted-goods-and-services": {"sensitive", "high"},
 	} {
 		got, ok := byID[id]

@@ -6,33 +6,33 @@ import (
 
 func TestPromptfooEngineRefsFromPlan(t *testing.T) {
 	cases := []struct {
-		name       string
-		content    string
-		wantOK     bool
+		name        string
+		content     string
+		wantOK      bool
 		wantPlugins []string
 	}{
 		{
-			name:   "selected_capability_refs with promptfoo plugins",
+			name:    "selected_capability_refs with promptfoo plugins",
 			content: `{"selected_capability_refs":["promptfoo_plugin:harmful","promptfoo_plugin:pii"],"test_count":3}`,
 			wantOK:  true,
 		},
 		{
-			name:   "plugins array only",
+			name:    "plugins array only",
 			content: `{"plugins":["harmful","jailbreak"],"note":"x"}`,
 			wantOK:  true,
 		},
 		{
-			name:   "selected_capabilities with source_type",
+			name:    "selected_capabilities with source_type",
 			content: `{"selected_capabilities":[{"source_type":"promptfoo_plugin","source_ref":"promptfoo_plugin:pii"}]}`,
 			wantOK:  true,
 		},
 		{
-			name:   "no engine refs",
+			name:    "no engine refs",
 			content: `{"selected_capability_refs":["sample:123"],"plugins":[]}`,
 			wantOK:  false,
 		},
 		{
-			name:   "not json",
+			name:    "not json",
 			content: `plain text plan`,
 			wantOK:  false,
 		},

@@ -19,8 +19,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"evaluating_platform/internal/model"
 	"evaluating_platform/internal/maclaw/redteam"
+	"evaluating_platform/internal/model"
 )
 
 type fakeCapabilitySearcher struct {

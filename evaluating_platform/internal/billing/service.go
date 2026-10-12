@@ -32,6 +32,7 @@ func NewService(
 		billingRepo: billingRepo,
 	}
 }
+
 // GetBalance 获取用户当前余额
 func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (float64, error) {
 	user, err := s.userRepo.GetByID(ctx, userID)
@@ -40,6 +41,7 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (float64, er
 	}
 	return user.Balance, nil
 }
+
 // GetBillingRecords 分页获取用户计费记录
 func (s *Service) GetBillingRecords(ctx context.Context, userID uuid.UUID, limit, offset int) ([]model.BillingRecord, int, error) {
 	return s.billingRepo.ListByUser(ctx, userID, limit, offset)
@@ -49,6 +51,7 @@ func (s *Service) GetBillingRecords(ctx context.Context, userID uuid.UUID, limit
 func (s *Service) GetTransactionHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]model.BalanceTransaction, int, error) {
 	return s.billingRepo.ListTransactions(ctx, userID, limit, offset)
 }
+
 // Recharge 给用户账户充值（正向余额变动）
 func (s *Service) Recharge(ctx context.Context, userID uuid.UUID, amount float64, description string) error {
 	if amount <= 0 {

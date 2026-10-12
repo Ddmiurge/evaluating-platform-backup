@@ -13,8 +13,8 @@ type AttackSample struct {
 	SubType     string    `json:"sub_type" db:"sub_type"`
 	Name        string    `json:"name" db:"name"`
 	Description string    `json:"description" db:"description"`
-	StoragePath string    `json:"-" db:"storage_path"`          // MinIO 明文路径，不暴露给前端
-	FileHash    string    `json:"file_hash" db:"file_hash"`     // SHA-256 完整性校验
+	StoragePath string    `json:"-" db:"storage_path"`      // MinIO 明文路径，不暴露给前端
+	FileHash    string    `json:"file_hash" db:"file_hash"` // SHA-256 完整性校验
 	SampleCount int       `json:"sample_count" db:"sample_count"`
 	FileSize    int64     `json:"file_size" db:"file_size"`
 	Status      string    `json:"status" db:"status"`
