@@ -780,7 +780,7 @@ func (c *MaclawSrvClient) ConfirmRuntimePlan(ctx context.Context, instanceID, se
 	}
 	if out == nil || out.Run == nil {
 		if out != nil && out.Message != nil {
-			return evaluationJobFromRuntimeMessage(out.Message, sessionID), nil
+			return evaluationJobFromRuntimeMessage(out.Message, sessionID)
 		}
 		return nil, errors.New("maclawsrv confirm response did not include a run")
 	}
@@ -810,7 +810,13 @@ func (c *MaclawSrvClient) latestCompletedRuntimeMessageJob(ctx context.Context, 
 		if strings.TrimSpace(jsonMapString(body, "run_id")) == "" {
 			continue
 		}
-		return evaluationJobFromRuntimeMessage(&msg, sessionID)
+		// 同一段 JSON 上面刚解析成功过，所以这里的 error 不可达；若将来重构
+		// 改变了顺序，skip 也比返回一个「捏造出 completed 的任务」安全。
+		job, err := evaluationJobFromRuntimeMessage(&msg, sessionID)
+		if err != nil {
+			continue
+		}
+		return job
 	}
 	return nil
 }
@@ -824,12 +830,62 @@ func hasAdjacentConfirmUserMessage(messages []RuntimeMessage, assistantIndex int
 		strings.TrimSpace(prev.Metadata["evaluation_action"]) == "confirm_plan"
 }
 
-func evaluationJobFromRuntimeMessage(msg *RuntimeMessage, sessionID string) *EvaluationJob {
-	if msg == nil {
-		return nil
+// errRuntimeMessageBodyCorrupt 表示「这条 runtime 消息的 Content 声称自己是
+// JSON，但解析失败」。
+//
+// 为什么不复用 internal/repository 的 CorruptRowError：那一套的定位信息是
+// 「表 + 行 + 列」，适用于 DB 读路径。这里是 maclaw 服务推给我们的 SSE 消息，
+// 没有表也没有列，强行套用只会造出一个填不满的结构体。此处按 CRITICAL 的
+// 最小形态处理：向上返回 error，由调用方决定拒绝对条消息。
+var errRuntimeMessageBodyCorrupt = errors.New("maclaw runtime message content is not valid json")
+
+// looksLikeJSONObject 粗判「这条 Content 是否自称 JSON」。
+//
+// 存在的理由（很重要）：ask_user 兜底路径（normalizeMaclawSrvMessage）会把
+// Content 置为一段**中文提示语**，那是合法的非 JSON 内容。如果对任何解析失败
+// 都 fail closed，ask_user 会被误判成数据损坏 —— 这是把修复做成了回归。
+//
+// 所以只有「自称 JSON 却解析失败」才算损坏：
+//   - Content 为空            → 缺席，不是损坏（与 json_columns.go 的
+//     「Absent vs corrupt」约定一致）
+//   - Content 是自然语言散文   → ask_user 兜底，合法
+//   - Content 以 { 或 [ 开头  → 自称 JSON，解析失败即为损坏
+func looksLikeJSONObject(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
 	}
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+// evaluationJobFromRuntimeMessage 把一条 assistant 消息转成 EvaluationJob。
+//
+// CRITICAL 判据（对应 audit 2026-10-12 的分级原则）：
+// 解析失败时 `body` 会保持为空，而下游 status 的兜底值是 "completed"
+// （见下方 firstNonEmptyString(..., "completed")）。也就是说：一条内容损坏的
+// 消息，会被**凭空捏造成一个"已完成"的评测任务**。在红队评测平台上这正是
+// 那条最不能错的断言 —— 把"没跑成"渲染成"跑完了"。
+// 因此这里 fail closed，让调用方拿不到这个假阳性。
+//
+// 注意与 latestCompletedRuntimeMessageJob 的区别：那里在调用本函数**之前**
+// 已经成功解析过同一段 JSON（见其内的 Unmarshal 错误分支 continue），所以它
+// 拿到 error 只应 skip；而这里是对外入口，需要把错误如实上抛。
+func evaluationJobFromRuntimeMessage(msg *RuntimeMessage, sessionID string) (*EvaluationJob, error) {
+	if msg == nil {
+		return nil, nil
+	}
+	rawContent := strings.TrimSpace(msg.Content)
 	body := map[string]any{}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(msg.Content)), &body)
+	if rawContent != "" {
+		if err := json.Unmarshal([]byte(rawContent), &body); err != nil {
+			if looksLikeJSONObject(rawContent) {
+				return nil, fmt.Errorf("%w: session=%s message=%s: %v",
+					errRuntimeMessageBodyCorrupt, sessionID, msg.ID, err)
+			}
+			// 非 JSON 的自然语言内容（ask_user 兜底）：不是损坏，按缺席处理。
+			body = map[string]any{}
+		}
+	}
 	metadata := map[string]string{}
 	for _, key := range []string{"response_source", "run_id", "report_id", "target_model", "risk_type", "test_count"} {
 		if value := firstNonEmptyString(jsonMapString(body, key), msg.Metadata[key]); value != "" {
@@ -846,7 +902,7 @@ func evaluationJobFromRuntimeMessage(msg *RuntimeMessage, sessionID string) *Eva
 		ResponseSource:     firstNonEmptyString(metadata["response_source"], msg.Metadata["evaluation_event_type"], status),
 		Metadata:           metadata,
 	}
-	return evaluationJobFromRuntimeRun(run)
+	return evaluationJobFromRuntimeRun(run), nil
 }
 
 func jsonMapString(body map[string]any, key string) string {

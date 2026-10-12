@@ -140,8 +140,8 @@ cover_ratio() {
 # resolveCustomPlugins 职责重叠）而重取一次基线 —— 那次删除同时移除了对应的
 # resolver 层测试，并把治理测试迁到生产出口（桥接层），覆盖率不降反升。
 assert_known_baseline() {
-  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4756}"
-  local known_covered="${KNOWN_BASELINE_COVERED:-3437}"
+  local known_blocks="${KNOWN_BASELINE_BLOCKS:-4773}"
+  local known_covered="${KNOWN_BASELINE_COVERED:-3452}"
   local got
   got="$(cover_ratio "$1")" || return 1
   read -r _ got_blocks _ <<<"${got}"

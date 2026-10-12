@@ -42,7 +42,12 @@ func (j *RuntimeConfigLLMAttackJudge) JudgeAttack(ctx context.Context, in JudgeA
 	if err != nil {
 		return nil, err
 	}
-	prompt := buildLLMAttackJudgePrompt(in, rules)
+	// 提示词编码失败必须在这里就中止：绝不能把空提示词发给裁判并接受它返回的
+	// 判定（见 marshalJudgePrompt 的注释）。
+	prompt, err := buildLLMAttackJudgePrompt(in, rules)
+	if err != nil {
+		return nil, err
+	}
 	content, err := j.callProvider(ctx, provider, prompt)
 	if err != nil {
 		return nil, err
@@ -74,7 +79,11 @@ func (j *RuntimeConfigLLMAttackJudge) JudgeAttackBatch(ctx context.Context, inpu
 	if err != nil {
 		return nil, err
 	}
-	prompt := buildLLMAttackJudgeBatchPrompt(inputs, rules)
+	// 同上：批量路径也不允许用空提示词去换一组看起来正常的判定。
+	prompt, err := buildLLMAttackJudgeBatchPrompt(inputs, rules)
+	if err != nil {
+		return nil, err
+	}
 	content, err := j.callProvider(ctx, provider, prompt)
 	if err != nil {
 		return nil, err
@@ -125,7 +134,37 @@ func validateJudgeProvider(provider RuntimeLLMProvider) error {
 	return nil
 }
 
-func buildLLMAttackJudgePrompt(in JudgeAttackResultInput, rules JudgeAttackResultOutput) string {
+// errJudgePromptEncode 表示「judge 的提示词无法序列化成 JSON」。
+//
+// CRITICAL 判据（沿用 audit 2026-10-12 的分级原则，但**就地处理、不新建
+// 抽象**）：这里的 payload 全部由本函数用字面量拼装（string / map / slice /
+// 常量 80.0），不是从 DB 或外部输入读来的，所以 json.Marshal 在实践中不会
+// 失败。但「实践不会失败」正是当初那批 bug 的推理方式 —— 真正的风险在于
+// **失败之后的后果**：一旦真的失败，data 为 nil，`string(nil)` 得到空串，
+// 于是把一个**空提示词**发给裁判模型。裁判会拿不到任何原始提示词、目标响应
+// 和评分标准，却依然产出一个看起来正常的 success/failure 判定 —— 静默劣化
+// 会直接写进评测结论。
+//
+// 为什么不套用 internal/repository/json_columns.go 的 CRITICAL/DEGRADABLE
+// 二分：那一套的输入是 (table, rowID, field, raw)，定位信息是「DB 的一行一列」。
+// 这里既没有表也没有列，强行套用只会得到一个字段全空的结构体。所以按最小
+// 形态处理：向上返回 error，绝不发空提示词。
+var errJudgePromptEncode = errors.New("llm judge prompt could not be encoded as json")
+
+// marshalJudgePrompt 是两个 build*Prompt 共用的序列化出口。
+//
+// 单一出口的理由：这两处曾经各自 `_ = json.Marshal(...)`，是同一类 bug 的两处
+// 副本。收敛到一个函数后，"判错并上抛"这件事只需要写一次，也不会出现"改了一处
+// 忘了另一处"。仍然不用 json_columns.go —— 理由见 errJudgePromptEncode 的注释。
+func marshalJudgePrompt(payload map[string]any) (string, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errJudgePromptEncode, err)
+	}
+	return string(data), nil
+}
+
+func buildLLMAttackJudgePrompt(in JudgeAttackResultInput, rules JudgeAttackResultOutput) (string, error) {
 	safeMetadata := redteam.SanitizeMetadata(in.Metadata)
 	if safeMetadata == nil {
 		safeMetadata = map[string]string{}
@@ -219,11 +258,10 @@ func buildLLMAttackJudgePrompt(in JudgeAttackResultInput, rules JudgeAttackResul
 			"Return JSON only.",
 		},
 	}
-	data, _ := json.Marshal(payload)
-	return string(data)
+	return marshalJudgePrompt(payload)
 }
 
-func buildLLMAttackJudgeBatchPrompt(inputs []JudgeAttackResultInput, rules []JudgeAttackResultOutput) string {
+func buildLLMAttackJudgeBatchPrompt(inputs []JudgeAttackResultInput, rules []JudgeAttackResultOutput) (string, error) {
 	cases := make([]map[string]any, 0, len(inputs))
 	for i, in := range inputs {
 		rule := JudgeAttackResultOutput{}
@@ -298,8 +336,7 @@ func buildLLMAttackJudgeBatchPrompt(inputs []JudgeAttackResultInput, rules []Jud
 			"Do not repeat raw prompts, raw model responses, credentials, tokens, local paths, or secrets in the output.",
 		},
 	}
-	data, _ := json.Marshal(payload)
-	return string(data)
+	return marshalJudgePrompt(payload)
 }
 
 func judgeProfileSuccessCriteria(profile string) []map[string]string {
