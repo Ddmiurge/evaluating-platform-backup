@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -449,31 +451,123 @@ func applyCORSHeaders(c *gin.Context) {
 	c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
 
+// migrationsDir 是迁移 SQL 文件目录，相对进程工作目录。
+// 生产容器内 WORKDIR=/app，且 docker-compose 将宿主 ./migrations 只读挂载到
+// /app/migrations（见 docker-compose.yml backend.volumes），因此该相对路径
+// 在容器内与本地（仓库根目录起进程）下一致。
+const migrationsDir = "migrations"
+
+// migrationFiles 是启动时按序执行的迁移清单（含目录前缀的相对路径）。
+//
+// 这份清单与 migrationsDir 下的 .sql 文件必须保持 1:1 —— 二者漂移的后果
+// 曾是真实的生产故障：U5 新增 migrations/027_engine_run_job_link.sql 与
+// 写 job_id 的持久层代码，但漏登记本清单；pkg/db.MigrateUp 无版本跟踪、
+// 只执行清单内文件，线上库因此停留在 026 结构（engine_runs 无 job_id 列），
+// 「确认执行」全线 502 engine_submit_failed
+// （column "job_id" of relation "engine_runs" does not exist，SQLSTATE 42703，
+// 见仓库根 audit-2026-10-12-engine-confirm-failure.md）。
+//
+// 除 027 外，本清单还补登记了 002/004/006/007/008/011~015 共 10 个历史
+// 遗留文件：它们自最早的备份快照起就未入清单（清单与文件系统长期漂移），
+// 但其建表结果（chat_sessions、app_detectors、*_llm_configs、
+// external_mcp_*、skills 等）经 docs/architecture/legacy-schema-registry.md
+// 登记为现存于生产 schema 的历史表（DD-8=B 保留不 drop），且全部幂等，
+// 补登记后对存量库为无操作，对全新库则补全文档所述 schema。
+//
+// 防漂移机制（fail-closed，两层）：
+//  1. 启动断言 assertMigrationRegistry：目录与清单任一方向漂移即拒绝启动，
+//     漏登记在动库之前就暴露，而非等到运行期某条 SQL 缺列才炸；
+//  2. 回归测试 TestMigrationRegistryCoversDirectory（cmd/server/main_test.go）：
+//     CI 侧等价断言，漏登记直接测试红。
+var migrationFiles = []string{
+	"migrations/001_init.sql",
+	"migrations/002_chat.sql",
+	"migrations/003_tool_categories.sql",
+	"migrations/004_app_detector.sql",
+	"migrations/005_fix_attack_samples_columns.sql",
+	"migrations/006_auxiliary_llm_configs.sql",
+	"migrations/007_llm_configs.sql",
+	"migrations/008_remove_collecting_api_state.sql",
+	"migrations/009_template_upload_batches.sql",
+	"migrations/010_composed_attacks.sql",
+	"migrations/011_external_mcp_servers.sql",
+	"migrations/012_external_mcp_upstream_config.sql",
+	"migrations/013_skills.sql",
+	"migrations/014_skill_status_disabled.sql",
+	"migrations/015_skill_config_values.sql",
+	"migrations/016_maclaw_account_mappings.sql",
+	"migrations/017_maclaw_resource_projection.sql",
+	"migrations/018_maclaw_model_defaults.sql",
+	"migrations/019_maclaw_skill_projection.sql",
+	"migrations/020_maclaw_hub_configs.sql",
+	"migrations/021_maclaw_target_configs.sql",
+	"migrations/022_maclaw_redteam_artifacts.sql",
+	"migrations/023_maclaw_resources.sql",
+	"migrations/024_template_custom_categories.sql",
+	"migrations/025_attack_sample_categories.sql",
+	"migrations/026_promptfoo_engine.sql",
+	"migrations/027_engine_run_job_link.sql",
+}
+
+// runMigrations 按 migrationFiles 清单顺序执行迁移。
+//
+// 先跑清单一致性断言再动库：漏登记的迁移必须在连接数据库执行 SQL 之前
+// 就暴露（拒绝启动），而不是像 027 那样等到运行期 INSERT 缺列才炸。
 func runMigrations(ctx context.Context, pgPool *pgxpool.Pool) {
-	paths := []string{
-		"migrations/001_init.sql",
-		"migrations/003_tool_categories.sql",
-		"migrations/005_fix_attack_samples_columns.sql",
-		"migrations/009_template_upload_batches.sql",
-		"migrations/010_composed_attacks.sql",
-		"migrations/016_maclaw_account_mappings.sql",
-		"migrations/017_maclaw_resource_projection.sql",
-		"migrations/018_maclaw_model_defaults.sql",
-		"migrations/019_maclaw_skill_projection.sql",
-		"migrations/020_maclaw_hub_configs.sql",
-		"migrations/021_maclaw_target_configs.sql",
-		"migrations/022_maclaw_redteam_artifacts.sql",
-		"migrations/023_maclaw_resources.sql",
-		"migrations/024_template_custom_categories.sql",
-		"migrations/025_attack_sample_categories.sql",
-		"migrations/026_promptfoo_engine.sql",
+	if err := assertMigrationRegistry(migrationsDir, migrationFiles); err != nil {
+		log.Fatalf("[FATAL] %v", err)
 	}
-	for _, path := range paths {
+	for _, path := range migrationFiles {
 		if err := db.MigrateUp(ctx, pgPool, path); err != nil {
 			log.Fatalf("[FATAL] run migration %s: %v", path, err)
 		}
 	}
 	logger.Info("database migration completed")
+}
+
+// assertMigrationRegistry 双向校验迁移清单与磁盘目录一致：
+//
+//   - 目录下有 .sql 文件不在 files 清单中 → 漏登记（027 故障根因）；
+//   - files 清单引用了目录中不存在的文件 → 清单陈旧（迁移被删/改名未同步）。
+//
+// 两个方向都视为 drift：前者意味着该迁移永不执行，后者意味着部署包与代码
+// 不是同一版本。返回 nil 表示 1:1 一致。files 以参数注入以便测试构造漂移
+// 场景（生产调用方传入 migrationFiles）。
+func assertMigrationRegistry(dir string, files []string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read migrations dir %q: %w", dir, err)
+	}
+
+	onDisk := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		onDisk[filepath.ToSlash(filepath.Join(dir, entry.Name()))] = true
+	}
+
+	var unregistered, stale []string
+	for _, path := range files {
+		key := filepath.ToSlash(path)
+		if !onDisk[key] {
+			stale = append(stale, path)
+			continue
+		}
+		delete(onDisk, key)
+	}
+	for path := range onDisk {
+		unregistered = append(unregistered, path)
+	}
+	sort.Strings(unregistered)
+	sort.Strings(stale)
+
+	if len(unregistered) > 0 || len(stale) > 0 {
+		return fmt.Errorf("migration registry drift: present in %s/ but not registered: %v; "+
+			"registered but missing on disk: %v — fix migrationFiles in cmd/server/main.go "+
+			"to match %s/ 1:1", dir, unregistered, stale, dir)
+	}
+	return nil
 }
 
 func newMinIOClientWithRetry(cfg config.StorageConfig, attempts int, delay time.Duration) (*storage.MinIOClient, error) {
