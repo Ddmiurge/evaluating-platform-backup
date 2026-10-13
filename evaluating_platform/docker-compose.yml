@@ -225,6 +225,32 @@ services:
       PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: "1"
       PROMPTFOO_DISABLE_TELEMETRY: "1"
       PROMPTFOO_DISABLE_SHARE: "1"
+      # ── U7 · 阶段一：打开 promptfoo 原生生成（Plan C）─────────────────────────
+      #
+      # 这是**阶段一的全部改动** —— 一个环境变量，零代码改动。它选择的是
+      # 「谁写攻击提示词」：Plan A 由平台拼（`redteamRun.ts`，promptfoo 只做
+      # 执行器），Plan C 由 promptfoo 自己的插件模板产出（`nativeRedteam.ts`）。
+      #
+      # **默认打开**（`:-1`）是本阶段的决定；`env.ts:parseBool` 把「未设置」与
+      # 「拼错」一律映射为 false，所以回滚是在 `.env` 里写
+      # `PROMPTFOO_ENGINE_NATIVE_GENERATION=0` —— **不改代码、不做数据迁移**
+      # （`env.ts:96-97` 承诺的「一个变量即可回滚」在部署侧同样成立）。
+      #
+      # ⚠️ **开关打开不放松上面四个 fail-closed**，而是**追加**校验
+      # （`env.ts:assertNativeGenerationInvariants`，原生开关为真时才跑）：
+      #   - `OPENAI_API_KEY` 必须不存在 —— promptfoo 的 `shouldGenerateRemote()`
+      #     只要看到它就返回 true，即便两个远程开关都关了；其
+      #     `loadRedteamProvider` 还会静默回落到 `openai:gpt-5.5-*`。
+      #   - `PROMPTFOO_REMOTE_GENERATION_URL` 同理（`shouldGenerateRemote()` 短路）。
+      #   - `PROMPTFOO_CONFIG_DIR` 必须不存在 —— 它会把 Promptfoo Cloud 的登录
+      #     状态暴露给库，而 `isLoggedIntoCloud()` 也是远程生成的触发条件之一。
+      # 任一条不满足 → 引擎 `[FATAL]` 拒绝启动。**本节刻意不设置这三个变量。**
+      #
+      # 打开后同时挂载 `server.ts:60-62` 的 `onTerminal` 清理钩子：Plan C 会让
+      # promptfoo 落盘 SQLite（`write: true` 在上游硬编码，无法关闭），钩子负责
+      # 在成功/失败/中止三条终态路径删掉产物，清理失败把 run 降级为
+      # `failed` + `terminal_cleanup_failed` 而不是静默留残留。
+      PROMPTFOO_ENGINE_NATIVE_GENERATION: "${PROMPTFOO_ENGINE_NATIVE_GENERATION:-1}"
       # U10: declares the read-only root contract to the engine, which reports
       # it in its sandbox report and (with the probe below) actually tests it.
       PROMPTFOO_ENGINE_READONLY_ROOT: "1"
