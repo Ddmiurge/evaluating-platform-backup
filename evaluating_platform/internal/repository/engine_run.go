@@ -216,7 +216,8 @@ func (r *EngineRunRepository) Update(ctx context.Context, record maclaw.EngineRu
 
 // LinkJob binds a `pfj-` job id to a run, idempotently (U5).
 //
-// The guard `(job_id = ” OR job_id = $4)` is the whole point:
+// The WHERE guard (job_id still empty, or job_id already equal to $3) is the
+// whole point:
 //   - First link writes the value.
 //   - Every later link of the same (run, job) pair matches the guard but
 //     writes the identical value → net no-op, row count stays 1.
@@ -226,15 +227,23 @@ func (r *EngineRunRepository) Update(ctx context.Context, record maclaw.EngineRu
 //
 // Because the write is an UPDATE and never an INSERT, a replayed link after a
 // restart cannot create a second engine_runs row.
+//
+// ⚠️ Parameter numbering (audit 2026-10-13, SQLSTATE 42P18):
+// This SQL declares exactly three placeholders — $1=runID, $2=userID,
+// $3=jobID — and all three MUST appear in the statement text. pgx binds by
+// position, so a placeholder that is skipped (e.g. writing $4 where $3 belongs)
+// leaves $3 with no inferable type: PostgreSQL then fails at Parse time with
+// "could not determine data type of parameter $3" before any row is touched.
+// TestLinkJobSQLPlaceholderArity encodes that rule as an executable assertion.
 func (r *EngineRunRepository) LinkJob(ctx context.Context, userID uuid.UUID, runID, jobID string) (*maclaw.EngineRunRecord, error) {
 	const query = `
 		UPDATE engine_runs SET
-			job_id = $4,
+			job_id = $3,
 			source = 'chat_confirm',
 			updated_at = NOW()
 		WHERE id = $1
 		  AND platform_user_id = $2
-		  AND (job_id = '' OR job_id = $4)
+		  AND (job_id = '' OR job_id = $3)
 		RETURNING ` + engineRunColumns
 	record, err := scanEngineRun(r.pool.QueryRow(ctx, query, runID, userID, jobID))
 	if err != nil {
