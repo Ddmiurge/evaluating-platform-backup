@@ -108,7 +108,7 @@ export const engineEvalService = {
 
 /** 内置引擎插件目录（由后端 promptfoo_plugin_catalog.go 生成的同源清单，勿手改 id）。 */
 export const ENGINE_PLUGIN_OPTIONS: ReadonlyArray<EnginePluginCatalogOption> = [
-{ id: 'harmful', name: '有害内容检测', category: 'harmful' },
+{ id: 'harmful', name: '有害内容检测', category: 'harmful', fanout: 26 },
 { id: 'harmful:child-exploitation', name: '儿童剥削内容', category: 'harmful', requires_remote_generation: true },
 { id: 'harmful:chemical-biological-weapons', name: '化学生物武器', category: 'harmful', requires_remote_generation: true },
 { id: 'harmful:indiscriminate-weapons', name: '大规模杀伤武器', category: 'harmful', requires_remote_generation: true },
@@ -134,13 +134,12 @@ export const ENGINE_PLUGIN_OPTIONS: ReadonlyArray<EnginePluginCatalogOption> = [
 { id: 'harmful:intellectual-property', name: '知识产权侵犯', category: 'harmful' },
 { id: 'harmful:specialized-advice', name: '无资质专业建议', category: 'harmful', requires_remote_generation: true },
 { id: 'harmful:unsafe-practices', name: '危险行为教唆', category: 'harmful', requires_remote_generation: true },
-{ id: 'pii', name: '隐私信息泄露检测', category: 'privacy' },
+{ id: 'pii', name: '隐私信息泄露检测', category: 'privacy', fanout: 4 },
 { id: 'pii:direct', name: '直接索要隐私', category: 'privacy' },
 { id: 'pii:social', name: '社工套取隐私', category: 'privacy' },
 { id: 'pii:api-db', name: 'API/数据库隐私外泄', category: 'privacy' },
 { id: 'pii:session', name: '会话数据泄露', category: 'privacy' },
 { id: 'cross-session-leak', name: '跨会话数据泄漏', category: 'privacy' },
-{ id: 'prompt-injection', name: '提示注入检测', category: 'injection' },
 { id: 'indirect-prompt-injection', name: '间接提示注入检测', category: 'injection', requires_remote_generation: true },
 { id: 'ascii-smuggling', name: 'ASCII 走私检测', category: 'injection', requires_remote_generation: true },
 { id: 'excessive-agency', name: '过度代理行为检测', category: 'injection' },
@@ -149,13 +148,11 @@ export const ENGINE_PLUGIN_OPTIONS: ReadonlyArray<EnginePluginCatalogOption> = [
 { id: 'prompt-extraction', name: '系统提示词窃取', category: 'injection' },
 { id: 'mcp', name: 'MCP 协议攻击', category: 'injection', requires_remote_generation: true },
 { id: 'agentic:memory-poisoning', name: 'Agent 记忆投毒', category: 'injection', requires_remote_generation: true },
-{ id: 'jailbreak', name: '越狱对抗检测', category: 'jailbreak' },
-{ id: 'bias', name: '偏见与歧视检测', category: 'bias' },
+{ id: 'bias', name: '偏见与歧视检测', category: 'bias', fanout: 6 },
 { id: 'bias:age', name: '年龄偏见', category: 'bias', requires_remote_generation: true },
 { id: 'bias:gender', name: '性别偏见', category: 'bias', requires_remote_generation: true },
 { id: 'bias:race', name: '种族偏见', category: 'bias', requires_remote_generation: true },
 { id: 'bias:disability', name: '残障偏见', category: 'bias', requires_remote_generation: true },
-{ id: 'security-exploit', name: '安全利用类检测', category: 'security-exploit' },
 { id: 'reasoning-dos', name: '推理资源耗尽', category: 'security-exploit', requires_remote_generation: true },
 { id: 'hallucination', name: '幻觉与事实性检测', category: 'hallucination' },
 { id: 'overreliance', name: '过度信赖', category: 'hallucination' },
@@ -168,7 +165,7 @@ export const ENGINE_PLUGIN_OPTIONS: ReadonlyArray<EnginePluginCatalogOption> = [
 { id: 'religion', name: '宗教敏感话题', category: 'sensitive', requires_remote_generation: true },
 { id: 'teen-safety:age-restricted-goods-and-services', name: '未成年人保护', category: 'sensitive' },
 { id: 'contracts', name: '合同法律错误', category: 'industry' },
-{ id: 'policy', name: '政策违规', category: 'industry' },
+{ id: 'policy', name: '政策违规', category: 'industry', requires_config: true },
 { id: 'beavertails', name: 'BeaverTails 有害问答基准', category: 'dataset' },
 { id: 'harmbench', name: 'HarmBench 攻击技术基准', category: 'dataset' },
 { id: 'pliny', name: 'Pliny 越狱库基准', category: 'dataset' },
@@ -233,7 +230,6 @@ export const ENGINE_PLUGIN_CATEGORY_LABELS: Record<string, string> = {
   harmful: "有害内容",
   privacy: "隐私泄露",
   injection: "提示注入",
-  jailbreak: "越狱对抗",
   bias: "偏见歧视",
   "security-exploit": "安全利用",
   hallucination: "幻觉与事实性",
@@ -324,22 +320,58 @@ export const ENGINE_STRATEGY_OPTIONS: ReadonlyArray<EngineCatalogOption> = [
 export const REMOTE_GENERATION_UNAVAILABLE_REASON =
   '需远程生成 · 当前环境已屏蔽（平台强制关闭 promptfoo 远程生成以防数据外泄）'
 
+/**
+ * P2-1：`requires_config` 的提示文案。
+ *
+ * 与上一句刻意不同：那句说的是「本环境永远跑不了」，这句说的是「补一份配置就
+ * 能跑」。把两者写成一句会让用户以为 `policy` 是个坏掉的选项，而不是一个平台
+ * 还没做上传入口的能力。
+ */
+export const PLUGIN_REQUIRES_CONFIG_REASON =
+  '需先提供策略文档 · 已支持该插件，但平台尚未收集 config.policy 文本，选中它本次会生成 0 条用例'
+
 /** 引擎在请求含被标记项时返回的 error_code（与后端常量一致）。 */
 export const REMOTE_GENERATION_ERROR_CODES = {
   plugin: 'plugin_requires_remote_generation',
   strategy: 'strategy_requires_remote_generation',
 } as const
 
-/** 一条插件/策略选项。requires_remote_generation 由后端目录生成。 */
+/**
+ * P2-2：后端在插件 id 非法时返回的 error_code（与 `maclaw.EngineErrPluginIDInvalid`
+ * 逐字一致）。
+ *
+ * 与上面两个码分开，因为处置不同：远程依赖是「本环境跑不了」，这个是「这个 id
+ * 从来就不存在」，后者还附带 `guidance`（能力搬到哪里去了）。
+ */
+export const PLUGIN_ID_INVALID_CODE = 'plugin_id_invalid'
+
+/**
+ * 一条插件/策略选项。requires_remote_generation 由后端目录生成。
+ *
+ * P2-1 新增 `requires_config`：**合法但缺配置**（当前仅 `policy`，它
+ * `safeParse` 通过、fanout=1，只是平台还没有 `config.policy` 文本）。
+ * 它与 `requires_remote_generation` 是两种不同的失败：远程依赖是「本环境
+ * 永远跑不了」，requires_config 是「补一份配置就能跑」。所以它**不置灰**
+ * ——置灰会把一个即将支持的能力伪装成不可用。
+ */
 export interface EngineCatalogOption {
   id: string
   name: string
   requires_remote_generation?: boolean
+  requires_config?: boolean
 }
 
-/** 插件选项额外带风险类别（与后端 catalog 的 category 对齐）。 */
+/**
+ * 插件选项额外带风险类别（与后端 catalog 的 category 对齐）。
+ *
+ * `fanout` 是该 id 展开成的子插件数（`harmful`=26、`pii`=4、`bias`=6，其余为 1）。
+ * promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以
+ * 「实际探针数 = numTests × Σfanout」—— 只看插件个数会低估最坏路径
+ * （表单默认值恰好是 `plugins: ['harmful']`）。由后端目录生成。
+ */
 export interface EnginePluginCatalogOption extends EngineCatalogOption {
   category: string
+  fanout?: number
 }
 
 /** 灰态选项：保留可见 + 置灰 + 附屏蔽原因，供 Select 的 options 使用。 */
@@ -349,6 +381,15 @@ export interface EngineSelectOption {
   disabled: boolean
   /** 灰态原因；非灰态为 undefined。 */
   reason?: string
+  /**
+   * P2-1：`requires_config` 的说明；未标 config-gated 时为 undefined。
+   *
+   * 与 `reason` **不是同一件事**，所以不复用同一个字段：`reason` 伴随
+   * `disabled: true`（当前环境永远跑不了），而这里伴随 `disabled: false`
+   * ——选项仍可选，只是要提醒用户「选了它这次跑不出用例，因为还缺一份配置」。
+   * 合成一个字段会逼 UI 在「置灰」和「提示」之间二选一。
+   */
+  configReason?: string
 }
 
 /**
@@ -366,6 +407,16 @@ export function toEngineSelectOption(option: EngineCatalogOption): EngineSelectO
       reason: REMOTE_GENERATION_UNAVAILABLE_REASON,
     }
   }
+  // P2-1：`requires_config` 不置灰。置灰会把「补一份配置就能跑」伪装成
+  // 「本环境不可用」，而那正是我们想避免的误导。
+  if (option.requires_config) {
+    return {
+      value: option.id,
+      label: option.name,
+      disabled: false,
+      configReason: PLUGIN_REQUIRES_CONFIG_REASON,
+    }
+  }
   return { value: option.id, label: option.name, disabled: false }
 }
 
@@ -377,6 +428,107 @@ export function isPluginRemoteGenerationGated(id: string): boolean {
 /** 判断某个策略 id 是否被远程依赖屏蔽。 */
 export function isStrategyRemoteGenerationGated(id: string): boolean {
   return ENGINE_STRATEGY_OPTIONS.some((o) => o.id === id && o.requires_remote_generation === true)
+}
+
+/**
+ * 判断某个插件 id 是否「合法但缺配置」（P2-1，当前仅 `policy`）。
+ *
+ * 与 `isPluginRemoteGenerationGated` 是**两种不同的失败**，不能合并成一个
+ * `disabled` 开关：远程依赖是「本环境永远跑不了」，requires_config 是
+ * 「补一份配置就能跑」。所以它不参与 `toEngineSelectOption` 的置灰分支——
+ * 置灰会把一个即将支持的能力伪装成不可用。
+ */
+export function isPluginConfigGated(id: string): boolean {
+  return ENGINE_PLUGIN_OPTIONS.some((o) => o.id === id && o.requires_config === true)
+}
+
+/**
+ * 返回该 id 展开成的子插件数（默认 1）。
+ *
+ * promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以实际探针数是
+ * `num_tests × Σfanout`：`harmful`=26、`pii`=4、`bias`=6，其余为 1。只按
+ * 「选了几个插件」估算成本会把最坏路径低估 26 倍，而表单默认值恰好就是
+ * `plugins: ['harmful']`。
+ */
+export function pluginFanout(id: string): number {
+  return ENGINE_PLUGIN_OPTIONS.find((o) => o.id === id)?.fanout ?? 1
+}
+
+/**
+ * 一组插件 id 展开后的子插件总数，即 `num_tests` 的真实乘数（P0-1 的权重源）。
+ *
+ * 空串与重复项按「一次选择」计：重复勾选同一 id 不应让用户以为成本翻倍，
+ * 而空串是下拉多选的正常残留。
+ */
+export function totalPluginFanout(ids: readonly string[]): number {
+  const seen = new Set<string>()
+  let total = 0
+  for (const id of ids) {
+    const trimmed = id.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    total += pluginFanout(trimmed)
+  }
+  return total
+}
+
+/**
+ * P2-1 已下线的插件 id 及其替代路径（与后端 retiredPluginCatalog 同源）。
+ *
+ * 为什么要留这张表：把必然失败的选项删掉只解决了「会报错」，没解决
+ * 「用户要的能力去哪了」。策略目录早就把 `jailbreak` / `prompt-injection`
+ * 识别成废弃别名并给出推荐替代，插件目录一直没做同一件事 —— 这正是这三个
+ * id 能长期混在插件选择器里的根因。
+ *
+ * 与 `requires_remote_generation` 的处置相反：这里**不置灰**，因为替代项是
+ * 真实存在且可用的（`iterative:meta` / `iterative:tree` 等），引导过去即可。
+ */
+export interface RetiredEnginePlugin {
+  id: string
+  name: string
+  reason: string
+  /** 替代能力所在的槽位：'strategy' | 'plugin'。 */
+  replacement_slot: 'strategy' | 'plugin'
+  replacement_ids: string[]
+  replacement_label: string
+}
+
+export const RETIRED_ENGINE_PLUGINS: ReadonlyArray<RetiredEnginePlugin> = [
+  {
+    id: 'jailbreak',
+    name: '越狱对抗检测',
+    reason:
+      'jailbreak 在 promptfoo 里是攻击策略而非插件，作为插件 id 会被引擎拒绝，该次运行必然失败。',
+    replacement_slot: 'strategy',
+    replacement_ids: ['iterative:meta', 'iterative:tree'],
+    replacement_label:
+      '「越狱对抗检测」是攻击维度、不是插件维度；越狱类攻击手法请在「攻击策略」中选择「元提示越狱」或「树搜索越狱」。',
+  },
+  {
+    id: 'prompt-injection',
+    name: '提示注入检测',
+    reason:
+      '平台自造的 id，promptfoo 没有同名插件；其语义由「间接提示注入检测」承接，但后者依赖远程生成、当前环境已屏蔽。',
+    replacement_slot: 'strategy',
+    replacement_ids: ['jailbreak-templates'],
+    replacement_label:
+      '「提示注入检测」已下线；提示注入攻击手法可在「攻击策略」中选择「越狱模板库」。间接提示注入面当前环境需远程生成、已屏蔽。',
+  },
+  {
+    id: 'security-exploit',
+    name: '安全利用类检测',
+    reason:
+      '平台自造的 id，promptfoo 把它拆成 sql-injection / shell-injection / ssrf 等多个具体插件，没有单一对应项。',
+    replacement_slot: 'plugin',
+    replacement_ids: ['reasoning-dos'],
+    replacement_label:
+      '「安全利用类检测」已下线；资源耗尽类攻击请选「推理资源耗尽」。SQL 注入 / 命令注入等具体利用面尚未入库。',
+  },
+]
+
+/** 查某个已下线插件 id 的替代引导；未下线返回 undefined。 */
+export function retiredEnginePluginGuidance(id: string): RetiredEnginePlugin | undefined {
+  return RETIRED_ENGINE_PLUGINS.find((o) => o.id === id)
 }
 
 /**
@@ -398,5 +550,32 @@ export function explainRemoteGenerationRejection(
   return {
     code: body.code,
     message: `${REMOTE_GENERATION_UNAVAILABLE_REASON}。${blocked.length > 0 ? `本次请求包含：${blocked.join('、')}。` : ''}请改选可本地生成的能力后重试。`,
+  }
+}
+
+/**
+ * P2-2：把后端 `plugin_id_invalid`（409）翻译成可读提示。
+ *
+ * 与上面那个函数分开，因为两件事的处置不同：远程依赖是「这个能力在本环境跑不
+ * 了」，plugin_id_invalid 是「这个 id 从来就不存在」。前者要换选项，后者要知
+ * 道能力搬到哪里去了——所以后端把 `guidance` 一起下发，这里原样带出来。
+ */
+export function explainPluginIDRejection(
+  data: unknown,
+): { message: string; code: string } | null {
+  const body = data as { code?: string; error?: string; invalid_plugins?: string[]; guidance?: RetiredEnginePlugin[] } | null
+  if (!body || body.code !== PLUGIN_ID_INVALID_CODE) return null
+  const invalid = (body.invalid_plugins ?? []).filter((id) => typeof id === 'string' && id.trim() !== '')
+  const guidance = (body.guidance ?? [])
+    .map((g) => g?.replacement_label)
+    .filter((label): label is string => typeof label === 'string' && label.trim() !== '')
+  // 后端已经写好了完整句（含每个 id 的原因），优先原样展示，避免前端再拼一
+  // 遍导致两处措辞漂移。后端没给 error 时才本地兜底，并把替代路径带上——
+  // 只说「id 无效」而不说能力去哪了，用户只能自己猜。
+  const fallback = `本次请求包含 promptfoo 不接受的插件 id${invalid.length > 0 ? `：${invalid.join('、')}` : ''}。`
+    + (guidance.length > 0 ? ` ${guidance.join(' ')}` : '')
+  return {
+    message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
+    code: body.code,
   }
 }

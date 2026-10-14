@@ -36,8 +36,11 @@ type PromptfooEngineRunner interface {
 const (
 	promptfooEnginePollInterval = 2 * time.Second
 	promptfooEnginePollTimeout  = 12 * time.Minute
+	// promptfooEngineDefaultTests only applies when the confirmed plan carried no
+	// count at all. It stays lower than the wizard default (20) on purpose: a
+	// chat-initiated run has less explicit user intent behind its number, so the
+	// conservative default belongs here.
 	promptfooEngineDefaultTests = 5
-	promptfooEngineMaxTests     = 50
 )
 
 // SearchRedteamPluginCatalogInput is the search tool input.
@@ -179,13 +182,28 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if err := ValidateEngineRunRemoteGeneration(plugins, strategies); err != nil {
 		return nil, err
 	}
+	// P2-2 pre-flight guard: same rule as the wizard path, and for the same
+	// reason plus one more. The confirm fast path builds plugin ids from a chat
+	// plan card, which an LLM names freely — so `prompt-injection` (a plausible
+	// thing for a planner to write, and a real platform id until P2-1) can
+	// arrive here even though the selector no longer offers it. Refusing now
+	// costs nothing; refusing later means a persisted run that fails after the
+	// user waited.
+	if err := ValidateEngineRunPluginLegality(plugins); err != nil {
+		return nil, err
+	}
 	judgeMode := engineJudgeModeFromString(in.JudgeMode)
 	numTests := in.NumTests
 	if numTests <= 0 {
 		numTests = promptfooEngineDefaultTests
 	}
-	if numTests > promptfooEngineMaxTests {
-		numTests = promptfooEngineMaxTests
+	// P2-2 (S-4): refuse rather than clamp. A confirmed count is the number the
+	// user approved on the plan card, so quietly running fewer rounds would make
+	// the report and the approval disagree with nothing in the response saying
+	// so. The cap is EngineMaxNumTests — the same one the wizard enforces and the
+	// same one the engine clamps at, so the three cannot drift apart again.
+	if numTests > EngineMaxNumTests {
+		return nil, &EngineNumTestsTooLargeError{Requested: numTests, Max: EngineMaxNumTests}
 	}
 	// U10: resolve expert-published packages and apply admin governance.
 	//

@@ -21,11 +21,11 @@ func TestPromptfooPluginCatalogL1Expansion(t *testing.T) {
 		"harmful:illegal-drugs:meth", "harmful:radicalization", "harmful:misinformation-disinformation",
 		// privacy / injection family
 		"pii", "pii:direct", "pii:social", "pii:api-db", "pii:session", "cross-session-leak",
-		"prompt-injection", "indirect-prompt-injection", "ascii-smuggling", "excessive-agency",
+		"indirect-prompt-injection", "ascii-smuggling", "excessive-agency",
 		"hijacking", "system-prompt-override", "prompt-extraction", "mcp", "agentic:memory-poisoning",
 		// core
-		"jailbreak", "bias", "bias:age", "bias:gender", "bias:race", "bias:disability",
-		"security-exploit", "reasoning-dos", "hallucination", "overreliance", "divergent-repetition",
+		"bias", "bias:age", "bias:gender", "bias:race", "bias:disability",
+		"reasoning-dos", "hallucination", "overreliance", "divergent-repetition",
 		"off-topic", "wordplay", "competitors", "imitation",
 		"politics", "religion", "teen-safety:age-restricted-goods-and-services",
 		"contracts", "policy",
@@ -42,6 +42,22 @@ func TestPromptfooPluginCatalogL1Expansion(t *testing.T) {
 	} {
 		if !byID[want] {
 			t.Fatalf("missing plugin id %q (catalog has %d entries)", want, len(ids))
+		}
+	}
+
+	// P2-1 · L1：三个 promptfoo 不接受的 id 已移出目录。
+	//
+	// 断言「不在目录里」与断言「在目录里」同等重要：这三个 id 曾经就在这里，
+	// 而它们被选中时整 run 必然失败（promptfoo zod 拒绝，不是降级）。
+	// 反证：把任意一个塞回 promptfooPluginCatalog → 本测试红。
+	for _, gone := range IllegalPluginIDs() {
+		if byID[gone] {
+			t.Errorf("已下线的非法 plugin id %q 仍在目录里；选中它的 run 必然失败", gone)
+		}
+		// 而它必须仍然**可被解释**：移出只解决「会报错」，不解决
+		// 「用户要的能力去哪了」。没有引导的删除会被当成功能退化。
+		if _, ok := PromptfooRetiredPluginGuidance(gone); !ok {
+			t.Errorf("非法 plugin id %q 已移出目录，但 retiredPluginCatalog 没有记录替代路径", gone)
 		}
 	}
 }

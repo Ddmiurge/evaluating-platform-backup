@@ -121,6 +121,14 @@ export const NATIVE_ERR_MISSING_PROVIDER = 'native_generation_provider_missing';
 export const NATIVE_ERR_INVALID_PROVIDER = 'native_generation_provider_invalid';
 export const NATIVE_ERR_NO_TEST_CASES = 'native_generation_no_test_cases';
 export const NATIVE_ERR_CONFIG = 'native_generation_config_invalid';
+/**
+ * A plugin id the platform catalogue does not offer. Distinct from
+ * NATIVE_ERR_CONFIG because it is a verdict about the REQUEST, not about the
+ * document we built: the caller can fix it by choosing a different plugin,
+ * whereas a config error means the platform produced something promptfoo
+ * cannot read.
+ */
+export const NATIVE_ERR_PLUGIN_ID_INVALID = 'native_generation_plugin_id_invalid';
 
 /** Hostnames promptfoo's provider layer would treat as "not our endpoint". */
 const FORBIDDEN_PROVIDER_HOSTS = [
@@ -202,6 +210,80 @@ export function assertSafeProviderUrl(rawUrl: string, slot: 'target' | 'provider
       `${slot} endpoint ${host} is a model vendor default; native generation must use a platform-operated endpoint`,
     );
   }
+}
+
+/**
+ * Refuse a plugin id the platform has MEASURED promptfoo to reject.
+ *
+ * # What this does and does not refuse
+ *
+ * It refuses exactly the ids in `catalog.rejected_plugin_ids` — the ids the
+ * backend determined, by evaluating promptfoo's own `RedteamConfigSchema`, that
+ * the engine cannot accept (`prompt-injection`, `jailbreak`,
+ * `security-exploit` today). It deliberately does NOT refuse every id absent
+ * from `catalog.plugins`: the catalogue is the platform's OFFERED set, which is
+ * a strict subset of what promptfoo accepts, and U8 already decided that an
+ * unlisted-but-acceptable plugin still runs (judged by the named
+ * `fallback:unmapped` rubric so the gap is visible). Rejecting on catalogue
+ * membership would refuse valid plugins —
+ * `sql-injection` / `shell-injection` are the measured examples, and the plan
+ * treats them as catalogue gaps to fill, not as runs to block.
+ *
+ * # Why the verdict is consumed rather than re-derived here
+ *
+ * promptfoo's acceptance is only knowable from its zod schema, which lives in a
+ * content-hashed chunk behind a minified export. Resolving that at engine boot
+ * would add a production dependency on promptfoo internals that breaks on any
+ * upgrade and bricks the container when it does. The backend already evaluates
+ * that schema offline and ships the result, CI-pinned — the same
+ * generated-table discipline U6 uses for remote dependencies. The engine
+ * consuming that table is the same authority, sampled once and pinned.
+ *
+ * # Why it is still the engine's job
+ *
+ * The BFF rejects rejected ids at the request boundary (P2-2 L2) and the
+ * catalogue no longer offers them (L1). The chat confirm fast path submits
+ * engine requests directly, and a stale queued request can predate both — so
+ * the last line is worth having. Without it promptfoo fails the WHOLE run
+ * mid-flight, after a run record exists, with an exception the user never sees.
+ *
+ * `file://` refs are exempt: they name a package `materializeCustomPlugins`
+ * wrote into this run's workdir, and their legality is decided by loading the
+ * package, not by any id-level table.
+ *
+ * Counter-proof: send `prompt-injection` with a catalogue that carries the
+ * rejected list → this throws `native_generation_plugin_id_invalid`; remove the
+ * call site in `buildNativeRedteamConfig` → the request reaches promptfoo and
+ * fails there with no code the platform can explain.
+ */
+export function assertPluginIdsAreAccepted(
+  plugins: Array<{ id: string }>,
+  catalog: EngineCatalog | undefined,
+): void {
+  const rejected = catalog?.rejected_plugin_ids ?? {};
+  const rejectedIds = new Set(Object.keys(rejected).map((id) => id.trim()).filter(Boolean));
+  if (rejectedIds.size === 0) return;
+
+  const offending = new Set<string>();
+  for (const plugin of plugins) {
+    const id = (plugin?.id ?? '').trim();
+    if (!id || id.toLowerCase().startsWith('file://')) continue;
+    if (rejectedIds.has(id)) offending.add(id);
+  }
+  if (offending.size === 0) return;
+
+  const details = [...offending]
+    .sort()
+    .map((id) => {
+      const reason = (rejected[id] ?? '').trim();
+      return reason ? `${id}（${reason}）` : id;
+    })
+    .join('；');
+  throw new EngineRunError(
+    NATIVE_ERR_PLUGIN_ID_INVALID,
+    `本轮请求包含 promptfoo 不接受的插件 id：${details}。` +
+      '这类 id 会让整次评测失败而不是降级，请改选目录中可用的插件。',
+  );
 }
 
 /**
@@ -596,6 +678,14 @@ export async function buildNativeRedteamConfig(input: {
   const materialized = input.materialized ?? (await materializeCustomPlugins(input.customPlugins, requireWorkdir(input.workdir, input.customPlugins)));
   const resolvedPlugins = applyCustomPluginRefs(input.plugins, materialized);
 
+  // P2-2 L3: refuse an id the platform has measured promptfoo to reject, BEFORE
+  // the document is handed to promptfoo. Placed inside the builder (U8's lesson:
+  // the builder is the single seam that produces a config document, so wiring
+  // here cannot be removed without a test going red). Runs on the RESOLVED list
+  // because that is where custom-plugin markers have become `file://` refs,
+  // which are exempt — a package's legality is decided by loading it.
+  assertPluginIdsAreAccepted(resolvedPlugins, input.catalog);
+
   // Phase 3 · 任务 2: inline expert strategy packages as promptfoo `custom`
   // strategy refs. Done inside the builder for U8's reason — a second path that
   // could produce a config document still carrying a `pf_strategy:` marker would
@@ -792,6 +882,15 @@ export async function executeNativeRedteamRun(
   }
 
   const injectVar = (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR;
+  // P2-2 (S-4): the cap is 50 in three places — this clamp, the BFF's
+  // `maclaw.EngineMaxNumTests` (enforced by BOTH Go entry points), and the
+  // wizard form's `<InputNumber max>`. They used to be 50 / 200 / 50, and the
+  // gap was the defect: the wizard accepted 120, this line silently ran 50, and
+  // nothing in the response said so.
+  //
+  // Both Go paths now pre-validate, so this clamp should be unreachable — it is
+  // kept as a backstop for a direct engine call, not as the enforcement point.
+  // A Go test parses this literal and fails if the three drift apart.
   const numTests = Math.min(Math.max(request.num_tests, 1), 50);
 
   // U10: write the expert's packages into THIS run's workdir before the config

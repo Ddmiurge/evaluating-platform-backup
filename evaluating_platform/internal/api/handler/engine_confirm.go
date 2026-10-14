@@ -12,6 +12,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -123,6 +124,19 @@ func (h *MaclawRuntimeHandler) confirmPromptfooEnginePlan(c *gin.Context, sessio
 		Metadata:  map[string]string{"session_id": sessionID},
 	})
 	if err != nil {
+		// P2-2 (S-4): an over-limit count is a request problem, not an upstream
+		// failure. Mapping it to 502 would tell the user the engine broke when
+		// the truth is that the confirmed number needs changing — and the plan
+		// card is the only place it can be changed.
+		var tooLarge *maclaw.EngineNumTestsTooLargeError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": tooLarge.Error(),
+				"code":  maclaw.EngineErrNumTestsTooLarge,
+				"max":   tooLarge.Max,
+			})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to submit engine evaluation", "code": "engine_submit_failed", "detail": err.Error()})
 		return
 	}

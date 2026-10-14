@@ -7,6 +7,7 @@ package maclaw
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -20,9 +21,15 @@ func TestSearchPromptfooPluginCatalog(t *testing.T) {
 	}{
 		{"chinese harmful", "有害内容", []string{"promptfoo_plugin:harmful"}},
 		{"chinese pii", "隐私泄露", []string{"promptfoo_plugin:pii"}},
-		{"chinese injection", "提示注入", []string{"promptfoo_plugin:prompt-injection"}},
-		{"chinese jailbreak", "越狱", []string{"promptfoo_plugin:jailbreak"}},
-		{"english id", "jailbreak", []string{"promptfoo_plugin:jailbreak"}},
+		// P2-1：这三个期望值原本指向 `promptfoo_plugin:prompt-injection` /
+		// `promptfoo_plugin:jailbreak` —— 两个 promptfoo 根本不接受的 plugin id。
+		// 它们已移出目录（见 retiredPluginCatalog），所以「搜索能命中它们」不再是
+		// 一个可达的期望，而「搜索仍能命中所要的**能力**」才是。注入面留在
+		// indirect-prompt-injection（插件位）与策略位；越狱面留在策略位
+		// （jailbreak / jailbreak-templates）与基准插件（harmbench / pliny）。
+		{"chinese injection", "提示注入", []string{"promptfoo_plugin:indirect-prompt-injection"}},
+		{"chinese jailbreak", "越狱", []string{"promptfoo_plugin:harmbench", "promptfoo_strategy:goat"}},
+		{"english id", "jailbreak", []string{"promptfoo_strategy:jailbreak"}},
 		{"generic engine", "promptfoo 引擎评测", []string{"promptfoo_plugin:harmful"}},
 	}
 	for _, tc := range cases {
@@ -41,6 +48,18 @@ func TestSearchPromptfooPluginCatalog(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// The withdrawn ids must not be offered by search either. The catalog filter
+	// (L1) is what removes them, but search is the surface a MaClaw planner
+	// actually reads — an id reachable there would be planned and then fail
+	// mid-run, which is exactly the failure P0-2 exists to close.
+	for _, gone := range IllegalPluginIDs() {
+		for _, card := range SearchPromptfooPluginCatalog(gone, 20) {
+			if card.SourceRef == "promptfoo_plugin:"+gone {
+				t.Errorf("已下线的 plugin id %q 仍能被目录搜索命中（%s）", gone, card.SourceRef)
+			}
+		}
 	}
 }
 
@@ -381,5 +400,52 @@ func TestEngineSafeResultToolCallSignalsOmittedWhenAbsent(t *testing.T) {
 	}
 	if measured.ToolCallSignals.ProbesWithToolCalls != 0 {
 		t.Fatalf("probes_with_tool_calls = %d, want 0", measured.ToolCallSignals.ProbesWithToolCalls)
+	}
+}
+
+// TestPrepareEngineRunRefusesNumTestsAboveCap pins P2-2 (S-4) on the chat
+// confirm path: a confirmed count above the cap is REFUSED, not quietly
+// reduced.
+//
+// The confirmed count is the number the user approved on the plan card. Clamping
+// it would make the report and the approval disagree, and nothing in the
+// response would say so — the user would only notice by counting the probes. The
+// refusal must also leave no run record, so a rejected confirm is free.
+func TestPrepareEngineRunRefusesNumTestsAboveCap(t *testing.T) {
+	bridge, _, store := newPromptfooTestBridge(t)
+
+	_, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
+		Purpose:  "over the cap",
+		Plugins:  []string{"harmful"},
+		NumTests: EngineMaxNumTests + 1,
+	})
+	if err == nil {
+		t.Fatal("PreparePromptfooEngineRun silently accepted a count above the cap")
+	}
+	var tooLarge *EngineNumTestsTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("error type = %T (%v), want *EngineNumTestsTooLargeError", err, err)
+	}
+	if tooLarge.Requested != EngineMaxNumTests+1 || tooLarge.Max != EngineMaxNumTests {
+		t.Errorf("error carries requested=%d max=%d, want %d / %d",
+			tooLarge.Requested, tooLarge.Max, EngineMaxNumTests+1, EngineMaxNumTests)
+	}
+	if len(store.records) != 0 {
+		t.Fatalf("run record created for a rejected count: %+v", store.records)
+	}
+
+	// At the cap the path must still work — the pair matters, because a guard
+	// that also rejected the boundary would pass the test above while breaking
+	// every maximum-size run.
+	prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
+		Purpose:  "at the cap",
+		Plugins:  []string{"harmful"},
+		NumTests: EngineMaxNumTests,
+	})
+	if err != nil {
+		t.Fatalf("count at the cap (%d) was refused: %v", EngineMaxNumTests, err)
+	}
+	if prepared.NormalizedIn.NumTests != EngineMaxNumTests {
+		t.Errorf("num_tests = %d, want %d unchanged", prepared.NormalizedIn.NumTests, EngineMaxNumTests)
 	}
 }

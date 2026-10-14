@@ -163,6 +163,42 @@ type EngineCapabilityRef struct {
 	Config map[string]interface{} `json:"config,omitempty"`
 }
 
+// EngineMaxNumTests is the single cap on a run's num_tests, shared by both Go
+// entry points (the wizard handler and the chat confirm fast path) so they
+// cannot disagree about what is acceptable.
+//
+// A cap that differs per entry point is worse than a low cap: the wizard used
+// to accept 200 while the engine silently clamped to 50, so a caller asking for
+// 120 got 50 with no notice anywhere in the response. The number that runs must
+// be the number that was requested, or the request must be refused.
+//
+// The engine keeps its own clamp as a last-resort backstop (nativeRedteam.ts),
+// but it should be unreachable: both Go paths pre-validate.
+const EngineMaxNumTests = 50
+
+// EngineErrNumTestsTooLarge is the machine-readable refusal code for a supported
+// over-limit request. It is shared by both entry points so the frontend maps one
+// code, not two spellings of the same condition.
+const EngineErrNumTestsTooLarge = "num_tests_too_large"
+
+// EngineNumTestsTooLargeError refuses a count above EngineMaxNumTests.
+//
+// It exists so the chat confirm path REFUSES instead of clamping. The confirmed
+// count is the number the user approved on the plan card; quietly running fewer
+// rounds would make the report and the approval disagree, and the user would
+// have no way to learn that the run they paid for was not the run they asked
+// for. Refusing costs a re-confirmation; clamping costs trust in every count the
+// platform reports.
+type EngineNumTestsTooLargeError struct {
+	Requested int
+	Max       int
+}
+
+// Error implements error.
+func (e *EngineNumTestsTooLargeError) Error() string {
+	return fmt.Sprintf("num_tests %d 超过上限 %d；平台不会静默改成较小值，请重新确认执行轮次。", e.Requested, e.Max)
+}
+
 // EngineCatalog is the plugin/strategy catalog the BFF sends with each run so
 // the engine classifies and scores results from a single source of truth
 // (U2/T2.2). The engine looks every plugin_id up here instead of carrying its
@@ -170,6 +206,27 @@ type EngineCapabilityRef struct {
 type EngineCatalog struct {
 	Plugins    []EngineCatalogPlugin   `json:"plugins"`
 	Strategies []EngineCatalogStrategy `json:"strategies"`
+	// RejectedPlugins carries the plugin ids the platform has MEASURED
+	// promptfoo to reject, as id -> reason (P2-2 layer L3).
+	//
+	// The engine refuses a request naming one of these with
+	// `native_generation_plugin_id_invalid`. It is deliberately NOT "every id
+	// absent from Plugins": the catalogue is the platform's OFFERED set, a
+	// strict subset of what promptfoo accepts, and U8 already decided that an
+	// unlisted-but-acceptable plugin still runs (judged by fallback:unmapped so
+	// the gap stays visible). Rejecting on catalogue membership would refuse
+	// valid plugins — `sql-injection` / `shell-injection` are the measured
+	// examples, and the plan treats those as catalogue gaps to fill rather than
+	// as runs to block.
+	//
+	// The verdict is shipped rather than re-derived in the engine because it is
+	// only knowable from promptfoo's zod schema, which lives behind a
+	// content-hashed chunk and a minified export; resolving that at engine boot
+	// would break on every promptfoo upgrade. This mirrors U6's
+	// generated-table-plus-CI-pin discipline.
+	//
+	// omitempty keeps pre-P2-2 payloads byte-identical on the wire.
+	RejectedPlugins map[string]string `json:"rejected_plugin_ids,omitempty"`
 }
 
 // EngineCatalogPlugin is one engine plugin family as the engine must classify

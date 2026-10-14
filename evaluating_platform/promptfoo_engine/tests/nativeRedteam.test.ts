@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import promptfoo from 'promptfoo';
 import {
   assertNativeSlots,
+  assertPluginIdsAreAccepted,
   assertSafeProviderUrl,
   buildEffectivePurpose,
   buildNativeRedteamConfig,
   DEFAULT_INJECT_VAR,
   NATIVE_ERR_INVALID_PROVIDER,
   NATIVE_ERR_MISSING_PROVIDER,
+  NATIVE_ERR_PLUGIN_ID_INVALID,
   resolveNativeStrategies,
   withPluginJudgeRubrics,
   loadEvalResults,
@@ -33,6 +35,20 @@ function creds(overrides: Partial<OneShotCredentials> = {}): OneShotCredentials 
     ...overrides,
   };
 }
+
+/**
+ * P2-2: a catalogue carrying the measured rejection verdict — the shape the BFF
+ * ships once `IllegalPluginIDs()` is non-empty.
+ */
+const rejectedCatalog: EngineCatalog = {
+  plugins: [],
+  strategies: [],
+  rejected_plugin_ids: {
+    'prompt-injection': 'platform-invented; promptfoo has no such plugin',
+    jailbreak: 'jailbreak is a promptfoo STRATEGY, not a plugin',
+    'security-exploit': 'platform-invented',
+  },
+};
 
 describe('assertNativeSlots — the two slots are independent (U7 DoD 反证)', () => {
   // This is the DoD's explicit counter-proof: filling `target` without
@@ -453,6 +469,46 @@ describe('withPluginJudgeRubrics — Plan C carries the per-plugin rubric', () =
     expect(cfg.redteam.plugins[0]?.config?.graderGuidance).toBe(UNMAPPED_JUDGE_CRITERIA);
   });
 
+  // P2-2 L3 · the counter-proof that matters. It goes through
+  // buildNativeRedteamConfig — the seam that emits the document promptfoo reads
+  // — rather than through the helper, because a guard wired at a call site can
+  // be deleted with the suite still green (U8's lesson). Delete the
+  // assertPluginIdsAreAccepted call inside the builder and this goes red: the
+  // request would reach promptfoo and fail the whole run mid-flight instead.
+  it('refuses a rejected plugin id instead of letting promptfoo fail the run', async () => {
+    await expect(
+      buildNativeRedteamConfig({
+        runId: 'run-p2-2-l3',
+        purpose: 'p',
+        injectVar: DEFAULT_INJECT_VAR,
+        numTests: 1,
+        plugins: [{ id: 'prompt-injection' }],
+        strategies: [],
+        credentials: creds(),
+        catalog: rejectedCatalog,
+      }),
+    ).rejects.toMatchObject({ code: NATIVE_ERR_PLUGIN_ID_INVALID });
+  });
+
+  // The same seam must NOT refuse a plugin merely absent from the catalogue:
+  // U8 decided unlisted-but-acceptable plugins still run, judged by the named
+  // fallback. This is the pair to the test above — one refusal, one pass — and
+  // together they pin that the verdict is about MEASURED rejection, not
+  // catalogue membership.
+  it('still runs a plugin absent from the catalogue when it is not rejected', async () => {
+    const cfg = await buildNativeRedteamConfig({
+      runId: 'run-p2-2-l3-unlisted',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 1,
+      plugins: [{ id: 'sql-injection' }],
+      strategies: [],
+      credentials: creds(),
+      catalog: rejectedCatalog,
+    });
+    expect(cfg.redteam.plugins[0]?.id).toBe('sql-injection');
+  });
+
   // Pre-U8 BFF: no catalog at all. The run must still be rubric-bearing rather
   // than emitting a document with no standard per plugin.
   it('degrades to the named fallback when no catalog is supplied', async () => {
@@ -639,5 +695,48 @@ describe('nativeJudgeSourceOverrides — policy 的判定基础要单独成档',
     );
     // override 只补 Plan C 缺标记时的缺口，不得推翻 Plan A 明确写入的值。
     expect(result.plugin_stats[0]?.judge_source).toBe('category:industry');
+  });
+});
+
+describe('assertPluginIdsAreAccepted — P2-2 L3 (measured rejection, not catalogue membership)', () => {
+  it('refuses every rejected id with the plugin-id code and its reason', () => {
+    for (const id of Object.keys(rejectedCatalog.rejected_plugin_ids ?? {})) {
+      let thrown: unknown;
+      try {
+        assertPluginIdsAreAccepted([{ id }], rejectedCatalog);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, `${id} was not refused`).toBeInstanceOf(EngineRunError);
+      expect((thrown as EngineRunError).code).toBe(NATIVE_ERR_PLUGIN_ID_INVALID);
+      // The message must name the id and carry the platform's reason, or the
+      // user cannot tell which selection to change or why it failed.
+      expect((thrown as EngineRunError).message).toContain(id);
+      expect((thrown as EngineRunError).message).toContain('promptfoo');
+    }
+  });
+
+  it('accepts an id the catalogue does not list but does not reject', () => {
+    // The paired counter-proof to the test above. Catalogue membership is not
+    // the test: `sql-injection` / `shell-injection` are accepted by promptfoo
+    // and absent from the platform catalogue, and the plan treats those as
+    // catalogue gaps to fill — not as runs to block.
+    expect(() =>
+      assertPluginIdsAreAccepted([{ id: 'not-in-catalog' }, { id: 'sql-injection' }], rejectedCatalog),
+    ).not.toThrow();
+  });
+
+  it('exempts file:// package refs written into the run workdir', () => {
+    expect(() => assertPluginIdsAreAccepted([{ id: 'file:///tmp/run/custom.yaml' }], rejectedCatalog)).not.toThrow();
+  });
+
+  it('is a no-op when no verdict is shipped', () => {
+    const bare: EngineCatalog = { plugins: [], strategies: [] };
+    expect(() => assertPluginIdsAreAccepted([{ id: 'prompt-injection' }], bare)).not.toThrow();
+    expect(() => assertPluginIdsAreAccepted([{ id: 'prompt-injection' }], undefined)).not.toThrow();
+  });
+
+  it('ignores blank ids rather than refusing them', () => {
+    expect(() => assertPluginIdsAreAccepted([{ id: '   ' }], rejectedCatalog)).not.toThrow();
   });
 });

@@ -173,14 +173,19 @@ func TestPrepareEngineRunWithoutCustomPluginsIsUnchanged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bridge, _, _ := newPromptfooTestBridge(t)
 			tc.configure(bridge)
+			// P2-2: the second id used to be `jailbreak`, which is now a
+			// withdrawn plugin id — the pre-flight legality guard (correctly)
+			// refuses it, so the fixture would test the guard rather than the
+			// property this case is about. `pii` is legal and local, so the
+			// pass-through assertion still isolates "no package reference".
 			prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
-				Purpose: "baseline", Plugins: []string{"harmful", "jailbreak"},
+				Purpose: "baseline", Plugins: []string{"harmful", "pii"},
 			})
 			if err != nil {
 				t.Fatalf("PreparePromptfooEngineRun: %v", err)
 			}
-			if got := prepared.NormalizedIn.Plugins; len(got) != 2 || got[0] != "harmful" || got[1] != "jailbreak" {
-				t.Fatalf("plugin ids = %v, want [harmful jailbreak]", got)
+			if got := prepared.NormalizedIn.Plugins; len(got) != 2 || got[0] != "harmful" || got[1] != "pii" {
+				t.Fatalf("plugin ids = %v, want [harmful pii]", got)
 			}
 		})
 	}

@@ -265,15 +265,17 @@ DeepSeek（key 失效，官方 401）切换为：
 
 ### 6.2 数字（promptfoo 0.123.0 运行时求值）
 
-| 来源（上游常量） | 运行时长度 | 命中平台 119 目录 |
+| 来源（上游常量） | 运行时长度 | 命中平台目录 |
 |---|---|---|
 | `REMOTE_ONLY_PLUGIN_IDS` | 93 | **65** |
 | `UNALIGNED_PROVIDER_HARM_PLUGINS` | 22 | **21**（1 条不在平台目录内） |
 | `BIAS_PLUGINS` | 4 | **4** |
-| **合计去重** | | **90 / 119** |
+| **合计去重** | | **90** |
 
-→ **仅 29 个插件可纯本地生成**（清单见 `internal/maclaw/promptfoo_remote_dep.json`
-的 `catalog_marked_plugins`，其补集被 `TestLocalOnlyPluginIDsAreTheDocumentedList` 硬钉住）。
+（上表的目录命中数是**当时** 119 目录下的值；该表本身不随 P2-1 变化——被移出的三个 id 都不在这些远程清单里，所以 `marked` 仍为 90。）
+
+→ P2-1 后：目录 **116 个插件**，其中 **26 个可纯本地生成**（清单见 `internal/maclaw/testdata/promptfoo_remote_dep.json` 的 `catalog_marked_plugins`，其补集被 `TestLocalOnlyPluginIDsAreTheDocumentedList` 硬钉住）。
+原来写作「**90 / 119、仅 29 个可本地生成**」，那个 29 里含 3 个 promptfoo 根本不接受的 id（`prompt-injection` / `jailbreak` / `security-exploit`），已在 P2-1 移出目录，故可用面由 29 收敛为 26——**收敛掉的是从来跑不通的选项，不是能力**。id 合法性由 promptfoo 自己的 `RedteamConfigSchema.safeParse` 实测，见 `internal/maclaw/testdata/promptfoo_plugin_legality.json`。
 
 策略侧被屏蔽 4 个：`bestOfN` / `likert` / `citation` / `singleTurnComposite`
 （promptfoo 原生 id 分别是 `best-of-n` / `jailbreak:likert` / `citation` /

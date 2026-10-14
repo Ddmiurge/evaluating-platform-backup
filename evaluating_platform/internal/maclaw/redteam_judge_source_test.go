@@ -90,7 +90,12 @@ func TestNormalizeJudgeSourceAcceptsKnownTiers(t *testing.T) {
 		JudgeSourceFallbackUnmapped,
 		"category:harmful",
 		"category:industry",
-		"plugin:prompt-injection",
+		// P2-1：此处原为 "plugin:prompt-injection"。该 id 已作为非法 plugin id
+		// 移出目录（见 retiredPluginCatalog），于是它从「合法档位」变成了
+		// 「目录里没有的插件」——继续拿它当正例，测的就不再是「已知档位被接受」
+		// 而是「已下线的 id 仍被接受」，与本测试的目的相反。改用 pii：
+		// 它在目录里、且是**带专属覆盖**的插件，正好覆盖 plugin:<id> 这一档。
+		"plugin:pii",
 	} {
 		if _, err := NormalizeJudgeSource(raw); err != nil {
 			t.Errorf("合法档位 %q 被拒：%v", raw, err)

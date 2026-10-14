@@ -142,14 +142,32 @@ async function resolveRemoteTables() {
   };
 }
 
-/** Plugin ids declared with the compact `p("id", ...)` constructor. */
+/**
+ * Plugin ids declared with the compact `p("id", ...)` constructor.
+ *
+ * Comment-only lines are dropped first. The catalog documents its own
+ * withdrawals inline and those comments quote the withdrawn constructor calls
+ * verbatim (`// P2-1移出 \`p("prompt-injection", …)\``); a bare `p("` search reads
+ * that prose as a declaration, which silently inflated this count by 4 and made
+ * the table describe a catalog that does not exist. Indentation is not anchored
+ * on, so a reformat cannot break the parse.
+ */
 function readCatalogPluginIds() {
   const go = fs.readFileSync(catalogGo, 'utf8');
   const pluginStart = go.indexOf('var promptfooPluginCatalog');
   const strategyStart = go.indexOf('var promptfooStrategyCatalog');
   if (pluginStart < 0 || strategyStart < 0) throw new Error('could not locate the catalog var blocks');
-  const ids = [...go.slice(pluginStart, strategyStart).matchAll(/\bp\("([^"]+)"/g)].map((m) => m[1]);
+  const body = go
+    .slice(pluginStart, strategyStart)
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const ids = [...body.matchAll(/\bp\("([^"]+)"/g)].map((m) => m[1]);
   if (ids.length === 0) throw new Error('parsed zero plugin ids from the catalog');
+  const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+  if (dupes.length > 0) {
+    throw new Error(`catalog declares duplicate plugin ids: ${[...new Set(dupes)].join(', ')}`);
+  }
   return ids;
 }
 

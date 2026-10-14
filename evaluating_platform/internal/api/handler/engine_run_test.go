@@ -11,8 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +272,113 @@ func TestEngineRunHandlerCreateRunValidation(t *testing.T) {
 				t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestEngineRunHandlerRejectsIllegalPluginID is the P2-2 L2 guard at the API
+// boundary: a request naming an id promptfoo rejects must be refused with 409
+// and must leave NO engine_runs row behind. Failing here (rather than mid-run)
+// is the whole point — the alternative is a persisted run that fails after the
+// user has waited.
+//
+// Counter-proof: delete the ValidateEngineRunPluginLegality call in CreateRun →
+// these requests reach the fake engine and a record is created.
+func TestEngineRunHandlerRejectsIllegalPluginID(t *testing.T) {
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m",
+		CredentialSecret: "sk-secret", Enabled: true,
+	}}
+	h := newEngineRunHandler(newEnabledFakeEngine(), maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	r := newEngineRunRouter(h, "enterprise")
+
+	illegal := maclaw.IllegalPluginIDs()
+	if len(illegal) == 0 {
+		t.Fatal("no withdrawn plugin ids to test against; the guard would be untested")
+	}
+	for _, id := range illegal {
+		t.Run(id, func(t *testing.T) {
+			body := `{"purpose":"合规安全评测","plugins":[{"id":"` + id + `"}],"num_tests":5}`
+			w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), maclaw.EngineErrPluginIDInvalid) {
+				t.Errorf("response carries no %s code: %s", maclaw.EngineErrPluginIDInvalid, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), id) {
+				t.Errorf("response does not name the offending id %q: %s", id, w.Body.String())
+			}
+			// The response must explain where the capability moved, not just
+			// that the id is invalid — and it must carry the platform's reviewed
+			// wording rather than promptfoo's internal zod text.
+			if !strings.Contains(w.Body.String(), "guidance") {
+				t.Errorf("response carries no replacement guidance: %s", w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "Custom plugins must start with") {
+				t.Errorf("response leaks promptfoo's verbatim zod wording: %s", w.Body.String())
+			}
+			if len(store.records) != 0 {
+				t.Fatalf("run record created for a rejected plugin id: %+v", store.records)
+			}
+		})
+	}
+
+	// A legal local id must pass this guard. Asserting the negative keeps the
+	// guard from degenerating into a blanket ban.
+	okBody := `{"purpose":"合规安全评测","plugins":[{"id":"harmful"}],"num_tests":5}`
+	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", okBody); strings.Contains(w.Body.String(), maclaw.EngineErrPluginIDInvalid) {
+		t.Fatalf("legal plugin id was refused by the legality guard: %s", w.Body.String())
+	}
+
+	// Expert-published packages are named by handle and take a separate
+	// validation path (the package is read server-side), so this guard must not
+	// claim they are invalid plugin ids.
+	customBody := `{"purpose":"合规安全评测","plugins":[{"id":"pf_plugin:some-handle"}],"num_tests":5}`
+	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", customBody); strings.Contains(w.Body.String(), maclaw.EngineErrPluginIDInvalid) {
+		t.Fatalf("custom plugin handle was judged as an invalid built-in plugin id: %s", w.Body.String())
+	}
+}
+
+// TestEngineRunHandlerNumTestsCapIsBoundaryChecked pins S-4 at the wizard: the
+// cap is exactly maclaw.EngineMaxNumTests (the same number the engine clamps at
+// and the form displays), and going over it is REFUSED rather than accepted and
+// silently reduced downstream.
+//
+// The one-under case matters as much as the one-over case: a cap that also
+// rejected its own boundary would pass a "too large is refused" test while
+// breaking every legitimate maximum-size run.
+func TestEngineRunHandlerNumTestsCapIsBoundaryChecked(t *testing.T) {
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m",
+		CredentialSecret: "sk-secret", Enabled: true,
+	}}
+	h := newEngineRunHandler(newEnabledFakeEngine(), maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	r := newEngineRunRouter(h, "enterprise")
+
+	max := maclaw.EngineMaxNumTests
+
+	// At the cap: accepted (the run may fail later for unrelated fake-engine
+	// reasons — what matters is that the cap itself did not refuse it).
+	atCap := fmt.Sprintf(`{"purpose":"p","plugins":[{"id":"harmful"}],"num_tests":%d}`, max)
+	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", atCap); w.Code == http.StatusBadRequest {
+		t.Fatalf("num_tests at the cap (%d) was refused: %s", max, w.Body.String())
+	}
+
+	// One over: refused with the machine-readable code and the cap, so the UI
+	// can tell the user what to change.
+	over := fmt.Sprintf(`{"purpose":"p","plugins":[{"id":"harmful"}],"num_tests":%d}`, max+1)
+	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", over)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("num_tests above the cap returned %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, maclaw.EngineErrNumTestsTooLarge) {
+		t.Errorf("refusal does not carry the %s code: %s", maclaw.EngineErrNumTestsTooLarge, body)
+	}
+	if !strings.Contains(body, strconv.Itoa(max)) {
+		t.Errorf("refusal does not name the cap %d: %s", max, body)
 	}
 }
 

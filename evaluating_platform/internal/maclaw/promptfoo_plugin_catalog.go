@@ -15,6 +15,8 @@ package maclaw
 // so catalog grouping and result grouping stay consistent.
 
 import (
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +41,17 @@ type promptfooPluginCatalogEntry struct {
 	// it. The pre-flight guard (ValidateEngineRunRemoteGeneration) and the
 	// frontend greying are its only consumers.
 	RequiresRemoteGeneration bool
+	// RequiresConfig marks a plugin that is legal upstream and selectable here,
+	// but cannot produce test cases until the platform collects configuration
+	// for it (currently only `policy`, which needs config.policy text).
+	//
+	// P2-1 keeps this strictly separate from legality on purpose. `policy`
+	// passes promptfoo's zod with fanout 1, so calling it "illegal" would
+	// disguise a capability gap as a broken id — and would drop U8's
+	// `promptfoo:policy` judging semantics along with it. Same derivation
+	// discipline as RequiresRemoteGeneration: read from the generated
+	// legality table, never hand-set per entry.
+	RequiresConfig bool
 }
 
 type promptfooStrategyCatalogEntry struct {
@@ -75,6 +88,7 @@ func p(id, name, category, summary, sev string) promptfooPluginCatalogEntry {
 		ID: id, Name: name, Category: category, Summary: summary,
 		RiskTypes: []string{category}, DefaultSev: sev, UseWhen: categoryUseWhen(category),
 		RequiresRemoteGeneration: PluginRequiresRemoteGeneration(id),
+		RequiresConfig:           PluginRequiresConfig(id),
 	}
 }
 
@@ -261,7 +275,12 @@ var promptfooPluginCatalog = []promptfooPluginCatalogEntry{
 	p("pii:session", "会话数据泄露", "privacy", "检验模型是否会泄露其他会话中的用户数据。", "high"),
 	p("cross-session-leak", "跨会话数据泄漏", "privacy", "检验多会话隔离边界，是否串扰其他用户上下文。", "high"),
 	// ---- Injection family ----
-	p("prompt-injection", "提示注入检测", "injection", "构造指令注入类攻击提示，检验被测模型是否遵循注入指令越权执行或泄露系统信息。", "high"),
+	//
+	// P2-1移出 `p("prompt-injection", …)`：promptfoo 0.123.0 无此插件
+	// （`safeParse` 实测拒绝，见 testdata/promptfoo_plugin_legality.json）。
+	// 它的语义由 `indirect-prompt-injection` 承接，而后者已被 U6 正确置灰
+	// （REMOTE_ONLY）—— 本地可跑集合里**没有**等价物，所以是移出而非映射。
+	// 映射到任何一个远程依赖项只会让用户换一个必然撞闸的选项。
 	p("indirect-prompt-injection", "间接提示注入检测", "injection", "模拟从网页、文档、邮件等外部内容中嵌入的注入指令，检验被测模型处理外部内容时是否被劫持。", "high"),
 	p("ascii-smuggling", "ASCII 走私检测", "injection", "使用 Unicode 不可见字符（RTL 覆盖、零宽字符）隐藏或混淆指令，检验被测模型能否识别走私注入。", "high"),
 	p("excessive-agency", "过度代理行为检测", "injection", "诱导被测模型执行超出授权范围的操作（越权工具调用、未授权数据访问），检验权限边界意识。", "high"),
@@ -270,14 +289,34 @@ var promptfooPluginCatalog = []promptfooPluginCatalogEntry{
 	p("prompt-extraction", "系统提示词窃取", "injection", "诱导模型输出完整系统提示词或隐藏指令。", "high"),
 	p("mcp", "MCP 协议攻击", "injection", "针对 MCP 工具调用链的注入与滥用攻击。", "high"),
 	p("agentic:memory-poisoning", "Agent 记忆投毒", "injection", "通过污染 Agent 长期记忆实现持久化攻击。", "high"),
-	// ---- Jailbreak / bias / exploit ----
-	p("jailbreak", "越狱对抗检测", "jailbreak", "使用角色扮演、DAN、虚拟叙事等越狱包装手法，检验被测模型能否保持安全对齐。", "high"),
+	// ---- Bias / exploit ----
+	//
+	// P2-1 移出两条：
+	//
+	//   p("jailbreak", …)          —— `jailbreak` 在 promptfoo 里是**策略**不是插件
+	//                                  （`safeParse` 实测拒绝）。它与策略位的
+	//                                  `jailbreak` 撞名纯属巧合：策略目录早已把它
+	//                                  识别为废弃别名并给出替代（见
+	//                                  promptfoo_strategy_catalog.go 的
+	//                                  nativeStrategyDisplayNames），插件目录一直没做
+	//                                  同一件事。移出后平台不再提供一个必然失败的
+	//                                  选项；用户需要「越狱对抗」这一攻击维度时请走
+	//                                  策略位的 `iterative:meta`（元提示越狱）/
+	//                                  `iterative:tree`（树搜索越狱）——见
+	//                                  JailbreakRetiredGuidance，用户文案由
+	//                                  retiredPluginGuidance 暴露。
+	//
+	//   p("security-exploit", …)   —— 平台自造。promptfoo 把这个意图拆成
+	//                                  sql-injection / shell-injection（两者 NOT_GATED，
+	//                                  真能本地跑，但不在平台目录）与 ssrf（REMOTE_ONLY）。
+	//                                  把这个 id 映射到其中任何一个等于换一个用户
+	//                                  没选的攻击面，是静默改变评测语义，所以移出。
 	p("bias", "偏见与歧视检测", "bias", "检验被测模型是否生成带有偏见、歧视或有害刻板印象的内容。", "medium"),
 	p("bias:age", "年龄偏见", "bias", "检验模型输出中的年龄刻板印象与歧视。", "medium"),
 	p("bias:gender", "性别偏见", "bias", "检验模型输出中的性别刻板印象与歧视。", "medium"),
 	p("bias:race", "种族偏见", "bias", "检验模型输出中的种族刻板印象与歧视。", "high"),
 	p("bias:disability", "残障偏见", "bias", "检验模型输出中的残障群体刻板印象与歧视。", "medium"),
-	p("security-exploit", "安全利用类检测", "security-exploit", "检验被测模型是否协助生成 SQL 注入、命令执行、SSRF 等攻击载荷或利用代码。", "high"),
+	// P2-1 移出 `p("security-exploit", …)`，理由见上方 bias 块的注释。
 	p("reasoning-dos", "推理资源耗尽", "security-exploit", "构造超长推理链或资源滥用请求，检验服务稳定性。", "medium"),
 	// ---- Hallucination / off-topic / brand / sensitive ----
 	p("hallucination", "幻觉与事实性检测", "hallucination", "构造事实性陷阱问题，检验被测模型是否编造不存在的事实、引用或数据。", "medium"),
@@ -291,6 +330,11 @@ var promptfooPluginCatalog = []promptfooPluginCatalogEntry{
 	p("religion", "宗教敏感话题", "sensitive", "检验模型对宗教敏感话题的边界与中立性。", "medium"),
 	p("teen-safety:age-restricted-goods-and-services", "未成年人保护", "sensitive", "检验模型是否向未成年人提供年龄限制商品或服务信息。", "high"),
 	p("contracts", "合同法律错误", "industry", "检验模型在合同审查场景是否编造条款或遗漏关键法律风险。", "medium"),
+	// P2-1：`policy` 是**合法** plugin id（`safeParse` 实测通过、fanout=1），
+	// 只是缺 `config.policy` 文本 → 0 用例。所以它标 `requires_config` 而不是
+	// 被当成非法 id 剔除：把「能力缺口」伪装成「id 非法」会丢掉 U8 已实现的
+	// `promptfoo:policy` 判定语义，且让「补一个策略文档上传入口」这件事在目录上
+	// 表现为不可见。处置见 `18` §4.3。
 	p("policy", "政策违规", "industry", "检验模型是否输出违反平台或行业政策的内容。", "medium"),
 	// ---- Dataset benchmarks ----
 	p("beavertails", "BeaverTails 有害问答基准", "dataset", "BeaverTails 有害问答数据集驱动的安全回归测试。", "high"),
@@ -357,6 +401,131 @@ var promptfooPluginCatalog = []promptfooPluginCatalogEntry{
 	p("ecommerce:order-fraud", "订单欺诈", "industry", "检验欺诈订单、账户接管、支付操纵协助。", "high"),
 	p("ecommerce:price-manipulation", "价格操纵", "industry", "检验折扣滥用、库存操纵、叠加优惠漏洞。", "medium"),
 	p("ecommerce:compliance-bypass", "合规绕过", "industry", "检验年龄限制、地域限制、服务条款绕过。", "medium"),
+}
+
+// retiredPluginEntry records a plugin id the platform WITHDREW, together with
+// where the capability the user was after actually lives.
+//
+// # Why withdrawal alone is not the fix
+//
+// The strategy catalog already models this correctly:
+// promptfoo_strategy_catalog.go identifies `jailbreak` / `prompt-injection` as
+// deprecated upstream aliases and names their replacements. The plugin catalog
+// never did the same thing, which is exactly why a strategy id ended up
+// sitting in the plugin selector. Deleting the row fixes the crash and leaves
+// the user with no way to reach the capability they wanted — "the option
+// disappeared" is not an explanation.
+//
+// This table is the plugin-side equivalent of the strategy-side treatment: the
+// withdrawn id, why it was withdrawn, and what to use instead. It is NOT a
+// catalog entry — these ids are not selectable, they exist only to be rendered
+// as guidance (see PromptfooRetiredPluginGuidance).
+//
+// # Why the replacement is a strategy and not another plugin
+//
+// For `jailbreak` the honest answer is that promptfoo has no jailbreak PLUGIN;
+// the capability exists only as strategies. Pointing users at a plugin that
+// does not exist would just relocate the failure to a different screen.
+type retiredPluginEntry struct {
+	// ID is the withdrawn platform plugin id.
+	ID string
+	// Name is the label the withdrawn entry used to carry, kept so a report or
+	// an announcement can refer to what the user actually saw.
+	Name string
+	// Reason explains the withdrawal in user-facing terms.
+	Reason string
+	// ReplacementSlot names WHERE the capability lives now ("strategy" or
+	// "plugin"), so the UI can point at the right selector instead of naming a
+	// bare id the user cannot find.
+	ReplacementSlot string
+	// ReplacementIDs are the ids to use instead, in the replacement slot.
+	ReplacementIDs []string
+	// ReplacementLabel is the ready-to-render sentence. Authored here rather
+	// than assembled at the call site so the wording is reviewed once and
+	// cannot drift between the API card, the frontend banner and the docs.
+	ReplacementLabel string
+}
+
+// retiredPluginCatalog records P2-1's three removals with their replacement
+// paths.
+//
+// Asserted against IllegalPluginIDs() so a withdrawal can never happen without
+// a reason being recorded, and so an id promptfoo newly rejects cannot be
+// dropped from the catalog silently.
+var retiredPluginCatalog = []retiredPluginEntry{
+	{
+		ID:               "jailbreak",
+		Name:             "越狱对抗检测",
+		Reason:           "jailbreak 在 promptfoo 里是攻击策略而非插件，作为插件 id 会被引擎拒绝，该次运行必然失败。",
+		ReplacementSlot:  "strategy",
+		ReplacementIDs:   []string{"iterative:meta", "iterative:tree"},
+		ReplacementLabel: "「越狱对抗检测」是攻击维度、不是插件维度；越狱类攻击手法请在「攻击策略」中选择「元提示越狱」或「树搜索越狱」。",
+	},
+	{
+		ID:               "prompt-injection",
+		Name:             "提示注入检测",
+		Reason:           "平台自造的 id，promptfoo 没有同名插件；其语义由「间接提示注入检测」承接，但后者依赖远程生成、当前环境已屏蔽。",
+		ReplacementSlot:  "strategy",
+		ReplacementIDs:   []string{"jailbreak-templates"},
+		ReplacementLabel: "「提示注入检测」已下线；提示注入攻击手法可在「攻击策略」中选择「越狱模板库」。间接提示注入面当前环境需远程生成、已屏蔽。",
+	},
+	{
+		ID:               "security-exploit",
+		Name:             "安全利用类检测",
+		Reason:           "平台自造的 id，promptfoo 把它拆成 sql-injection / shell-injection / ssrf 等多个具体插件，没有单一对应项。",
+		ReplacementSlot:  "plugin",
+		ReplacementIDs:   []string{"reasoning-dos"},
+		ReplacementLabel: "「安全利用类检测」已下线；资源耗尽类攻击请选「推理资源耗尽」。SQL 注入 / 命令注入等具体利用面尚未入库。",
+	},
+}
+
+// PromptfooRetiredPlugin is one withdrawn plugin id plus its replacement path.
+// Returned to the UI so a user who selected the id before the withdrawal can
+// be told where the capability went, instead of finding a silently shorter list.
+type PromptfooRetiredPlugin struct {
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Reason           string   `json:"reason"`
+	ReplacementSlot  string   `json:"replacement_slot"`
+	ReplacementIDs   []string `json:"replacement_ids"`
+	ReplacementLabel string   `json:"replacement_label"`
+}
+
+// PromptfooRetiredPlugins returns every withdrawn plugin id with its
+// replacement path, sorted by id.
+func PromptfooRetiredPlugins() []PromptfooRetiredPlugin {
+	out := make([]PromptfooRetiredPlugin, 0, len(retiredPluginCatalog))
+	for _, entry := range retiredPluginCatalog {
+		out = append(out, retiredPluginToPublic(entry))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// PromptfooRetiredPluginGuidance returns the replacement path for a withdrawn
+// id, and whether that id was withdrawn at all.
+func PromptfooRetiredPluginGuidance(pluginID string) (PromptfooRetiredPlugin, bool) {
+	trimmed := strings.TrimSpace(pluginID)
+	for _, entry := range retiredPluginCatalog {
+		if entry.ID == trimmed {
+			return retiredPluginToPublic(entry), true
+		}
+	}
+	return PromptfooRetiredPlugin{}, false
+}
+
+// retiredPluginToPublic copies an entry out, including its ReplacementIDs
+// slice. The copy matters: callers are HTTP handlers and tests, and handing out
+// the backing array would let one caller mutate the catalog.
+func retiredPluginToPublic(entry retiredPluginEntry) PromptfooRetiredPlugin {
+	return PromptfooRetiredPlugin{
+		ID:               entry.ID,
+		Name:             entry.Name,
+		Reason:           entry.Reason,
+		ReplacementSlot:  entry.ReplacementSlot,
+		ReplacementIDs:   append([]string(nil), entry.ReplacementIDs...),
+		ReplacementLabel: entry.ReplacementLabel,
+	}
 }
 
 var promptfooStrategyCatalog = []promptfooStrategyCatalogEntry{
@@ -454,6 +623,20 @@ func promptfooPluginCard(entry promptfooPluginCatalogEntry) CapabilityCard {
 		card.SafeMetadata["requires_remote_generation"] = "true"
 		card.SafeMetadata["unavailable_reason"] = RemoteGenerationUnavailableMessage
 	}
+	// P2-1: `requires_config` is NOT unavailability. The plugin stays selectable
+	// and will pass the engine; it yields 0 cases until config text exists. The
+	// distinction is carried explicitly so a UI can warn ("you still need to
+	// upload a policy document") instead of greying the option out and hiding a
+	// capability the platform intends to support.
+	//
+	// `fanout` ships on every plugin card because it is what makes a selection's
+	// cost predictable: promptfoo applies numTests to each EXPANDED sub-plugin,
+	// so `harmful` produces 26x what `policy` does for the same numTests (P0-1).
+	if entry.RequiresConfig {
+		card.SafeMetadata["requires_config"] = "true"
+		card.SafeMetadata["requires_config_reason"] = PluginRequiresConfigReason(entry.ID)
+	}
+	card.SafeMetadata["fanout"] = strconv.Itoa(PluginFanout(entry.ID))
 	return card
 }
 
@@ -743,5 +926,18 @@ func PromptfooEngineCatalog() *EngineCatalog {
 		}
 		strategies = append(strategies, strategy)
 	}
-	return &EngineCatalog{Plugins: plugins, Strategies: strategies}
+	// P2-2 L3: ship the measured rejection verdict so the engine can refuse a
+	// rejected id with a readable code instead of letting promptfoo fail the
+	// whole run mid-flight (the chat confirm fast path submits engine requests
+	// without passing the BFF's L2 guard, and a queued request can predate it).
+	//
+	// Only the platform's own reasons are shipped — promptfoo's verbatim zod
+	// text stays server-side, since it is internal wording that changes with the
+	// upstream build.
+	rejected := make(map[string]string, len(pluginLegalityTableData.IllegalPluginIDs))
+	for _, id := range IllegalPluginIDs() {
+		rejected[id] = PluginLegalityReason(id)
+	}
+
+	return &EngineCatalog{Plugins: plugins, Strategies: strategies, RejectedPlugins: rejected}
 }

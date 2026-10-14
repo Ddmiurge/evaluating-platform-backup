@@ -277,10 +277,25 @@ func (e *EngineRemoteDepGuardError) Error() string {
 // refused. Ordered by how likely a user is to want them, NOT alphabetically:
 // the local-only list is sorted, so a plain prefix slice would surface
 // `beavertails, bias, contracts, …` and hide the names people actually reach
-// for (`harmful`, `jailbreak`, `pii`). Each entry must be a local-only plugin;
-// remoteGenerationHint verifies that at message-build time rather than trusting
-// the literal.
-var remoteGenerationHintRecommends = []string{"harmful", "jailbreak", "pii", "prompt-injection"}
+// for (`harmful`, `pii`).
+//
+// P2-1 removed `jailbreak` and `prompt-injection` from this list. Both are
+// illegal PLUGIN ids (promptfoo's zod rejects them), so the message was
+// recommending two options whose only possible outcome is a failed run — the
+// most damaging form of the U6 hint, because it is the platform telling the
+// user to pick something broken. `harmful` also has the highest fanout in the
+// catalog (26), so it stays first for a second reason: it is the single
+// highest-value local selection.
+//
+// `policy` is deliberately absent even though it is legal and local-only: it
+// needs config.policy text the platform does not collect, so selecting it
+// yields 0 cases and the run fails with native_generation_no_test_cases.
+// Recommending it would trade one unexplained failure for another. The bar for
+// this list is "selecting it produces a run that works", which is stricter
+// than "promptfoo accepts it" — TestRemoteGenerationHintRecommendsAreLegal
+// pins all three conditions (legal, local-only, not config-gated) so the list
+// cannot drift back into recommending something that cannot complete.
+var remoteGenerationHintRecommends = []string{"harmful", "pii", "bias", "contracts"}
 
 // remoteGenerationHint renders the "try these instead" clause of the rejection
 // message. It lists as many of the recommended plugins as are actually usable,

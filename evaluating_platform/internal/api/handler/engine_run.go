@@ -33,8 +33,15 @@ import (
 )
 
 const (
-	engineRunMaxNumTests  = 200
+	// engineRunDefaultTests is the wizard's default when the caller omits a
+	// count. Higher than the chat confirm path's default (5) on purpose: a
+	// wizard submission is an explicit request, so a moderate default is useful
+	// rather than presumptuous.
 	engineRunDefaultTests = 20
+	// The num_tests cap lives in maclaw.EngineMaxNumTests so the wizard, the
+	// chat confirm fast path and the engine clamp share one number (P2-2 S-4).
+	// There is deliberately no local copy: a second constant is how the wizard
+	// came to accept 200 while the engine silently clamped to 50.
 )
 
 // engineClient abstracts the promptfoo-engine REST client so tests can
@@ -234,6 +241,38 @@ func writeRemoteDepRejection(c *gin.Context, err error) {
 	})
 }
 
+// writePluginLegalityRejection renders the P2-2 pre-flight rejection.
+//
+// 409 for the same reason as the U6 rejection: the request is well-formed and
+// the caller can retry successfully with a valid id. The body carries the
+// machine-readable `code`, the offending ids, and — for withdrawn ids — the
+// replacement path, so the UI can explain where the capability moved instead of
+// showing a bare "invalid plugin".
+//
+// promptfoo's own zod text is deliberately NOT included: it is upstream internal
+// wording that changes between builds, and the platform already ships a reviewed
+// sentence per id (`reasons` + `guidance`). The verbatim text stays on the
+// server, where the guard uses it only as a fallback for an id the platform has
+// no reason recorded for.
+func writePluginLegalityRejection(c *gin.Context, err error) {
+	var guard *maclaw.EnginePluginLegalityGuardError
+	if !errors.As(err, &guard) {
+		// Not a guard error — fail closed without leaking internals.
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "invalid plugin id",
+			"code":  maclaw.EngineErrPluginIDInvalid,
+		})
+		return
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"error":           guard.Error(),
+		"code":            guard.Code,
+		"invalid_plugins": guard.InvalidPlugins,
+		"reasons":         guard.Reasons,
+		"guidance":        guard.Guidance,
+	})
+}
+
 func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	userID, ok := h.requireEngineContext(c)
 	if !ok {
@@ -268,8 +307,48 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	if numTests <= 0 {
 		numTests = engineRunDefaultTests
 	}
-	if numTests > engineRunMaxNumTests {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "num_tests exceeds the maximum", "code": "num_tests_too_large"})
+	// Refuse rather than let the engine clamp. Before this check the wizard
+	// accepted up to 200 while nativeRedteam clamped to 50, so a caller asking
+	// for 120 silently ran 50 — the request and the result disagreed with
+	// nothing in the response saying so.
+	if numTests > maclaw.EngineMaxNumTests {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "num_tests exceeds the maximum",
+			"code":  maclaw.EngineErrNumTestsTooLarge,
+			"max":   maclaw.EngineMaxNumTests,
+		})
+		return
+	}
+
+	plugins, ok := parseEngineCapabilityRefs(c, in.Plugins, "plugin id is required")
+	if !ok {
+		return
+	}
+	strategies, ok := parseEngineCapabilityRefs(c, in.Strategies, "strategy id is required")
+	if !ok {
+		return
+	}
+
+	// Pre-flight guards. Both run BEFORE credential materialization, run
+	// persistence and engine dispatch, so a request that cannot succeed leaves
+	// no decrypted target secret, no engine_runs row and no engine call behind.
+	//
+	// P2-2 (plugin-id legality): an id promptfoo does not accept fails the WHOLE
+	// run mid-flight. The catalog no longer offers one, but stored wizard
+	// configs, expert packages naming a platform id, and direct API calls all
+	// still can — so the verdict belongs at the request boundary, not in a
+	// promptfoo exception the user never sees.
+	if err := maclaw.ValidateEngineRunPluginLegality(plugins); err != nil {
+		writePluginLegalityRejection(c, err)
+		return
+	}
+
+	// U6 pre-flight guard: reject remote-generation-gated capabilities. Without
+	// this, promptfoo accepts the plugin, `return []`s mid-run under
+	// fail-closed, and the user gets a green run with 0 coverage for the plugin
+	// they selected.
+	if err := maclaw.ValidateEngineRunRemoteGeneration(plugins, strategies); err != nil {
+		writeRemoteDepRejection(c, err)
 		return
 	}
 
@@ -287,31 +366,11 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 
 	// Resolve the generation LLM from the platform default MaClaw model config
 	// (same source as MaClaw attack generation / judge). The engine synthesizes
-	// attack cases with it (Plan A), so a missing generation LLM is a hard
-	// fail-fast: no run record is created.
+	// attack cases with it, so a missing generation LLM is a hard fail-fast: no
+	// run record is created.
 	generation := maclaw.ResolveEngineGenerationCredential(c.Request.Context(), h.generationProvider)
 	if generation == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "platform generation model is not configured", "code": "generation_not_configured"})
-		return
-	}
-
-	plugins, ok := parseEngineCapabilityRefs(c, in.Plugins, "plugin id is required")
-	if !ok {
-		return
-	}
-	strategies, ok := parseEngineCapabilityRefs(c, in.Strategies, "strategy id is required")
-	if !ok {
-		return
-	}
-
-	// U6 pre-flight guard: reject remote-generation-gated capabilities BEFORE
-	// any credential materialization, persistence or engine dispatch. Without
-	// this, promptfoo accepts the plugin, `return []`s mid-run under
-	// fail-closed, and the user gets a green run with 0 coverage for the
-	// plugin they selected. Failing here also means a rejected request leaves
-	// no orphaned engine_runs row.
-	if err := maclaw.ValidateEngineRunRemoteGeneration(plugins, strategies); err != nil {
-		writeRemoteDepRejection(c, err)
 		return
 	}
 

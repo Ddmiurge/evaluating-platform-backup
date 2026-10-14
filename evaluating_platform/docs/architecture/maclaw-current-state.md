@@ -269,7 +269,7 @@ git diff --check
 
 Phase 1 把 promptfoo 引擎能力接入 MaClaw 发现-确认-执行主链路：
 
-- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 现为 **119 插件 + 30 攻击策略**（2026-10-09 实测校正，覆盖 harmful 家族、industry 行业合规、dataset 基准等分类，含 `harmful:cybercrime` 等子项）；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。前端 `engineEval.ts` 由后端目录生成、当前与之一致；同步已由 `gen_frontend_options_test.go` 的 **`TestFrontendOptionsConsistency` 真实断言**取代原"手工 dump 测试"，并纳入 CI backend job（`go test ./...`）**阻断**（DD-7=A 已落地，2026-10-09）——插件/策略 id 集合前后端任一方向漂移即 CI 红灯。
+- **能力目录**：`internal/maclaw/promptfoo_plugin_catalog.go` 现为 **116 插件 + 30 攻击策略**（2026-10-14 P2-1/P2-2 校正：三个 promptfoo 不接受的 id 已移出，见下节；此前为 119），覆盖 harmful 家族、industry 行业合规、dataset 基准等分类，含 `harmful:cybercrime` 等子项；`capability_catalog.go` Search 时追加 promptfoo 引擎卡片（含中文别名命中）。前端 `engineEval.ts` 由后端目录生成、当前与之一致；同步已由 `gen_frontend_options_test.go` 的 **`TestFrontendOptionsConsistency` 真实断言**取代原"手工 dump 测试"，并纳入 CI backend job（`go test ./...`）**阻断**（DD-7=A 已落地，2026-10-09）——插件/策略 id 集合前后端任一方向漂移即 CI 红灯。
 - **三个 MCP 工具**（`redteam_tool_bridge.go` 注册，见 `redteam_mcp.go`）：`search_redteam_plugin_catalog`（目录检索）、`run_promptfoo_redteam_evaluation`（grant 保护，发起引擎评测）、`get_promptfoo_evaluation_result`（安全结果查询）。
 - **BFF confirm fast path**：MaClaw agent loop 的 LLM tool-calling 在当前模型下不可靠（confirm 后可能把工具参数当文本输出），因此当计划卡只选择 promptfoo 引擎能力时，BFF `engine_confirm.go` 直接编排引擎（Prepare+Wait 拆分 + 平台内存 job store `engine_job_store.go`，job id 前缀 `pfj-`）。发现与规划仍归 MaClaw，执行平台受控。注意：`EvaluationJobFromPlatformEngine` 不回填 `progress.run_id`（pfj- 不是 maclaw runtime run id），前端对引擎 job 用轮询直接刷新进度卡，不开 `/evaluation/runs/pfj-…/events` SSE（2026-10-08 修复：该 SSE 被运行时秒断，触发重连+会话快照循环，卡片闪烁）。
 - **报告 engine 维度**：引擎 run 落库 `maclaw_redteam_reports` 时 `metadata.engine=promptfoo`，findings 带插件维度；结果映射器 `promptfoo_engine_bridge.go`（`EngineSafeResultCounts`/`EngineSafeResultFindings`）不再二次翻转极性（引擎已内部翻转）。
@@ -283,4 +283,42 @@ Phase 2 提供不经聊天工作台的引擎评测入口（对话优先原则下
 - **服务层**：`frontend/src/services/engineEval.ts`（create/get/list/cancel + 内置插件目录展示项）。
 - **菜单**：企业门户侧边栏新增「自选评测」（SafetyOutlined），「AI 服务」加「荐」徽标；自选评测页页首固定「推荐使用 AI 对话发起评测」引导条 + 返回按钮（对话优先）。
 - 验收：不进聊天工作台，直接经向导 API 完成 harmful+prompt-injection 双插件评测（run `er-172433739a094b079bf675f0cf906e7c`，3/3 探针 succeeded，attack_success=0，pass_rate=1.0）；`engine_runs.result` 与 API 响应零泄漏。
+  ⚠️ **该记录产生于 Plan A 路径**：Plan A 下 plugin id 只是传给生成 LLM 的类别标签，`prompt-injection` 不参与 promptfoo 的插件校验，所以当时能跑通。P2-1 已证明它不是合法的 promptfoo plugin id，在 Plan C（`redteam.run`）下会整 run 失败——历史记录不改写，但**不能**据此认为该 id 可用。
 - 已知限制：双插件评测耗时约 5 分钟（用例生成 + Qwen 目标推理串行延迟），进度卡已展示阶段与计数，无前端超时取消之外的等待问题。
+
+## 插件 id 合法性与成本语义（P2-1 + P2-2，2026-10-14）
+
+U7 阶段一实测暴露：U6 的护栏只回答「这个插件要不要远程生成」，从不回答「这个 id 是否存在」。它 29 个未标记（`local_only`）的 id 里有 3 个不是合法的 promptfoo plugin id，选中它们 promptfoo 的 zod 会在 run 中途拒绝，**整 run 失败**（不是降级）：
+
+| 平台 id | promptfoo 是否接受（plugin 位） | 性质 |
+|---|---|---|
+| `prompt-injection` | ❌ | 平台自造；最近邻 `indirect-prompt-injection` 是 `REMOTE_ONLY`，本地无等价物 |
+| `jailbreak` | ❌ | `jailbreak` 是 promptfoo 的**策略**不是插件；插件位与策略位是两个命名空间 |
+| `security-exploit` | ❌ | 平台自造；promptfoo 拆成 `sql-injection` / `shell-injection`（本地可跑但不在目录）/ `ssrf`（远程） |
+
+因此「29 个可完整评测」这个数字是错的，真实值是 **26**（合法且本地可跑）。
+
+### 四层收口
+
+1. **生成表**：`scripts/gen_plugin_legality.mjs` 用 promptfoo 自己的 `RedteamConfigSchema.safeParse` 逐 id 实测，产出 `internal/maclaw/testdata/promptfoo_plugin_legality.json`（合法性 + fanout + 被拒原文），由 `internal/maclaw/promptfoo_plugin_legality.go` 嵌入。判据**只有 safeParse**——`ALL_PLUGINS` 字面量、`redteam.Plugins` 实例表、手工清单三种廉价替代都会被实测证伪（前者漏 `COLLECTIONS` 会把 `pii`/`harmful` 误判非法；中者是另一套集合；后者正是 29 漂移出 3 个非法 id 的原因）。生成器**同时探测已下线的 id**：否则目录清干净后非法集为空，而那正是「schema 没解析成功」的形状，会让启动断言失去意义。
+2. **L1 目录**：3 个 id 移出 `promptfoo_plugin_catalog.go`；`retiredPluginCatalog` 记录下线原因 + 替代槽位（plugin / strategy）+ 替代 id + 一句可直接渲染的说明。`PromptfooRetiredPlugins` / `PromptfooRetiredPluginGuidance` 是它的读出口，前端自选评测页以可折叠说明呈现。只删除不引导会把「删掉一个必然失败的选项」变成「用户以为功能下线」。
+3. **L2 提交闸**：`ValidateEngineRunPluginLegality`（`internal/maclaw/promptfoo_plugin_guard.go`）在**凭据物化、落库、派发之前**拒绝，wizard（`engine_run.go`）与 chat confirm（`PreparePromptfooEngineRun`）两条入口各接一次，返回 409 + `plugin_id_invalid` + 每个 id 的原因与替代路径，且不产生 `engine_runs` 行。自定义插件引用（`pf_plugin:` / `promptfoo-custom:` / `file://`）**跳过**——它们的合法性由加载包决定。
+4. **L3 引擎闸**：BFF 随 `EngineCatalog.rejected_plugin_ids` 下发实测拒绝清单，引擎在 `buildNativeRedteamConfig` 内调用 `assertPluginIdsAreAccepted`，命中则抛 `native_generation_plugin_id_invalid`。**刻意只拒「实测被拒绝」的 id，不拒「不在平台目录里」的 id**：目录是 promptfoo 接受面的真子集，U8 已裁定未列出但可接受的插件仍可运行（判定落 `fallback:unmapped` 以便退化可见）；`sql-injection` / `shell-injection` 正是这类「目录漏收」而非「必须拒绝」的 id。verdict 由 BFF 下发而非引擎运行时重算，因为 promptfoo 的接受面只存在于内容哈希 chunk 后的 minified 导出里，运行时解析会在每次升级时把引擎搞崩。
+
+### `policy` 单列：能力缺口不是 id 非法
+
+`policy` 是**合法**插件（`safeParse` 通过、fanout=1），0 用例的原因在平台侧——没有 `config.policy` 文本。故标 `requires_config`：目录/卡片下发标记与原因，前端**不置灰**但标「需先提供策略文档」，选中时给出显式警告。把它混进「非法 id」清单会把能力缺口伪装成坏 id，并连带丢掉 U8 已实现的 `promptfoo:policy` 判定语义。
+
+### 成本语义：fanout
+
+promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以实际探针数 = `num_tests × Σfanout`（`harmful`=26、`bias`=6、`pii`=4，其余 1）。目录为每个插件下发 `fanout`，前端据此显示「预计执行约 N 条探针」——不显示这个乘积，用户填 5 会以为跑 5 条而实际是 130 条。`PromptfooPluginFanoutTotals`（后端）与 `totalPluginFanout`（前端）**都必须去重**：重复勾选同一 id 不是两次选择，两处口径不一致会让同一选择算出两个成本数。（`num_tests` 语义本身改为「总数并按 fanout 加权均摊」是 P0-1/P2-4，尚未落地。）
+
+### `num_tests` 上限统一
+
+原先三处不一致：wizard 接受 200、引擎 `Math.min(…, 50)` 静默夹到 50、表单 `max={50}`。缺口本身即缺陷——用户填 120 得到 200 OK、一条写着 120 的 run 记录、和 50 条实际探针，响应里没有任何提示。现统一为 `maclaw.EngineMaxNumTests = 50`，三条链路共用，且**拒绝而非静默改小**：wizard 返回 400 + `num_tests_too_large`，chat confirm 返回 409 + 同一 code（原先是静默 clamp）。引擎侧 clamp 保留为兜底但应不可达。护栏见 `internal/maclaw/promptfoo_engine_num_tests_test.go`——它**解析 TS/TSX 源文件里的字面量**，任一层单独漂移即红。
+
+### 相关护栏
+
+- `promptfoo_plugin_legality_test.go`：表与目录一致性、目录零非法 id、下线记录与判定表双向一致、替代 id 在目标槽位可解析、插件 id 与 promptfoo 策略名零撞名、fanout 钉值、provenance。
+- `promptfoo_remote_dep_test.go`：可用面数字由 90/29 更新为 **90/26**；新增 `TestRemoteGenerationHintRecommendsAreLegal`——拒绝提示里推荐的每个插件必须**合法 + 本地可跑 + 不缺配置**（原先推荐了 `jailbreak` / `prompt-injection` 两个必然失败的 id，以及需要配置的 `policy`）。
+- `gen_remote_dep.mjs` / `gen_plugin_legality.mjs` 的目录解析**先剔注释行**：P2-1 的说明性注释里引用了 `p("prompt-injection", …)` 字面量，裸正则会把注释当声明解析（解析出 120 而非 116，并触发 `security-exploit` 重复报错）。

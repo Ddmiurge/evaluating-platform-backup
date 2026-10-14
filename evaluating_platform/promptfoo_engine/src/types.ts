@@ -238,6 +238,15 @@ export interface EngineCatalogStrategy {
 export interface EngineCatalog {
   plugins: EngineCatalogPlugin[];
   strategies: EngineCatalogStrategy[];
+  /**
+   * P2-2 (L3): plugin ids the platform has MEASURED promptfoo to reject, as
+   * id -> reason. The engine refuses a request naming one of these; see
+   * `assertPluginIdsAreAccepted`.
+   *
+   * Deliberately not "every id absent from `plugins`" — see that function for
+   * why catalogue membership is the wrong test.
+   */
+  rejected_plugin_ids?: Record<string, string>;
 }
 
 /** Safe progress event emitted over SSE. No prompts, no responses, no secrets. */

@@ -11,8 +11,9 @@ import {
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS,
-  REMOTE_GENERATION_UNAVAILABLE_REASON, engineEvalService, explainRemoteGenerationRejection,
-  isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, toEngineSelectOption,
+  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, engineEvalService, explainPluginIDRejection, explainRemoteGenerationRejection,
+  isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, retiredEnginePluginGuidance,
+  toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
 import type { EngineRun, EngineRunResult } from '../../services/engineEval'
 
@@ -36,15 +37,37 @@ const ENGINE_PLUGIN_GROUPS = Object.entries(
 const ENGINE_STRATEGY_SELECT_OPTIONS = ENGINE_STRATEGY_OPTIONS.map(toEngineSelectOption)
 
 /**
- * 灰态选项统一渲染：置灰 + 就地显示屏蔽原因 + 悬停补充完整说明。
+ * 选项统一渲染：置灰 + 就地显示屏蔽原因 + 悬停补充完整说明；缺配置的项改为
+ * 「可选中 + 就地提示」。
  *
  * antd v5 的 `optionRender` 里包 `<Tooltip>` 不可靠：Tooltip 会把
  * `aria-describedby` 挂到内层 span 上，但虚拟列表只在可视窗口内挂载 tooltip
  * 节点，headless 下实测 `.ant-tooltip` 始终为 0 个——即悬停不出现。
- * 因此**屏蔽原因直接写进选项本身**（不依赖悬停即可读），Tooltip 仅作为补充。
+ * 因此**原因直接写进选项本身**（不依赖悬停即可读），Tooltip 仅作为补充。
+ *
+ * P2-1 把两种「跑不通」分开处置，所以它们在这里也必须长得不一样：
+ *   - 远程依赖（`requires_remote_generation`）→ 真的选不了，置灰 + 原因；
+ *   - 缺配置（`requires_config`，当前仅 `policy`）→ 能选，但本次会生成 0 条
+ *     用例，所以给一句「需先提供策略文档」的提示而**不置灰**——置灰会把一个
+ *     即将支持的能力伪装成不可用。
  */
 function renderDisabledOption(option: unknown): ReactNode {
-  const data = option as { label?: string; disabled?: boolean; reason?: string } | undefined
+  const data = option as { label?: string; disabled?: boolean; reason?: string; configReason?: string } | undefined
+  const configReason = data?.configReason
+  if (configReason && data?.disabled !== true) {
+    return (
+      <Tooltip title={configReason}>
+        <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span>
+            {data.label}
+            <Tag color="warning" style={{ marginLeft: 6, fontSize: 11 }}>需配置</Tag>
+          </span>
+          {/* 提示就地可见：不悬停也能读懂为什么这个选项「能选但跑不出用例」 */}
+          <span style={{ color: 'rgba(0,0,0,0.45)', fontSize: 12, lineHeight: 1.4 }}>{configReason}</span>
+        </span>
+      </Tooltip>
+    )
+  }
   if (!data || data.disabled !== true) {
     return data?.label ?? ''
   }
@@ -224,6 +247,26 @@ export function EngineEvalPage() {
     [],
   )
 
+  // P2-1：成本提示的数据源。
+  //
+  // 平台的「用例数量」与 promptfoo 的 `numTests` 语义不同：后者对**每个展开
+  // 后的子插件**生效，所以实际探针数是 `num_tests × Σfanout`（`harmful`=26）。
+  // 不显示这个乘积，用户填 5 会以为跑 5 条，实际是 130 条——这是平台单方面
+  // 制造的财务风险，且用户无从预见。
+  // `?? []` 每次渲染都会新建数组，会让下面两个 useMemo 在每次输入时失效，
+  // 所以把兜底值也 memo 掉。
+  const watchedPluginsRaw = Form.useWatch<string[]>('plugins', form)
+  const watchedPlugins = useMemo(() => watchedPluginsRaw ?? [], [watchedPluginsRaw])
+  const watchedNumTests = Form.useWatch<number>('num_tests', form) ?? 0
+  const expandedPlugins = useMemo(() => totalPluginFanout(watchedPlugins), [watchedPlugins])
+  const plannedProbes = expandedPlugins > 0 && watchedNumTests > 0 ? expandedPlugins * watchedNumTests : 0
+  // 缺配置的插件（当前仅 `policy`）：能选，但本次会生成 0 条用例。与置灰的
+  // 远程依赖分开提示——两者的处置完全不同（补配置 vs 换选项）。
+  const configGatedSelected = useMemo(
+    () => watchedPlugins.filter((id) => isPluginConfigGated(id)),
+    [watchedPlugins],
+  )
+
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
     try {
@@ -268,6 +311,17 @@ export function EngineEvalPage() {
       )
       return
     }
+    // P2-1/P2-2 客户端侧二次拦截：已下线的插件 id 不在选择器里，只能从预填或
+    // 粘贴进来。后端与引擎都会拒，这里只是把「必然失败」提前到提交前，并顺带
+    // 告诉用户能力搬到哪里去了。
+    const retired = (values.plugins ?? []).filter((id) => retiredEnginePluginGuidance(id))
+    if (retired.length > 0) {
+      const details = retired
+        .map((id) => retiredEnginePluginGuidance(id)?.replacement_label ?? id)
+        .join(' ')
+      message.error(`本次选择包含已下线的插件 id：${retired.join('、')}。${details}`)
+      return
+    }
     setSubmitting(true)
     try {
       const run = await engineEvalService.createRun({
@@ -283,7 +337,7 @@ export function EngineEvalPage() {
     } catch (e: unknown) {
       // U6：远程依赖拒绝是可读的业务错误，单独翻译；其余沿用原提示。
       const data = (e as { response?: { data?: unknown } })?.response?.data
-      const rejection = explainRemoteGenerationRejection(data)
+      const rejection = explainRemoteGenerationRejection(data) ?? explainPluginIDRejection(data)
       if (rejection) {
         message.error(rejection.message)
       } else {
@@ -327,7 +381,14 @@ export function EngineEvalPage() {
               <Form.Item name="purpose" label="评测目的" rules={[{ required: true, message: '请描述评测目的' }]}>
                 <Select mode="tags" placeholder="例如：企业客服助手的合规安全评测" maxTagCount={1} />
               </Form.Item>
-              <Form.Item name="num_tests" label="用例数量" rules={[{ required: true }]}>
+              <Form.Item
+                name="num_tests"
+                label="用例数量"
+                rules={[{ required: true }]}
+                extra={plannedProbes > 0
+                  ? `预计执行约 ${plannedProbes} 条探针（用例数量 ${watchedNumTests} × 选中插件展开后的子插件数 ${expandedPlugins}）。`
+                  : '用例数量按「每个展开后的子插件」计算，实际探针数为两者之积。'}
+              >
                 <InputNumber min={1} max={50} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item name="plugins" label="攻击插件" rules={[{ required: true, message: '至少选择一个插件' }]}>
@@ -340,6 +401,17 @@ export function EngineEvalPage() {
                   options={ENGINE_STRATEGY_SELECT_OPTIONS}
                   optionRender={(option) => renderDisabledOption(option.data)} />
               </Form.Item>
+              {/* P2-1：缺配置的插件是「能选，但本次跑不出用例」，与置灰的远程
+                  依赖是两种失败，所以用独立提示说明，而不是把它也置灰。 */}
+              {configGatedSelected.length > 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message={`${configGatedSelected.join('、')} 需要先提供策略文档`}
+                  description="该插件本身可用，但平台尚未收集策略文档文本，选中它本次会生成 0 条用例并使运行失败（不是降级为 0 覆盖）。请改选其它插件，或等策略文档上传入口上线。"
+                />
+              )}
               <Button type="primary" htmlType="submit" block loading={submitting} icon={<PlayCircleOutlined />}>
                 开始评测
               </Button>
@@ -351,6 +423,29 @@ export function EngineEvalPage() {
               style={{ marginTop: 16 }}
               message={`${gatedPluginCount} 个插件 / ${gatedStrategyCount} 个策略当前不可选`}
               description={`${REMOTE_GENERATION_UNAVAILABLE_REASON}。这些能力仍然列在上方（置灰），只是在本环境无法产生评测用例——若强行提交，引擎会直接报错而不会静默跑 0 条。`}
+            />
+            {/* P2-1：已下线的插件 id 及其替代路径。
+                只删除会解决「会报错」，不解决「用户要的能力去哪了」——这三个 id
+                从未跑通过（promptfoo 不接受它们），所以这里是陈述事实而非承认
+                功能退化，同时把用户指向真正能用的入口。 */}
+            <Collapse
+              size="small"
+              ghost
+              style={{ marginTop: 8 }}
+              items={[{
+                key: 'retired',
+                label: <Text type="secondary">{RETIRED_ENGINE_PLUGINS.length} 个已下线的插件 id 及替代路径</Text>,
+                children: (
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {RETIRED_ENGINE_PLUGINS.map((item) => (
+                      <li key={item.id} style={{ marginBottom: 6 }}>
+                        <Text delete>{item.name}</Text>
+                        <Text type="secondary">（{item.id}）：{item.replacement_label}</Text>
+                      </li>
+                    ))}
+                  </ul>
+                ),
+              }]}
             />
           </Card>
         </Col>

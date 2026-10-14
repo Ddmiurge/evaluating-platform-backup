@@ -4,8 +4,11 @@ package maclaw
 //
 // 三条主线：
 //  1. **分组依据来自实测枚举**（TestPromptfooCatalogCategoryTaxonomyIsMeasured）
-//     ——把 119 插件 / 12 category 的实际分布钉死。这条是 U8 的地基：
+//     ——把 116 插件 / 11 category 的实际分布钉死。这条是 U8 的地基：
 //     分组若是按命名猜的，后面的族级 rubric 就建在流沙上。
+//     注：P2-1 移出 3 个非法 plugin id 后，`jailbreak` 分类随之消失（它的唯一
+//     成员是那个把策略名当插件用的条目），`injection` 9→8、`security-exploit`
+//     2→1。分类消失是结果而非缺陷：没有插件属于它了。
 //  2. **回退链显式可观测**（TestResolvePromptfooJudgeRubric*）
 //     ——插件覆盖 → 族级 → 显式兜底，且兜底**可数**。
 //  3. **护栏反证**（Test*Rejects* / Test*FailsClosed*）
@@ -25,7 +28,7 @@ import (
 var measuredCategoryTaxonomy = map[string]int{
 	"harmful":          26,
 	"industry":         54,
-	"injection":        9,
+	"injection":        8,
 	"privacy":          6,
 	"dataset":          6,
 	"bias":             5,
@@ -33,8 +36,7 @@ var measuredCategoryTaxonomy = map[string]int{
 	"hallucination":    3,
 	"brand":            2,
 	"off-topic":        2,
-	"security-exploit": 2,
-	"jailbreak":        1,
+	"security-exploit": 1,
 }
 
 func TestPromptfooCatalogCategoryTaxonomyIsMeasured(t *testing.T) {
@@ -42,7 +44,7 @@ func TestPromptfooCatalogCategoryTaxonomyIsMeasured(t *testing.T) {
 	for _, entry := range promptfooPluginCatalog {
 		counts[entry.Category]++
 	}
-	if len(promptfooPluginCatalog) != 119 {
+	if len(promptfooPluginCatalog) != 116 {
 		t.Fatalf("插件总数 = %d，U8 的设计前提是 119；改动目录需同步更新 rubric 表与本断言", len(promptfooPluginCatalog))
 	}
 	got := make([]string, 0, len(counts))
@@ -112,9 +114,13 @@ func TestJudgeRubricPolarityIsExplicitOnEveryRubric(t *testing.T) {
 }
 
 func TestResolvePromptfooJudgeRubricPrefersPluginOverride(t *testing.T) {
-	got := PromptfooJudgeRubricForPlugin("prompt-injection")
-	if got.Source != "plugin:prompt-injection" {
-		t.Fatalf("judge_source = %q，期望 plugin:prompt-injection", got.Source)
+	// P2-1：本测试原用 `prompt-injection`，但该 id 已作为非法 plugin id 移出目录
+	// （见 retiredPluginCatalog），它的覆盖也一并移除——对一个永远匹配不到的
+	// id 保留覆盖只会让 rubricSanityError 变红。改用 `pii`：它仍在目录里、
+	// 仍有专属覆盖，且同族族级 rubric 存在，正好继续测「覆盖优先于族级」。
+	got := PromptfooJudgeRubricForPlugin("pii")
+	if got.Source != "plugin:pii" {
+		t.Fatalf("judge_source = %q，期望 plugin:pii", got.Source)
 	}
 	if got.IsFallback() {
 		t.Fatal("高危插件专属覆盖不得被当成兜底档")
@@ -122,15 +128,15 @@ func TestResolvePromptfooJudgeRubricPrefersPluginOverride(t *testing.T) {
 	// 覆盖必须真的换了判据，而不只是换了标签：把它与**同族**的族级 rubric
 	// 逐字比对。（不能用 ResolvePromptfooJudgeRubric(同 id) 去取族级 ——
 	//  那个函数按 id 查覆盖，必然又拿到覆盖本身。）
-	categoryLevel, _, ok := PromptfooCategoryJudgeRubric("injection")
+	categoryLevel, _, ok := PromptfooCategoryJudgeRubric("privacy")
 	if !ok {
-		t.Fatal("injection 族级 rubric 不存在")
+		t.Fatal("privacy 族级 rubric 不存在")
 	}
 	if categoryLevel.Criteria == got.Rubric.Criteria {
 		t.Error("插件覆盖与族级 rubric 文本相同 —— 覆盖没有增加任何判定信息")
 	}
-	if categoryLevel.ID != "category:injection" {
-		t.Errorf("族级 rubric 的 ID = %q，期望 category:injection", categoryLevel.ID)
+	if categoryLevel.ID != "category:privacy" {
+		t.Errorf("族级 rubric 的 ID = %q，期望 category:privacy", categoryLevel.ID)
 	}
 }
 
@@ -190,8 +196,8 @@ func TestResolvePromptfooJudgeRubricInvalidCategoryIsNotGuessedFromID(t *testing
 
 func TestPromptfooEngineCatalogCarriesJudgeRubricForEveryPlugin(t *testing.T) {
 	catalog := PromptfooEngineCatalog()
-	if len(catalog.Plugins) != 119 {
-		t.Fatalf("下发给引擎的 catalog 插件数 = %d，期望 119", len(catalog.Plugins))
+	if len(catalog.Plugins) != 116 {
+		t.Fatalf("下发给引擎的 catalog 插件数 = %d，期望 116", len(catalog.Plugins))
 	}
 	fallbacks := 0
 	for _, plugin := range catalog.Plugins {

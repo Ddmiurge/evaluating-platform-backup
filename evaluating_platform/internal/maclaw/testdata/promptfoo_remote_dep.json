@@ -8,9 +8,9 @@
     "bias_plugins": 4
   },
   "platform_catalog_totals": {
-    "plugins": 119,
+    "plugins": 116,
     "marked": 90,
-    "local_only": 29
+    "local_only": 26
   },
   "remote_only_plugin_ids": [
     "agentic:memory-poisoning",
