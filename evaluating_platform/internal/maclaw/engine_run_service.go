@@ -246,6 +246,16 @@ func (s *EngineRunService) ApplyStatus(record *EngineRunRecord, status *EngineRu
 	if status.ErrorCode != "" {
 		record.ErrorCode = status.ErrorCode
 	}
+	// P2-5: the brief is a TERMINAL field, so a running status cannot write one —
+	// a mid-run message would describe a condition the run may still recover from,
+	// and it would be read later as the cause of a failure that never happened.
+	//
+	// Redacted here even though the engine redacts too: this is the copy that gets
+	// persisted in a tenant-facing table, and treating an upstream's output as
+	// already safe is how a second channel leaks what the first one scrubbed.
+	if status.ErrorMessage != "" && IsEngineRunTerminal(status.Phase) {
+		record.ErrorBrief = redactEngineErrorBrief(status.ErrorMessage)
+	}
 	if status.Result != nil {
 		record.Result = status.Result
 		record.TokenUsage = status.Result.TokenUsage

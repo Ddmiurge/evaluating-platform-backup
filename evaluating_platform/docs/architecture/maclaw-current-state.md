@@ -364,3 +364,52 @@ wizard 与 chat confirm 两条入口都会产生全部四类预检拒绝（远�
 ### 前端镜像护栏
 
 `requires_remote_generation`、`requires_config` 与 `RETIRED_ENGINE_PLUGINS` 的替代路径都是前端手工镜像后端的。三处都加了逐项一致性断言（`TestFrontendRemoteGenerationFlagsMatchBackend` / `TestFrontendRetiredPluginGuidanceMirrorsBackend`）。加它们的原因很直接：上批把 `iterative:meta` 闸住而前端没标（选择器仍可选），以及**两条替代引导指向了已闸策略**——`jailbreak` 插件曾推荐 `iterative:meta`、`security-exploit` 曾推荐 `reasoning-dos`，等于把用户从一个必然失败送到另一个必然失败。后者现在由 `TestPromptfooRetiredPluginReplacementsResolve` 钉住「替代项必须**本环境真能跑**」，而不只是「存在」。
+
+## 失败诊断链路：`error_brief` 与错误码拆分（P2-5，2026-10-14）
+
+### 缺陷：字段存在，但没有写入者
+
+`engine_runs.error_brief` 有列（migration 026）、有 Go struct 字段、`Update` 里有 `$23` 占位符，**但全链路没有任何一处写它**：`ApplyStatus` 只搬 `error_code`，`EngineRunStatus` 没有该字段，引擎的 `RunStatusResponse` 也没有。于是底层 promptfoo 异常只活在引擎进程内存里，随 run 结束消失 —— 这正是阶段一 item8（多轮策略全阻断）与 item12（12 维度丢弃）**无法从记录定位、只能带调试手段复现**的原因。
+
+### 现链路
+
+```
+引擎终态  taskManager.terminate(run, 'failed', code, redactEngineErrorBrief(message))
+            └─ status.error_message（≤500 runes；成功/取消不写）
+BFF       EngineRunStatus.ErrorMessage
+            └─ ApplyStatus：仅终态 → redactEngineErrorBrief(...) → record.ErrorBrief
+                └─ repository.Update（error_brief = $23）
+```
+
+### 两侧各自脱敏（刻意重复）
+
+平台不信任引擎的输出，引擎也不依赖平台的实现 —— 它们在不同容器、不同版本、不同语言里。规则同形：
+
+| 规则 | 理由 |
+|---|---|
+| 含 `raw payload` / `raw prompt` / `target response body` 等标记 → **整体替换** | 部分脱敏的载荷「看起来可信」，比明显缺失更糟 |
+| 凭据：`sk-…`、`Authorization`/`api_key`/`token`/`password` 赋值、长 hex、类 base64 token | 与 stage-one item7 的「日志侧零泄漏」对齐，这是**落库侧**的新通道 |
+| URL 剥 host:port，保留 scheme + 路径形状 | 路径指出是哪一步失败；host 泄露部署拓扑 |
+| 文件系统路径保留 basename | `AGENTS.md` 禁止本地路径入库 |
+| 上限 500 **runes**（不是 bytes） | 消息以中文为主，字节预算会砍到约三分之一 |
+| 空输入 → 空串 | 读取方把「空」当「未记录」，字面量 `"undefined"` 会被当成一次错误 |
+
+**过宽也是缺陷，不是谨慎**：第一版「不透明 token」规则匹配任意 32+ 字符的标识符字符（含 `_`），把本字段最该保留的东西 —— 错误码 —— 一起脱敏了（`agent_session_requires_multiturn_strategy` 正好 41 字符），产出 `[[redacted]] nope`。现在该规则要求**像 token**（混合大小写 / base64 标点 / 长 hex / ≥64 字符兜底），并且**先处理路径再处理 token**（base64 字母表含 `/`，顺序反了会把整条文件路径当成一个凭据）。Go 的 RE2 不支持前瞻断言，所以 Go 侧写成「匹配 + 判定函数」，语义与 TS 侧一致。
+
+### 错误码拆分（可诊断性的另一半）
+
+`native_generation_config_invalid` 一个码被 10 处共用，码本身零定位价值。现拆为：
+
+| 新码 | 覆盖 |
+|---|---|
+| `native_generation_strategy_unsupported` | 策略位：custom 钩子缺失、平台 id 映射到本 build 没有的原生策略 |
+| `native_generation_workdir_missing` | 带自定义插件包但没有 per-run workdir |
+| `native_generation_promptfoo_failed` | promptfoo 自身抛出（脱敏后的 message 指出是哪一例） |
+
+另把 `AGENT_SESSION_ERR_*` 从「消息前缀」升级为真正的错误码：`agentSession.ts` 现在抛 `EngineRunError`，`taskManager` 能读到 `err.code`，不再一律归到 `'engine_error'`。**方括号前缀保留** —— 码给程序读，前缀给人读日志。`EngineRunError` 也移到了 `src/runner/engineRunError.ts`（`generateTests.ts` 再导出），这样「需要一个码」的模块不必依赖 Plan A 的生成路径。
+
+**刻意不留通用兜底码**：一个 catch-all 会把拆码解决的问题原样带回来。
+
+### 可见范围
+
+`error_brief` 目前通过记录本身（`GetByID` 会读它）与运维面可达，**没有**加进企业门户的运行 DTO —— 那是一次产品可见的 API 变更，计划未要求。企业侧仍只看 `error_code`。

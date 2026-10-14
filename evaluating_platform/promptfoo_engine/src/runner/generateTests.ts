@@ -14,15 +14,17 @@
  */
 
 /** Error carrying a machine-readable code surfaced through RunStatusResponse. */
-export class EngineRunError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'EngineRunError';
-  }
-}
+import { EngineRunError } from './engineRunError.js';
+
+/**
+ * Re-exported from `engineRunError.ts` so this module's importers are unaffected.
+ *
+ * The class moved out because a coded error is part of the API contract and
+ * belongs to no single generation path: `agentSession.ts` needed it and,
+ * importing it from here, instead threw bare `Error`s whose code was only a
+ * message prefix — which the task manager could not read.
+ */
+export { EngineRunError } from './engineRunError.js';
 
 export interface GeneratedTestCase {
   prompt: string;

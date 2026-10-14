@@ -121,13 +121,34 @@ const CONFIG_FILE_NAME = 'redteam-config.yaml';
 export const NATIVE_ERR_MISSING_PROVIDER = 'native_generation_provider_missing';
 export const NATIVE_ERR_INVALID_PROVIDER = 'native_generation_provider_invalid';
 export const NATIVE_ERR_NO_TEST_CASES = 'native_generation_no_test_cases';
-export const NATIVE_ERR_CONFIG = 'native_generation_config_invalid';
+/**
+ * P2-5 · the old single code was split. `native_generation_config_invalid` covered
+ * ten throw sites, so the code alone carried no locating information: it was
+ * returned for a missing workdir, an unsupported strategy, and every promptfoo
+ * exception alike, which is why the U7 findings could not be diagnosed from the
+ * record. Each cause now has its own code, and the redacted message says which
+ * instance.
+ *
+ * There is deliberately no replacement "generic" code: a catch-all would recreate
+ * the problem it was removed for.
+ */
+
+/** A strategy this promptfoo build does not expose — including its custom hook. */
+export const NATIVE_ERR_STRATEGY_UNSUPPORTED = 'native_generation_strategy_unsupported';
+/** A run carrying custom packages was given no per-run workdir to write them into. */
+export const NATIVE_ERR_WORKDIR_MISSING = 'native_generation_workdir_missing';
+/**
+ * promptfoo itself raised. The class is "the library failed"; the redacted
+ * message names the instance (e.g. which strategy refused, which provider was
+ * rejected), which is exactly the information the old shared code discarded.
+ */
+export const NATIVE_ERR_PROMPTFOO_FAILED = 'native_generation_promptfoo_failed';
 /**
  * A plugin id the platform catalogue does not offer. Distinct from
- * NATIVE_ERR_CONFIG because it is a verdict about the REQUEST, not about the
- * document we built: the caller can fix it by choosing a different plugin,
- * whereas a config error means the platform produced something promptfoo
- * cannot read.
+ * NATIVE_ERR_PROMPTFOO_FAILED because it is a verdict about the REQUEST, not about
+ * the document we built: the caller can fix it by choosing a different plugin,
+ * whereas a promptfoo failure means the library rejected what the platform
+ * produced.
  */
 export const NATIVE_ERR_PLUGIN_ID_INVALID = 'native_generation_plugin_id_invalid';
 
@@ -331,7 +352,7 @@ export function resolveNativeStrategies(
     if (isPromptfooCustomStrategyId(id)) {
       if (!available.has('custom')) {
         throw new EngineRunError(
-          NATIVE_ERR_CONFIG,
+          NATIVE_ERR_STRATEGY_UNSUPPORTED,
           `strategy ${id} is a promptfoo custom strategy, but this promptfoo build does not expose the custom strategy hook`,
         );
       }
@@ -347,7 +368,7 @@ export function resolveNativeStrategies(
     }
     if (!available.has(mapping.promptfooId)) {
       throw new EngineRunError(
-        NATIVE_ERR_CONFIG,
+        NATIVE_ERR_STRATEGY_UNSUPPORTED,
         `strategy ${id} maps to promptfoo strategy ${mapping.promptfooId}, which this promptfoo build does not expose`,
       );
     }
@@ -985,7 +1006,7 @@ function requireWorkdir(workdir: string | undefined, customPlugins: EngineCustom
   if (workdir && workdir.trim()) return workdir;
   if (!customPlugins || customPlugins.length === 0) return '';
   throw new EngineRunError(
-    NATIVE_ERR_CONFIG,
+    NATIVE_ERR_WORKDIR_MISSING,
     `run carries ${customPlugins.length} custom plugin package(s) but no workdir; refusing to write expert-authored definitions outside the per-run directory`,
   );
 }
@@ -1167,7 +1188,7 @@ export async function executeNativeRedteamRun(
     if (record.controller.signal.aborted) {
       throw new EngineRunError('canceled', 'native generation canceled');
     }
-    throw new EngineRunError(NATIVE_ERR_CONFIG, `promptfoo native generation failed: ${errorMessage(err)}`);
+    throw new EngineRunError(NATIVE_ERR_PROMPTFOO_FAILED, `promptfoo native generation failed: ${errorMessage(err)}`);
   }
 
   // promptfoo returns undefined — not an error — when generation yields nothing.

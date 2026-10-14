@@ -1,3 +1,5 @@
+
+import { EngineRunError } from './engineRunError.js';
 /**
  * agentSession.ts — U9 · multi-turn agent sessions (`conversation_id`).
  *
@@ -97,6 +99,10 @@ const PROMPTFOO_SESSION_VAR = '{{sessionId}}';
 export const MULTI_TURN_STRATEGY_IDS: readonly string[] = ['crescendo', 'goat', 'jailbreak:hydra', 'jailbreak:goblin'];
 
 /** Error codes, part of the engine↔BFF contract so the UI can explain a refusal. */
+// P2-5：这三个常量现在同时是 **EngineRunError 的 code**（可编程读取，落进
+// engine_runs.error_code）与消息里的方括号前缀（供人读日志）。此前它们只是前缀 ——
+// taskManager 读 `err.code` 读不到，于是这类失败一律归到 'engine_error'，正是
+// 「无法诊断」的形状。
 export const AGENT_SESSION_ERR_NO_EXTRACT_PATH =
   'agent_session_requires_response_path';
 export const AGENT_SESSION_ERR_MULTITURN_MISSING =
@@ -213,7 +219,8 @@ export function assertAgentConversationIsExecutable(input: {
 }): void {
   if (!input.wantsConversation) return;
   if (!input.agentResponsePath.trim()) {
-    throw new Error(
+    throw new EngineRunError(
+      AGENT_SESSION_ERR_NO_EXTRACT_PATH,
       `[${AGENT_SESSION_ERR_NO_EXTRACT_PATH}] 请求体模板里用了 ${AGENT_CONVERSATION_PLACEHOLDER}，但没有配置「响应提取路径」——` +
         '平台无法知道会话 id 放在响应的哪个字段，每一轮都会发空 id，Agent 每次都新开一段对话：' +
         '这会得到一份「多轮」报告，而实际每轮都是独立单轮。请填写响应提取路径（如 conversation_id）。',
@@ -221,7 +228,8 @@ export function assertAgentConversationIsExecutable(input: {
   }
   const multiTurn = input.promptfooStrategyIds.filter((id) => MULTI_TURN_STRATEGY_IDS.includes(id));
   if (multiTurn.length === 0) {
-    throw new Error(
+    throw new EngineRunError(
+      AGENT_SESSION_ERR_MULTITURN_MISSING,
       `[${AGENT_SESSION_ERR_MULTITURN_MISSING}] 请求体模板里用了 ${AGENT_CONVERSATION_PLACEHOLDER}，但本次运行没有选择多轮策略` +
         `（${MULTI_TURN_STRATEGY_IDS.join(' / ')}）——单轮策略每条用例只发一次请求，会话 id 没有回传的机会。` +
         '请为本次评测选择多轮策略，或从请求体模板里去掉该占位符（去掉即保持 v1 单轮行为）。',
@@ -231,7 +239,8 @@ export function assertAgentConversationIsExecutable(input: {
   if (configs) {
     const contradicted = multiTurn.filter((id) => configs.get(id)?.stateful === false);
     if (contradicted.length > 0) {
-      throw new Error(
+      throw new EngineRunError(
+        AGENT_SESSION_ERR_STATEFUL_FALSE,
         `[${AGENT_SESSION_ERR_STATEFUL_FALSE}] 多轮策略 ${contradicted.join(' / ')} 被显式配置为 stateful: false，` +
           `同时请求体模板又要求回传 ${AGENT_CONVERSATION_PLACEHOLDER}——这两项互相矛盾：` +
           'stateful:false 会让引擎每轮都发空会话 id，Agent 每次新开对话，报告却显示多轮。' +

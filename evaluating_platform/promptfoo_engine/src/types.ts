@@ -358,4 +358,15 @@ export interface RunStatusResponse {
   updated_at: string;
   result?: SafeRunResult;
   error_code?: string;
+  /**
+   * P2-5 · redacted diagnosis for a terminal failure, carried out of the engine so
+   * the platform can persist it as `engine_runs.error_brief`.
+   *
+   * Before this existed the platform stored nothing and the promptfoo exception
+   * died with the process, which is why two U7 findings could not be located
+   * without re-running them inside the container. Already redacted by
+   * `redactEngineErrorBrief`; the platform redacts again before storing, because a
+   * single missed channel is how endpoints and credentials reach a database.
+   */
+  error_message?: string;
 }

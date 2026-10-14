@@ -346,3 +346,74 @@ describe('countToolCallSignals', () => {
     expect(countToolCallSignals(deep)).toEqual({ count: 0 });
   });
 });
+// ---------------------------------------------------------------------------
+// P2-5 · the code is a field now, not just a message prefix.
+//
+// These three assertions are what the task manager reads. Before this, the throws
+// were bare `Error`s whose code existed only inside the message, so
+// `runSafe`'s `err instanceof EngineRunError ? err.code : 'engine_error'` filed
+// every agent-target misconfiguration under the undiagnosable default — the
+// shape U9's acceptance notes recorded as "这类失败拿不到有意义的错误码".
+// ---------------------------------------------------------------------------
+
+/** The `code` a throw carries, or undefined when it throws nothing. */
+function thrownCode(fn: () => unknown): string | undefined {
+  try {
+    fn();
+    return undefined;
+  } catch (err) {
+    return (err as { code?: string }).code;
+  }
+}
+
+describe('assertAgentConversationIsExecutable — errors carry a code (P2-5)', () => {
+  it('codes a missing response path', () => {
+    const code = thrownCode(() =>
+      assertAgentConversationIsExecutable({
+        wantsConversation: true,
+        agentResponsePath: '   ',
+        promptfooStrategyIds: ['crescendo'],
+      }),
+    );
+    expect(code).toBe(AGENT_SESSION_ERR_NO_EXTRACT_PATH);
+  });
+
+  it('codes a missing multi-turn strategy', () => {
+    const code = thrownCode(() =>
+      assertAgentConversationIsExecutable({
+        wantsConversation: true,
+        agentResponsePath: 'conversation_id',
+        promptfooStrategyIds: ['base64'],
+      }),
+    );
+    expect(code).toBe(AGENT_SESSION_ERR_MULTITURN_MISSING);
+  });
+
+  it('codes a stateful:false contradiction', () => {
+    const code = thrownCode(() =>
+      assertAgentConversationIsExecutable({
+        wantsConversation: true,
+        agentResponsePath: 'conversation_id',
+        promptfooStrategyIds: ['crescendo'],
+        promptfooStrategyConfigs: new Map([['crescendo', { stateful: false }]]),
+      }),
+    );
+    expect(code).toBe(AGENT_SESSION_ERR_STATEFUL_FALSE);
+  });
+
+  it('keeps the human-readable prefix alongside the code', () => {
+    // Both matter: the code is read by programs, the prefix by whoever is looking
+    // at a log line. The fix added the code; it did not remove the prefix.
+    let message = '';
+    try {
+      assertAgentConversationIsExecutable({
+        wantsConversation: true,
+        agentResponsePath: '',
+        promptfooStrategyIds: [],
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : '';
+    }
+    expect(message).toContain(AGENT_SESSION_ERR_NO_EXTRACT_PATH);
+  });
+});

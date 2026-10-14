@@ -14,8 +14,12 @@ import {
   DEFAULT_INJECT_VAR,
   NATIVE_ERR_INVALID_PROVIDER,
   NATIVE_ERR_MISSING_PROVIDER,
+  NATIVE_ERR_NO_TEST_CASES,
   NATIVE_ERR_NUM_TESTS_TOO_SMALL,
   NATIVE_ERR_PLUGIN_ID_INVALID,
+  NATIVE_ERR_PROMPTFOO_FAILED,
+  NATIVE_ERR_STRATEGY_UNSUPPORTED,
+  NATIVE_ERR_WORKDIR_MISSING,
   resolveNativeStrategies,
   withPluginJudgeRubrics,
   loadEvalResults,
@@ -959,5 +963,48 @@ describe('buildNativeRedteamConfig — num_tests reaches promptfoo as a total (P
     const probes = (parsed.data?.plugins ?? []).reduce((sum, plugin) => sum + (plugin.numTests ?? 0), 0);
     // 26 sub-plugins, each 1: the granularity floor, and far below 1300.
     expect(probes).toBe(26);
+  });
+});
+
+describe('engine error codes are specific (P2-5)', () => {
+  it('no longer shares one code across unrelated failure classes', () => {
+    // The defect: `native_generation_config_invalid` covered ten throw sites, so
+    // the code named no cause — a missing workdir, an unsupported strategy and any
+    // promptfoo exception all arrived as the same string. Two U7 findings could
+    // not be diagnosed from their records for exactly that reason.
+    const codes = [
+      NATIVE_ERR_MISSING_PROVIDER,
+      NATIVE_ERR_INVALID_PROVIDER,
+      NATIVE_ERR_NO_TEST_CASES,
+      NATIVE_ERR_PLUGIN_ID_INVALID,
+      NATIVE_ERR_NUM_TESTS_TOO_SMALL,
+      NATIVE_ERR_STRATEGY_UNSUPPORTED,
+      NATIVE_ERR_WORKDIR_MISSING,
+      NATIVE_ERR_PROMPTFOO_FAILED,
+    ];
+    expect(new Set(codes).size).toBe(codes.length);
+    expect(codes).not.toContain('native_generation_config_invalid');
+    // Every code is namespaced, so a platform-side mapping can tell engine codes
+    // from its own without a maintained list.
+    for (const code of codes) expect(code.startsWith('native_generation_')).toBe(true);
+  });
+
+  it('reports a missing workdir as its own code', async () => {
+    // Reachable behaviour, not just a constant: a run carrying expert packages
+    // with nowhere to write them refuses with this code.
+    await expect(
+      buildNativeRedteamConfig({
+        runId: 'run-p2-5-workdir',
+        purpose: 'p',
+        injectVar: DEFAULT_INJECT_VAR,
+        numTests: 1,
+        plugins: [{ id: 'contracts' }],
+        strategies: [],
+        credentials: creds(),
+        customPlugins: [
+          { handle: 'h1', plugin_id: 'acme-probe', yaml: 'id: acme-probe', content_hash: 'x', published_at: '' },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: NATIVE_ERR_WORKDIR_MISSING });
   });
 });

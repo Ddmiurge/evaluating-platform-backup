@@ -74,6 +74,8 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 
  **提交闸统一出口（P2-2 补）**：wizard 与 chat confirm 两条入口的预检拒绝统一由 `writeEnginePreflightRejection` 渲染（409），同一拒绝不会因入口不同而措辞/状态码不同。
 
+ **失败诊断链路（P2-5，2026-10-14）**：`engine_runs.error_brief` 此前有列、有字段、有 `$23` 占位符，但**全链路没有写入者** —— 底层 promptfoo 异常只活在引擎进程内存里，所以阶段一的 item8/item12 只能靠进容器复现。现补齐：引擎终态携带 `error_message`（脱敏）→ BFF `ApplyStatus` 只对终态再脱敏一次并落库。两侧**各自独立实现脱敏**（引擎 `src/sanitize/errorBrief.ts`、平台 `internal/maclaw/engine_error_brief.go`），因为漏一条通道就等于凭据/端点进库。同时把 `native_generation_config_invalid` 这个被 10 处共用的码拆成 `native_generation_strategy_unsupported` / `native_generation_workdir_missing` / `native_generation_promptfoo_failed`，并把 `AGENT_SESSION_ERR_*` 从「消息前缀」变成真正的 `EngineRunError` code（保留方括号前缀供人读日志）。
+
  **前端镜像护栏（P2-2 补）**：`requires_remote_generation` / `requires_config` 两个标记与 `RETIRED_ENGINE_PLUGINS` 替代路径均由 `TestFrontendRemoteGenerationFlagsMatchBackend` 与 `TestFrontendRetiredPluginGuidanceMirrorsBackend` 与后端逐项对齐 —— 上批 `iterative:meta` 被闸住而前端未标、以及两条替代引导指向已闸策略，都是手工镜像没有护栏造成的。
 
 ## 多租户与安全边界

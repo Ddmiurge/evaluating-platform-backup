@@ -11,7 +11,8 @@
  */
 import { EventEmitter } from 'node:events';
 import type { RunProgressEvent, RunRequest, RunStatusResponse } from '../types.js';
-import { EngineRunError } from '../runner/generateTests.js';
+import { EngineRunError } from '../runner/engineRunError.js';
+import { redactEngineErrorBrief } from '../sanitize/errorBrief.js';
 import type { WorkdirManager } from './workdir.js';
 
 export interface RunRecord {
@@ -172,8 +173,19 @@ export class TaskManager extends EventEmitter {
       if (run.controller.signal.aborted) {
         this.terminate(run, 'canceled', 'canceled by user');
       } else {
-        const code = err instanceof EngineRunError ? err.code : 'engine_error';
-        this.terminate(run, 'failed', code);
+        // P2-5: carry the cause out, redacted. `EngineRunError` codes are the API
+        // contract; anything else is an internal fault whose text is still the only
+        // clue anyone will get — so it is passed through the same redaction rather
+        // than dropped. A bare `err.code` is read when present, because a coded
+        // error that is not an EngineRunError instance (a re-thrown or wrapped one)
+        // should still be classified.
+        const code =
+          err instanceof EngineRunError
+            ? err.code
+            : typeof (err as { code?: unknown })?.code === 'string'
+              ? ((err as { code: string }).code)
+              : 'engine_error';
+        this.terminate(run, 'failed', code, redactEngineErrorBrief(err instanceof Error ? err.message : String(err)));
       }
     } finally {
       await this.cleanupTerminal(run);
@@ -234,9 +246,22 @@ export class TaskManager extends EventEmitter {
     this.emit('progress', event);
   }
 
-  terminate(run: RunRecord, phase: 'succeeded' | 'failed' | 'canceled', errorCode?: string): void {
+  terminate(
+    run: RunRecord,
+    phase: 'succeeded' | 'failed' | 'canceled',
+    errorCode?: string,
+    errorMessage?: string,
+  ): void {
     run.status.phase = phase;
     if (errorCode) run.status.error_code = errorCode;
+    // P2-5: the brief is a TERMINAL field. A success clears it so a retried or
+    // reused record cannot carry a stale diagnosis, and a cancellation records
+    // nothing because "canceled by user" is not a failure to explain.
+    if (phase === 'failed' && errorMessage) {
+      run.status.error_message = errorMessage;
+    } else if (phase !== 'failed') {
+      delete run.status.error_message;
+    }
     run.status.duration_ms = run.startedAt ? Date.now() - run.startedAt : 0;
     run.status.updated_at = new Date().toISOString();
     this.emit('progress', {

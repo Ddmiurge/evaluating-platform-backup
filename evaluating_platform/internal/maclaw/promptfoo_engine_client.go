@@ -297,6 +297,14 @@ type EngineRunStatus struct {
 	UpdatedAt     string            `json:"updated_at"`
 	Result        *EngineSafeResult `json:"result,omitempty"`
 	ErrorCode     string            `json:"error_code,omitempty"`
+	// ErrorMessage is the engine-side redacted diagnosis for a terminal failure
+	// (P2-5). It is what `engine_runs.error_brief` was always meant to hold: before
+	// it existed the column had a writer nowhere in the chain, so the promptfoo
+	// exception explaining a failure died with the engine process.
+	//
+	// Redacted by the engine AND again by ApplyStatus before storage — see
+	// engine_error_brief.go for why the platform does not trust the engine's copy.
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // EngineSafeResult mirrors SafeRunResult (counts/severities/redacted reasons).
