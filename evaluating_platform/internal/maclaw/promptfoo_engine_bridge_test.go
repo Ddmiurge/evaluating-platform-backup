@@ -205,9 +205,10 @@ func TestRunPromptfooRedteamEvaluationOrchestration(t *testing.T) {
 	}
 
 	out, err := bridge.RunPromptfooRedteamEvaluation(context.Background(), userID, "inst-1", PromptfooEngineRunInput{
-		RunID:      "maclaw-run-1",
-		Purpose:    "客服助手安全评测",
-		NumTests:   2,
+		RunID:   "maclaw-run-1",
+		Purpose: "客服助手安全评测",
+		// P2-4: `harmful` expands to 26 sub-plugins, so 2 has no legal split.
+		NumTests:   30,
 		Plugins:    []string{"harmful"},
 		Strategies: []string{"direct"},
 	})
@@ -263,8 +264,14 @@ func TestRunPromptfooRedteamEvaluationDefaultsAndValidation(t *testing.T) {
 	if len(runner.created[0].Plugins) != 1 || runner.created[0].Plugins[0].ID != "harmful" {
 		t.Fatalf("default plugins = %+v", runner.created[0].Plugins)
 	}
-	if runner.created[0].NumTests != promptfooEngineDefaultTests {
-		t.Fatalf("default num_tests = %d", runner.created[0].NumTests)
+	// P2-4: an absent count resolves to the selection's floor when that is higher
+	// than the flat default. The default plugin is `harmful` (26 sub-plugins), so
+	// the flat default of 5 is not submittable — without raising it, the platform's
+	// own default request would be refused by its own coverage check.
+	wantFloor := NumTestsFloorForTest([]string{"harmful"})
+	if runner.created[0].NumTests != wantFloor || wantFloor <= promptfooEngineDefaultTests {
+		t.Fatalf("default num_tests = %d, want the selection floor %d (flat default %d)",
+			runner.created[0].NumTests, wantFloor, promptfooEngineDefaultTests)
 	}
 	_ = store
 	_ = out

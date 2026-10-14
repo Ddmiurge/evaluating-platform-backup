@@ -115,6 +115,9 @@ func TestPrepareEngineRunResolvesEnabledCustomPlugin(t *testing.T) {
 	prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), userID, "inst-1", PromptfooEngineRunInput{
 		Purpose: "U10 governance",
 		Plugins: []string{"harmful", CustomPluginRef("pf_handle_acme")},
+		// P2-4: `harmful` expands to 26 sub-plugins and the package adds one, so
+		// the default total of 5 has no legal split.
+		NumTests: 30,
 	})
 	if err != nil {
 		t.Fatalf("PreparePromptfooEngineRun: %v", err)
@@ -179,7 +182,8 @@ func TestPrepareEngineRunWithoutCustomPluginsIsUnchanged(t *testing.T) {
 			// property this case is about. `pii` is legal and local, so the
 			// pass-through assertion still isolates "no package reference".
 			prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
-				Purpose: "baseline", Plugins: []string{"harmful", "pii"},
+				// P2-4: harmful(26) + pii(4) is a 30-probe floor.
+				Purpose: "baseline", Plugins: []string{"harmful", "pii"}, NumTests: 30,
 			})
 			if err != nil {
 				t.Fatalf("PreparePromptfooEngineRun: %v", err)

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import promptfoo from 'promptfoo';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  allocateNumTests,
   assertNativeSlots,
   assertPluginIdsAreAccepted,
   assertSafeProviderUrl,
@@ -9,6 +14,7 @@ import {
   DEFAULT_INJECT_VAR,
   NATIVE_ERR_INVALID_PROVIDER,
   NATIVE_ERR_MISSING_PROVIDER,
+  NATIVE_ERR_NUM_TESTS_TOO_SMALL,
   NATIVE_ERR_PLUGIN_ID_INVALID,
   resolveNativeStrategies,
   withPluginJudgeRubrics,
@@ -445,7 +451,9 @@ describe('withPluginJudgeRubrics — Plan C carries the per-plugin rubric', () =
       runId: 'run-u8',
       purpose: 'p',
       injectVar: DEFAULT_INJECT_VAR,
-      numTests: 1,
+      // P2-4: the platform figure is a TOTAL, so it must cover both plugins
+      // (each gets at least one probe). 2 = one each.
+      numTests: 2,
       plugins: [{ id: 'contracts' }, { id: 'harmful:hate' }],
       strategies: [],
       credentials: creds(),
@@ -738,5 +746,218 @@ describe('assertPluginIdsAreAccepted — P2-2 L3 (measured rejection, not catalo
 
   it('ignores blank ids rather than refusing them', () => {
     expect(() => assertPluginIdsAreAccepted([{ id: '   ' }], rejectedCatalog)).not.toThrow();
+  });
+});
+
+/**
+ * promptfoo's own `RedteamConfigSchema`, resolved by the SEMANTIC name
+ * promptfoo binds it to.
+ *
+ * The schema is not exported from the package entrypoint (verified: the entry's
+ * export list has no `RedteamConfigSchema`), so it is reached the same way
+ * `gen_plugin_legality.mjs` reaches it: read the entry's own import statement and
+ * follow the binding, not the minified export name or the content-hashed chunk
+ * filename. Resolving it here rather than restating the rules is the point —
+ * "what promptfoo actually accepts" is the only evidence that counts, and a
+ * hand-written expectation could agree with the engine while both disagree with
+ * promptfoo.
+ */
+async function redteamConfigSchema(): Promise<{
+  safeParse: (value: unknown) => { success: boolean; data?: { plugins?: Array<{ numTests?: number }> }; error?: unknown };
+}> {
+  const importMetaResolve = (import.meta as { resolve?: (id: string) => string }).resolve;
+  const entry =
+    typeof importMetaResolve === 'function'
+      ? (() => {
+          const resolved = importMetaResolve.call(import.meta, 'promptfoo');
+          return resolved.startsWith('file://') ? fileURLToPath(resolved) : resolved;
+        })()
+      : join(dirname(createRequire(import.meta.url).resolve('promptfoo')), 'index.js');
+
+  const source = readFileSync(entry, 'utf8');
+  for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*"\.\/(tables-[^"]+)"/g)) {
+    for (const specifier of (match[1] ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
+      const [exported = '', local = exported] = specifier.split(/\s+as\s+/).map((s) => s.trim());
+      if (local !== 'RedteamConfigSchema') continue;
+      const chunk = match[2] ?? '';
+      const module = (await import(new URL(chunk, pathToFileURL(entry)).href)) as Record<string, unknown>;
+      return module[exported] as Awaited<ReturnType<typeof redteamConfigSchema>>;
+    }
+  }
+  throw new Error('promptfoo no longer resolves RedteamConfigSchema from a tables chunk');
+}
+
+const p24 = (id: string, fanout: number) => ({
+  id,
+  category: 'harmful',
+  category_label: '有害内容',
+  severity: 'high',
+  fanout,
+});
+
+describe('allocateNumTests — the platform total is a probe cap (P2-4)', () => {
+  const fanout = (entries: Record<string, number>) => new Map(Object.entries(entries));
+
+  it('spends the whole budget when the fanouts allow it', () => {
+    // harmful 26 + pii 4 + contracts 1 => 31 sub-plugins; N=50 is reachable.
+    const allocation = allocateNumTests(
+      [{ id: 'harmful' }, { id: 'pii' }, { id: 'contracts' }],
+      50,
+      fanout({ harmful: 26, pii: 4, contracts: 1 }),
+    );
+    expect(allocation.total).toBe(50);
+    expect(allocation.expandedPlugins).toBe(31);
+    for (const count of allocation.perPlugin.values()) expect(count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('never exceeds the user’s number, which is the whole point', () => {
+    // Every combination here must stay at or below N. The old behaviour was
+    // N x sum(fanout): 50 with `harmful` ran 1300.
+    for (const total of [31, 32, 40, 50, 77, 500]) {
+      const allocation = allocateNumTests(
+        [{ id: 'harmful' }, { id: 'pii' }, { id: 'contracts' }],
+        total,
+        fanout({ harmful: 26, pii: 4, contracts: 1 }),
+      );
+      expect(allocation.total).toBeLessThanOrEqual(total);
+    }
+  });
+
+  it('gives every selected plugin at least one probe', () => {
+    // A selected plugin with no cases is a silently dropped capability, and
+    // promptfoo's per-plugin `numTests` is `positive()` so 0 would be refused.
+    const allocation = allocateNumTests(
+      [{ id: 'harmful' }, { id: 'policy' }],
+      27,
+      fanout({ harmful: 26, policy: 1 }),
+    );
+    expect(allocation.perPlugin.get('harmful')).toBe(1);
+    expect(allocation.perPlugin.get('policy')).toBe(1);
+  });
+
+  it('refuses a total below the expansion instead of running more than asked', () => {
+    // harmful alone expands to 26 sub-plugins, so the honest minimum is 26. The
+    // refusal has to be actionable: it names the expansion and both ways out.
+    let thrown: unknown;
+    try {
+      allocateNumTests([{ id: 'harmful' }], 10, fanout({ harmful: 26 }));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(EngineRunError);
+    expect((thrown as EngineRunError).code).toBe(NATIVE_ERR_NUM_TESTS_TOO_SMALL);
+    expect((thrown as EngineRunError).message).toContain('26');
+    expect((thrown as EngineRunError).message).toContain('harmful:cybercrime');
+  });
+
+  it('is deterministic, and breaks ties by id', () => {
+    const run = () =>
+      allocateNumTests(
+        [{ id: 'b' }, { id: 'a' }, { id: 'c' }],
+        8,
+        fanout({ a: 1, b: 1, c: 1 }),
+      );
+    const first = [...run().perPlugin.entries()];
+    const second = [...run().perPlugin.entries()];
+    expect(first).toEqual(second);
+    // Equal fanouts: the two spare probes go to the two lowest ids.
+    expect(Object.fromEntries(first)).toEqual({ a: 3, b: 3, c: 2 });
+  });
+
+  it('weighs an unknown id 1 and collapses duplicates', () => {
+    const allocation = allocateNumTests(
+      [{ id: 'file:///tmp/run/custom.yaml' }, { id: 'pii' }, { id: 'pii' }, { id: '  ' }],
+      6,
+      fanout({ pii: 4 }),
+    );
+    // 4 + 1 = 5 sub-plugins; the blank entry and the duplicate do not add weight.
+    expect(allocation.expandedPlugins).toBe(5);
+    expect(allocation.perPlugin.size).toBe(2);
+    // The remaining budget goes where it fits: `pii`'s fanout of 4 cannot be
+    // afforded again, the single-fanout package can.
+    expect(allocation.perPlugin.get('file:///tmp/run/custom.yaml')).toBe(2);
+    expect(allocation.perPlugin.get('pii')).toBe(1);
+    expect(allocation.total).toBe(6);
+  });
+
+  it('returns nothing for an empty selection rather than dividing by zero', () => {
+    const allocation = allocateNumTests([], 10, fanout({}));
+    expect(allocation.total).toBe(0);
+    expect(allocation.perPlugin.size).toBe(0);
+  });
+});
+
+describe('buildNativeRedteamConfig — num_tests reaches promptfoo as a total (P2-4)', () => {
+  const catalog: EngineCatalog = {
+    plugins: [p24('harmful', 26), p24('pii', 4), p24('contracts', 1)],
+    strategies: [],
+  };
+
+  it('writes a per-plugin numTests and no redteam.numTests', async () => {
+    const cfg = await buildNativeRedteamConfig({
+      runId: 'run-p2-4',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 50,
+      plugins: [{ id: 'harmful' }, { id: 'pii' }, { id: 'contracts' }],
+      strategies: [],
+      credentials: creds(),
+      catalog,
+    });
+    // Leaving a scalar here would reinstate promptfoo's per-plugin fallback and
+    // bring the 26x surprise back for anything the allocator missed.
+    expect(cfg.redteam.numTests).toBeUndefined();
+    const counts = Object.fromEntries(cfg.redteam.plugins.map((p) => [p.id, p.numTests]));
+    expect(counts['harmful']).toBe(1);
+    expect(counts['pii']).toBe(5);
+    expect(counts['contracts']).toBe(4);
+  });
+
+  it('produces a document promptfoo accepts whose probe count is the user’s number', async () => {
+    // R-1-b: the only real evidence. Reading our own code cannot establish what
+    // promptfoo does with per-plugin counts — its own schema can, and the sum of
+    // the EXPANDED plugins' counts is the number of probes that will run.
+    const cfg = await buildNativeRedteamConfig({
+      runId: 'run-p2-4-zod',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 50,
+      plugins: [{ id: 'harmful' }, { id: 'pii' }, { id: 'contracts' }],
+      strategies: [],
+      credentials: creds(),
+      catalog,
+    });
+
+    const schema = await redteamConfigSchema();
+    const parsed = schema.safeParse(cfg.redteam);
+    expect(parsed.success, JSON.stringify(parsed.error)).toBe(true);
+
+    const expanded = parsed.data?.plugins ?? [];
+    // 26 + 4 + 1 sub-plugins, i.e. the expansion really happened.
+    expect(expanded).toHaveLength(31);
+    const probes = expanded.reduce((sum, plugin) => sum + (plugin.numTests ?? 0), 0);
+    expect(probes).toBe(50);
+    // And none of them is 0, which the schema would have rejected anyway.
+    expect(expanded.every((plugin) => (plugin.numTests ?? 0) >= 1)).toBe(true);
+  });
+
+  it('keeps a single collection plugin inside the cap instead of 26x it', async () => {
+    // The headline regression: 50 with `harmful` used to mean 1300 probes.
+    const cfg = await buildNativeRedteamConfig({
+      runId: 'run-p2-4-harmful',
+      purpose: 'p',
+      injectVar: DEFAULT_INJECT_VAR,
+      numTests: 50,
+      plugins: [{ id: 'harmful' }],
+      strategies: [],
+      credentials: creds(),
+      catalog,
+    });
+    const schema = await redteamConfigSchema();
+    const parsed = schema.safeParse(cfg.redteam);
+    expect(parsed.success, JSON.stringify(parsed.error)).toBe(true);
+    const probes = (parsed.data?.plugins ?? []).reduce((sum, plugin) => sum + (plugin.numTests ?? 0), 0);
+    // 26 sub-plugins, each 1: the granularity floor, and far below 1300.
+    expect(probes).toBe(26);
   });
 });

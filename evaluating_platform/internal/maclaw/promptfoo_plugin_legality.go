@@ -189,8 +189,11 @@ func PluginLegalityReason(pluginID string) string {
 // PluginFanout reports how many redteam sub-plugins the id expands into.
 // `harmful` -> 26, `pii` -> 4, `bias` -> 6, everything else -> 1.
 //
-// This is P0-1's weight source: promptfoo applies numTests to each EXPANDED
-// sub-plugin, so a run's real probe count is numTests x sum(fanout).
+// What the number is FOR (P2-4): promptfoo applies numTests to each EXPANDED
+// sub-plugin, so the fanout is both the engine's allocation weight and the floor
+// on a run's probe count — selecting `harmful` runs all 26 sub-plugins, so the
+// smallest honest `num_tests` is 26. The platform's figure is a TOTAL cap and the
+// engine divides it by sum(fanout); see `allocateNumTests` in the engine.
 //
 // Returns 1 for unknown ids. That is the documented convention, not a
 // fallback: `file://` custom plugins take a separate zod branch

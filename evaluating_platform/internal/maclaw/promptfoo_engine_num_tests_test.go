@@ -23,6 +23,8 @@ package maclaw
 // 40 → this test fails and names the layer that drifted.
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -125,5 +127,113 @@ func TestEngineNumTestsErrorMessageIsActionable(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("refusal message %q does not mention %q", msg, want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P2-4 · the floor side of the same number.
+//
+// The cap says "not more than 50". These say "at least sum(fanout)", which is
+// arithmetic rather than policy: promptfoo applies numTests to each EXPANDED
+// sub-plugin, so selecting `harmful` runs all 26 of them however small the total
+// is. Adding the floor is what makes the platform's own defaults submittable.
+// ---------------------------------------------------------------------------
+
+func refsOf(ids ...string) []EngineCapabilityRef {
+	out := make([]EngineCapabilityRef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, EngineCapabilityRef{ID: id})
+	}
+	return out
+}
+
+// TestValidateEngineRunNumTestsCoverage pins the refusal and its boundaries.
+//
+// Counter-proof: drop the call from `engine_run.go` → the handler test below goes
+// red and the request reaches the engine, where it fails after an engine_runs row
+// exists.
+func TestValidateEngineRunNumTestsCoverage(t *testing.T) {
+	harmfulFanout := PluginFanout("harmful")
+	if harmfulFanout < 2 {
+		t.Fatalf("harmful fanout = %d; this test assumes it expands", harmfulFanout)
+	}
+
+	t.Run("refuses a total below the selection's expansion", func(t *testing.T) {
+		err := ValidateEngineRunNumTestsCoverage(refsOf("harmful"), harmfulFanout-1)
+		if err == nil {
+			t.Fatal("a total below the expansion was accepted")
+		}
+		var tooSmall *EngineNumTestsTooSmallError
+		if !errors.As(err, &tooSmall) {
+			t.Fatalf("error type = %T, want *EngineNumTestsTooSmallError", err)
+		}
+		if tooSmall.ExpandedPlugins != harmfulFanout {
+			t.Errorf("ExpandedPlugins = %d, want %d", tooSmall.ExpandedPlugins, harmfulFanout)
+		}
+		// The message has to be actionable: the arithmetic, the offending
+		// collection, and both ways out.
+		for _, want := range []string{
+			fmt.Sprint(harmfulFanout),
+			"harmful",
+			"harmful:cybercrime",
+		} {
+			if !strings.Contains(tooSmall.Error(), want) {
+				t.Errorf("refusal %q does not mention %q", tooSmall.Error(), want)
+			}
+		}
+	})
+
+	t.Run("accepts a total exactly at the floor", func(t *testing.T) {
+		// The boundary must pass: a cap that also rejected its own floor would
+		// break every attempt to run a collection at the smallest legal size.
+		if err := ValidateEngineRunNumTestsCoverage(refsOf("harmful"), harmfulFanout); err != nil {
+			t.Fatalf("total at the floor was refused: %v", err)
+		}
+	})
+
+	t.Run("counts only the plugins that expand", func(t *testing.T) {
+		// contracts does not expand, so the floor is harmless alone.
+		if err := ValidateEngineRunNumTestsCoverage(refsOf("contracts"), 1); err != nil {
+			t.Fatalf("single non-collection plugin refused at 1: %v", err)
+		}
+	})
+
+	t.Run("exempts custom plugin references", func(t *testing.T) {
+		// A `pf_plugin:` handle's package decides its own expansion, so the floor
+		// cannot be computed here; the same exemption the legality gate uses.
+		if err := ValidateEngineRunNumTestsCoverage(refsOf("pf_plugin:handle"), 1); err != nil {
+			t.Fatalf("custom plugin reference refused: %v", err)
+		}
+	})
+
+	t.Run("deduplicates a repeated selection", func(t *testing.T) {
+		// Selecting `harmful` twice is one selection: a doubled floor would refuse
+		// totals that are in fact legal.
+		if err := ValidateEngineRunNumTestsCoverage(refsOf("harmful", " harmful "), harmfulFanout); err != nil {
+			t.Fatalf("duplicated selection changed the floor: %v", err)
+		}
+	})
+}
+
+// TestResolveEngineRunNumTests pins the "absent count" rule.
+//
+// The interesting case is the third one: the platform's default plugin is
+// `harmful` and its flat default count was 20 (wizard) / 5 (chat), so without
+// raising an ABSENT count to the floor the platform's own default request would be
+// refused by its own coverage check. An explicit count is never adjusted.
+func TestResolveEngineRunNumTests(t *testing.T) {
+	floor := NumTestsFloorForTest([]string{"harmful"})
+
+	if got := ResolveEngineRunNumTests(17, 20, refsOf("harmful")); got != 17 {
+		t.Errorf("an explicit count was changed: %d, want 17", got)
+	}
+	if got := ResolveEngineRunNumTests(0, 5, refsOf("contracts")); got != 5 {
+		t.Errorf("absent count with a low floor = %d, want the flat default 5", got)
+	}
+	if got := ResolveEngineRunNumTests(0, 5, refsOf("harmful")); got != floor {
+		t.Errorf("absent count with a 26-sub-plugin selection = %d, want the floor %d", got, floor)
+	}
+	if got := ResolveEngineRunNumTests(-3, 20, nil); got != 20 {
+		t.Errorf("absent count with no plugins = %d, want the flat default 20", got)
 	}
 }

@@ -250,7 +250,9 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
         runId: 'u8-plan-c',
         purpose: 'U8 E2E',
         injectVar: 'prompt',
-        numTests: 1,
+        // P2-4: the platform figure is a TOTAL and each selected plugin needs at
+        // least one probe, so 2 covers these two.
+        numTests: 2,
         plugins: [{ id: 'contracts' }, { id: 'hallucination' }],
         strategies: [],
         credentials: {
@@ -424,7 +426,8 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
           run_id: 'u8-plan-c-run',
           platform_user_id: 'u8-user',
           purpose: 'U8 E2E',
-          num_tests: 1,
+          // P2-4: platform total, and each of the three plugins needs >= 1 probe.
+          num_tests: 3,
           plugins: [
             { id: 'contracts' },
             { id: 'hallucination' },

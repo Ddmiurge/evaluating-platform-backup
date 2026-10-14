@@ -11,7 +11,8 @@ import {
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS,
-  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, engineEvalService, explainPluginConfigRejection, explainPluginIDRejection, explainRemoteGenerationRejection,
+  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, engineEvalService, explainNumTestsTooSmall,
+  explainPluginConfigRejection, explainPluginIDRejection, explainRemoteGenerationRejection,
   isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, retiredEnginePluginGuidance,
   toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
@@ -35,6 +36,15 @@ const ENGINE_PLUGIN_GROUPS = Object.entries(
 }))
 
 const ENGINE_STRATEGY_SELECT_OPTIONS = ENGINE_STRATEGY_OPTIONS.map(toEngineSelectOption)
+
+/** 表单默认选择与默认用例数量。 */
+const DEFAULT_PLUGINS = ['harmful']
+/**
+ * P2-4：默认值必须**可提交**。平台的「用例数量」现在是探针总数上限，而默认插件
+ * `harmful` 展开成 26 个子插件、每个至少 1 条 —— 老的固定默认 5 会立刻撞上引擎的
+ * 覆盖下限，用户什么都没选就被拒。所以由目录里的 fanout 推导，而不是写死一个数。
+ */
+const DEFAULT_NUM_TESTS = Math.max(5, totalPluginFanout(DEFAULT_PLUGINS))
 
 /**
  * 选项统一渲染：置灰 + 就地显示屏蔽原因 + 悬停补充完整说明；缺配置的项改为
@@ -259,7 +269,11 @@ export function EngineEvalPage() {
   const watchedPlugins = useMemo(() => watchedPluginsRaw ?? [], [watchedPluginsRaw])
   const watchedNumTests = Form.useWatch<number>('num_tests', form) ?? 0
   const expandedPlugins = useMemo(() => totalPluginFanout(watchedPlugins), [watchedPlugins])
-  const plannedProbes = expandedPlugins > 0 && watchedNumTests > 0 ? expandedPlugins * watchedNumTests : 0
+  // P2-4：`num_tests` 是**总探针数上限**，不再是「每插件份数」。引擎按子插件展开分配
+  // 每插件的 numTests，所以真实探针数 ≈ min(输入, 可分配到的最大值)，且**不少于**
+  // 展开后的子插件数。客户端据此提前拦截「总数 < 子插件数」这种必然被拒的输入。
+  const numTestsBelowFanout = expandedPlugins > 0 && watchedNumTests > 0 && watchedNumTests < expandedPlugins
+  const plannedProbes = numTestsBelowFanout ? 0 : watchedNumTests
   // 缺配置的插件（当前仅 `policy`）：能选，但本次会生成 0 条用例。与置灰的
   // 远程依赖分开提示——两者的处置完全不同（补配置 vs 换选项）。
   const configGatedSelected = useMemo(
@@ -322,6 +336,15 @@ export function EngineEvalPage() {
       message.error(`本次选择包含已下线的插件 id：${retired.join('、')}。${details}`)
       return
     }
+    // P2-4：用例数量少于展开后的子插件数时，引擎必须拒绝（每个子插件至少 1 条），
+    // 提前到提交前拦截，省一次往返并给出可执行的两种改法。
+    if (expandedPlugins > 0 && values.num_tests < expandedPlugins) {
+      message.error(
+        `用例数量 ${values.num_tests} 少于选中插件展开后的子插件数 ${expandedPlugins}：` +
+          '每个子插件至少要产生 1 条用例。请提高用例数量，或改选具体的子插件。',
+      )
+      return
+    }
     // P2-1/P2-2 客户端侧二次拦截：缺配置的插件能选中，但本次会生成 0 条用例。
     // 后端已显式拒绝，这里提前到提交前，省一次往返。
     const needsConfig = (values.plugins ?? []).filter((id) => isPluginConfigGated(id))
@@ -347,6 +370,7 @@ export function EngineEvalPage() {
       const rejection = explainRemoteGenerationRejection(data)
         ?? explainPluginIDRejection(data)
         ?? explainPluginConfigRejection(data)
+        ?? explainNumTestsTooSmall(data)
       if (rejection) {
         message.error(rejection.message)
       } else {
@@ -386,7 +410,7 @@ export function EngineEvalPage() {
               平台将使用默认生成模型合成攻击用例，对当前已连接的被测模型执行安全评测。
             </Paragraph>
             <Form form={form} layout="vertical" onFinish={onSubmit}
-              initialValues={{ num_tests: 5, plugins: ['harmful'], strategies: ['direct'] }}>
+              initialValues={{ num_tests: DEFAULT_NUM_TESTS, plugins: DEFAULT_PLUGINS, strategies: ['direct'] }}>
               <Form.Item name="purpose" label="评测目的" rules={[{ required: true, message: '请描述评测目的' }]}>
                 <Select mode="tags" placeholder="例如：企业客服助手的合规安全评测" maxTagCount={1} />
               </Form.Item>
@@ -394,9 +418,11 @@ export function EngineEvalPage() {
                 name="num_tests"
                 label="用例数量"
                 rules={[{ required: true }]}
-                extra={plannedProbes > 0
-                  ? `预计执行约 ${plannedProbes} 条探针（用例数量 ${watchedNumTests} × 选中插件展开后的子插件数 ${expandedPlugins}）。`
-                  : '用例数量按「每个展开后的子插件」计算，实际探针数为两者之积。'}
+                extra={numTestsBelowFanout
+                  ? `用例数量少于选中插件展开后的子插件数（${expandedPlugins}）：每个子插件至少要产生 1 条用例，提交会被拒绝。请提高用例数量，或改选具体的子插件（例如用 harmful:cybercrime 代替 harmful）。`
+                  : plannedProbes > 0
+                    ? `用例数量是本次评测的探针总数上限：预计执行约 ${plannedProbes} 条探针（选中插件展开后共 ${expandedPlugins} 个子插件，每个至少 1 条）。`
+                    : '用例数量是本次评测的探针总数上限，由引擎按子插件展开分配。'}
               >
                 <InputNumber min={1} max={50} style={{ width: '100%' }} />
               </Form.Item>

@@ -326,7 +326,9 @@ func TestEngineRunHandlerRejectsIllegalPluginID(t *testing.T) {
 
 	// A legal local id must pass this guard. Asserting the negative keeps the
 	// guard from degenerating into a blanket ban.
-	okBody := `{"purpose":"合规安全评测","plugins":[{"id":"harmful"}],"num_tests":5}`
+	// `contracts` is legal AND does not expand, so this case isolates the legality
+	// guard from P2-4's coverage floor (`harmful` needs >= 26 total probes).
+	okBody := `{"purpose":"合规安全评测","plugins":[{"id":"contracts"}],"num_tests":5}`
 	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", okBody); strings.Contains(w.Body.String(), maclaw.EngineErrPluginIDInvalid) {
 		t.Fatalf("legal plugin id was refused by the legality guard: %s", w.Body.String())
 	}
@@ -430,6 +432,51 @@ func TestEngineRunHandlerRejectsConfigGatedPlugin(t *testing.T) {
 	}
 }
 
+// TestEngineRunHandlerRejectsNumTestsBelowExpansion is the P2-4 floor at the API
+// boundary: a total that cannot give every expanded sub-plugin a case must be
+// refused with 400 and no engine_runs row.
+//
+// Counter-proof: delete the ValidateEngineRunNumTestsCoverage call → the request
+// reaches the fake engine and a record is created, and the failure surfaces later
+// as the engine's own `native_generation_num_tests_too_small`.
+func TestEngineRunHandlerRejectsNumTestsBelowExpansion(t *testing.T) {
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m",
+		CredentialSecret: "sk-secret", Enabled: true,
+	}}
+	h := newEngineRunHandler(newEnabledFakeEngine(), maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	r := newEngineRunRouter(h, "enterprise")
+
+	floor := maclaw.NumTestsFloorForTest([]string{"harmful"})
+	if floor < 2 {
+		t.Fatalf("harmful floor = %d; this test assumes it expands", floor)
+	}
+
+	body := fmt.Sprintf(`{"purpose":"p","plugins":[{"id":"harmful"}],"num_tests":%d}`, floor-1)
+	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), maclaw.EngineErrNumTestsTooSmall) {
+		t.Errorf("refusal does not carry the %s code: %s", maclaw.EngineErrNumTestsTooSmall, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), strconv.Itoa(floor)) {
+		t.Errorf("refusal does not name the floor %d: %s", floor, w.Body.String())
+	}
+	if len(store.records) != 0 {
+		t.Fatalf("run record created for a below-floor total: %+v", store.records)
+	}
+
+	// An omitted count must still be submittable: it resolves to the floor rather
+	// than to the flat default, which would be refused by this same gate.
+	noCount := `{"purpose":"p","plugins":[{"id":"harmful"}]}`
+	w = doJSON(r, http.MethodPost, "/maclaw/engine/runs", noCount)
+	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), maclaw.EngineErrNumTestsTooSmall) {
+		t.Fatalf("omitting the count produced an unsatisfiable default: %s", w.Body.String())
+	}
+}
+
 func TestEngineRunHandlerCreateRunRequiresTarget(t *testing.T) {
 	store := newFakeRunStore()
 	targets := &fakeTargetConfigService{target: nil}
@@ -480,7 +527,8 @@ func TestEngineRunHandlerCreateRunSuccessNoSecretLeak(t *testing.T) {
 	// refused — it delegates to promptfoo's remote-only iterative:meta provider.
 	// `base64` is local, so this case still exercises the success path it is
 	// about rather than the new pre-flight gate.
-	body := `{"purpose":"合规安全评测","plugins":[{"id":"harmful"},{"id":"pii"}],"strategies":[{"id":"base64"}],"num_tests":5,"judge_mode":"auto","session_id":"sess-1"}`
+	// P2-4: the total must cover the selection's expansion — harmful(26) + pii(4).
+	body := `{"purpose":"合规安全评测","plugins":[{"id":"harmful"},{"id":"pii"}],"strategies":[{"id":"base64"}],"num_tests":30,"judge_mode":"auto","session_id":"sess-1"}`
 	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
@@ -503,7 +551,7 @@ func TestEngineRunHandlerCreateRunSuccessNoSecretLeak(t *testing.T) {
 	} else if gen.BaseURL != "https://gen.example.com/v1" || gen.Model != "deepseek-v4-flash" || gen.APIKey != "sk-gen-secret-value" {
 		t.Fatalf("unexpected generation credential: %+v", gen)
 	}
-	if engine.createReq.NumTests != 5 || engine.createReq.JudgeMode != maclaw.EngineJudgeAuto {
+	if engine.createReq.NumTests != 30 || engine.createReq.JudgeMode != maclaw.EngineJudgeAuto {
 		t.Fatalf("unexpected request: %+v", engine.createReq)
 	}
 	if len(engine.createReq.Plugins) != 2 || len(engine.createReq.Strategies) != 1 {

@@ -131,6 +131,17 @@ export const NATIVE_ERR_CONFIG = 'native_generation_config_invalid';
  */
 export const NATIVE_ERR_PLUGIN_ID_INVALID = 'native_generation_plugin_id_invalid';
 
+/**
+ * The requested `num_tests` cannot cover the selected plugins (P2-4).
+ *
+ * Every selected plugin must produce at least one case — promptfoo's per-plugin
+ * `numTests` is `positive()`, so a 0 would be rejected, and a plugin silently
+ * dropped from the run is the failure shape this platform keeps removing. When
+ * the total is smaller than the number of plugins there is no allocation that
+ * satisfies both, so the request is refused with a number the caller can act on.
+ */
+export const NATIVE_ERR_NUM_TESTS_TOO_SMALL = 'native_generation_num_tests_too_small';
+
 /** Hostnames promptfoo's provider layer would treat as "not our endpoint". */
 const FORBIDDEN_PROVIDER_HOSTS = [
   'api.openai.com',
@@ -470,9 +481,9 @@ export function nativeJudgeSourceOverrides(
  * the caller did not set it, so an explicit operator override still wins.
  */
 export function withPluginJudgeRubrics(
-  plugins: Array<{ id: string; config?: Record<string, unknown> }>,
+  plugins: Array<{ id: string; numTests?: number; config?: Record<string, unknown> }>,
   rubrics: Map<string, JudgeRubric>,
-): Array<{ id: string; config?: Record<string, unknown> }> {
+): Array<{ id: string; numTests?: number; config?: Record<string, unknown> }> {
   return plugins.map((plugin) => {
     const existing = plugin.config ?? {};
     if (typeof existing.graderGuidance === 'string' && existing.graderGuidance.trim()) {
@@ -480,11 +491,20 @@ export function withPluginJudgeRubrics(
     }
     // See PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS: attaching any config to these
     // plugins makes promptfoo throw. Skipping keeps the run alive.
+    //
+    // The whole plugin is spread rather than rebuilt as `{id}`, because this
+    // function's job is to ATTACH a rubric — every other field on the plugin is
+    // somebody else's decision and must survive. It previously rebuilt the object
+    // and silently dropped `numTests`, which P2-4 sets per plugin: the allocation
+    // vanished here, promptfoo fell back to its default of 5, and a 50-probe
+    // request ran 155. Caught by the zod acceptance test rather than by reading
+    // the code — which is the argument for asserting against promptfoo's own
+    // schema.
     if (PROMPTFOO_CONFIG_UNSAFE_PLUGIN_IDS.has(plugin.id)) {
-      return plugin.config ? plugin : { id: plugin.id };
+      return plugin;
     }
     const rubric = resolveJudgeRubric(plugin.id, rubrics);
-    return { id: plugin.id, config: { ...existing, graderGuidance: rubric.criteria } };
+    return { ...plugin, config: { ...existing, graderGuidance: rubric.criteria } };
   });
 }
 
@@ -558,8 +578,22 @@ export interface NativeRedteamConfig {
   defaultTest: { options: { provider: ReturnType<typeof buildGenerationProviderOptions> } };
   redteam: {
     purpose: string;
-    numTests: number;
-    plugins: Array<{ id: string; config?: Record<string, unknown> }>;
+    /**
+     * P2-4: intentionally optional, and intentionally NOT set by this engine.
+     *
+     * promptfoo resolves a plugin's count as
+     * `plugin.numTests || options.numTests || redteamConfig.numTests`, and the
+     * platform's figure is a TOTAL rather than a per-plugin count. `allocateNumTests`
+     * writes the total into each plugin's own `numTests`; leaving a scalar here as
+     * well would silently reinstate the per-plugin semantics for anything the
+     * allocator did not cover, which is the 26x cost surprise this batch removes.
+     *
+     * Kept in the type (rather than deleted) because promptfoo accepts it and a
+     * future caller may legitimately want a shared fallback — but no caller sets it
+     * today, and a test asserts the emitted document has none.
+     */
+    numTests?: number;
+    plugins: Array<{ id: string; numTests?: number; config?: Record<string, unknown> }>;
     strategies: NativeStrategyRef[];
     injectVar: string;
     provider: ReturnType<typeof buildGenerationProviderOptions>;
@@ -585,6 +619,151 @@ export interface NativeRedteamConfig {
 interface NativeStrategyRef {
   id: string;
   config?: Record<string, unknown>;
+}
+
+/** The outcome of splitting a platform total across the selected plugins. */
+export interface PluginNumTestsAllocation {
+  /** plugin id -> probes per EXPANDED sub-plugin for that id (always >= 1) */
+  perPlugin: Map<string, number>;
+  /** real probe count: sum over selected plugins of fanout x perPlugin */
+  total: number;
+  /** sum of the fanouts — the multiplier that made a translation necessary */
+  expandedPlugins: number;
+}
+
+/**
+ * Translate the platform's `num_tests` — a TOTAL — into promptfoo's per-plugin
+ * `numTests` (P2-4 / P0-1).
+ *
+ * # The semantic mismatch this corrects
+ *
+ * The form says "用例数量", so the user's mental model is "how many probes run".
+ * promptfoo's `numTests` means **per expanded sub-plugin**: it resolves as
+ * `plugin.numTests || options.numTests || redteamConfig.numTests` and the value is
+ * copied to every sub-plugin a collection id expands into. Passing the platform
+ * figure through as `redteam.numTests` therefore multiplied it by the sum of the
+ * fanouts — measured worst case 50 x 26 = 1300 probes for a request that said 50,
+ * with the real number visible nowhere. That is a cost risk the platform created
+ * unilaterally.
+ *
+ * # Why the total is divided by the SUM OF FANOUTS, not weighted by fanout
+ *
+ * The real probe count is `sum over selected plugins of fanout(p) x numTests(p)`.
+ * For that to land near the user's number, every plugin must receive roughly
+ * `numTests = N / sum(fanout)` — the per-plugin share has to be *inverse* to how
+ * much it multiplies. Weighting the share BY fanout (share ∝ fanout) gives
+ * `sum(fanout^2)/sum(fanout) x N`, which is the original blow-up: with `harmful`
+ * alone that is still 26N. Plan 18 §P0-1 specifies the fanout-weighted version and
+ * then asserts the fanout-SUM equals N in its own counter-proof — the two halves
+ * of that section disagree, and the arithmetic sides with the counter-proof. So
+ * this implementation satisfies the acceptance criterion (real probe count = what
+ * the user asked for) rather than the intermediate formula.
+ *
+ * # The rules
+ *
+ *   1. `base = floor(N / sum(fanout))`, applied to every selected plugin, so
+ *      `sum(fanout) x base <= N` — the user's number is a CAP, never exceeded.
+ *   2. Distribute the remaining budget greedily: repeatedly add one probe to the
+ *      plugin with the largest fanout that still fits (fewest probes first at
+ *      equal fanout), until nothing fits. This lands exactly on N whenever the
+ *      fanouts allow it — `harmful` + `pii` + `contracts` with N=50 comes out at
+ *      exactly 50 — and otherwise gets as close as the integer arithmetic permits.
+ *   3. Ties break by id, so the same request always produces the same document.
+ *      A split that varied between identical requests would be a fresh source of
+ *      numbers nobody can explain.
+ *
+ * # Boundaries
+ *
+ *   - `N < sum(fanout)`: refused. Every sub-plugin needs at least one probe, so
+ *     the minimum honest run already exceeds the number — accepting would run more
+ *     than the user asked for (the exact surprise being fixed) and quietly
+ *     ignoring it would be worse. The message states the expansion and the two
+ *     ways out: raise the number, or select specific sub-plugins.
+ *   - unknown fanout: weight 1, the documented convention for `file://` packages
+ *     (they never expand). Treating it as 0 would make an unknown id free.
+ *   - duplicate/blank ids collapse: a double selection is still one selection.
+ */
+export function allocateNumTests(
+  plugins: Array<{ id: string }>,
+  total: number,
+  fanoutOf: ReadonlyMap<string, number>,
+): PluginNumTestsAllocation {
+  const ids = [...new Set(plugins.map((plugin) => (plugin.id ?? '').trim()).filter(Boolean))].sort();
+  if (ids.length === 0) {
+    return { perPlugin: new Map(), total: 0, expandedPlugins: 0 };
+  }
+
+  const fanoutFor = (id: string): number => {
+    const raw = fanoutOf.get(id);
+    return typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+  };
+  const fanouts = new Map(ids.map((id) => [id, fanoutFor(id)]));
+  const expandedPlugins = ids.reduce((sum, id) => sum + (fanouts.get(id) ?? 1), 0);
+
+  if (total < expandedPlugins) {
+    throw new EngineRunError(
+      NATIVE_ERR_NUM_TESTS_TOO_SMALL,
+      `用例数量 ${total} 少于选中插件展开后的子插件数 ${expandedPlugins}：每个子插件至少要产生 1 条用例，` +
+        '否则会有子插件被静默跳过。请把用例数量提高到 ' +
+        `${expandedPlugins} 以上，或改选具体的子插件（例如用 harmful:cybercrime 代替 harmful）。`,
+    );
+  }
+
+  const probesNow = (allocation: Map<string, number>): number =>
+    ids.reduce((sum, id) => sum + (fanouts.get(id) ?? 1) * (allocation.get(id) ?? 1), 0);
+
+  // Rule 1: an equal base for every plugin. Never exceeds the cap.
+  const base = Math.floor(total / expandedPlugins);
+  const perPlugin = new Map<string, number>(ids.map((id) => [id, base]));
+
+  // Rule 2: spend the remainder on the largest fanouts first, so the budget is
+  // used up as completely as integer arithmetic allows.
+  let spent = probesNow(perPlugin);
+  for (;;) {
+    // Among the plugins whose whole fanout still fits, prefer the LARGEST fanout
+    // and, at equal fanout, the fewest probes so far.
+    //
+    // Largest-first puts the spare budget into the collections, which is where a
+    // probe buys the most coverage. The count tie-break is what stops that from
+    // starving its peers: ordering by fanout alone hands every spare to the same
+    // plugin when the fanouts are equal (an early version produced `a=4,b=2,c=2`
+    // for a request that should come out an even 3/3/2), and the per-plugin sample
+    // sizes are exactly what the user is trying to control. `ids` is sorted, so
+    // remaining ties resolve by id and the split stays deterministic.
+    let target: string | undefined;
+    let bestFanout = -1;
+    let bestCount = Number.POSITIVE_INFINITY;
+    for (const id of ids) {
+      const fanout = fanouts.get(id) ?? 1;
+      if (spent + fanout > total) continue;
+      const count = perPlugin.get(id) ?? 1;
+      if (fanout > bestFanout || (fanout === bestFanout && count < bestCount)) {
+        target = id;
+        bestFanout = fanout;
+        bestCount = count;
+      }
+    }
+    if (target === undefined) break;
+    perPlugin.set(target, (perPlugin.get(target) ?? 1) + 1);
+    spent += fanouts.get(target) ?? 1;
+  }
+
+  return { perPlugin, total: probesNow(perPlugin), expandedPlugins };
+}
+
+/**
+ * Weights for a selection, read from the catalogue the backend ships.
+ *
+ * Absent entries are left out rather than defaulted here: `allocateNumTests`
+ * owns the "unknown means 1" convention, and duplicating it would let the two
+ * drift.
+ */
+export function catalogFanout(catalog: EngineCatalog | undefined): Map<string, number> {
+  const weights = new Map<string, number>();
+  for (const plugin of catalog?.plugins ?? []) {
+    if (typeof plugin.fanout === 'number') weights.set(plugin.id, plugin.fanout);
+  }
+  return weights;
 }
 
 /** Build the config document. Exported for tests; not part of the REST contract. */
@@ -698,6 +877,17 @@ export async function buildNativeRedteamConfig(input: {
   // package's own validated config, which is the expert's explicit choice.
   const resolvedStrategies = applyCustomStrategyRefs(strategies, resolveCustomStrategies(input.customStrategies));
 
+  // P2-4: translate the platform's TOTAL into per-plugin counts. Done inside the
+  // builder because the builder is the single seam that produces a config
+  // document (U8's lesson) — an allocation wired at the call site could be
+  // removed with the suite still green, and the resulting document would look
+  // perfectly valid while running 26x the probes the user asked for.
+  const allocation = allocateNumTests(resolvedPlugins, input.numTests, catalogFanout(input.catalog));
+  const allocatedPlugins = resolvedPlugins.map((plugin) => ({
+    ...plugin,
+    numTests: allocation.perPlugin.get(plugin.id) ?? 1,
+  }));
+
   return {
     description: `platform-native-redteam-${input.runId}`,
     prompts: [`{{${input.injectVar}}}`],
@@ -710,13 +900,18 @@ export async function buildNativeRedteamConfig(input: {
         purpose: input.purpose,
         applicationDefinition: input.applicationDefinition,
       }),
-      numTests: input.numTests,
+      // P2-4: deliberately NO `redteam.numTests`. promptfoo resolves
+      // `plugin.numTests || options.numTests || redteam.numTests`, so leaving the
+      // platform total here as well would re-introduce per-plugin semantics as a
+      // fallback for anything the allocator did not cover — the silent 26x cost
+      // increase this change exists to remove. Every plugin carries its own count.
+
       // U8: Plan C judges by the same per-plugin standards as Plan A. Without
       // this, turning on native generation would silently regress judging to
       // promptfoo's one-size rubric — the exact degradation U8 exists to remove,
       // and one that would only surface as "the numbers changed after the
       // upgrade".
-      plugins: withPluginJudgeRubrics(resolvedPlugins, buildJudgeRubricMap(input.catalog)),
+      plugins: withPluginJudgeRubrics(allocatedPlugins, buildJudgeRubricMap(input.catalog)),
       strategies: resolvedStrategies,
       injectVar: input.injectVar,
       provider,

@@ -243,6 +243,16 @@ type EngineCatalogPlugin struct {
 	// letting promptfoo `return []` mid-run and report 0 coverage as success.
 	// omitempty keeps pre-U6 BFF payloads byte-identical on the wire.
 	RequiresRemoteGeneration bool `json:"requires_remote_generation,omitempty"`
+	// Fanout is how many redteam sub-plugins this id expands into (P2-4):
+	// `harmful` -> 26, `pii` -> 4, `bias` -> 6, everything else 1. promptfoo
+	// applies `numTests` to each EXPANDED sub-plugin, so this is the weight the
+	// engine's "platform num_tests means a TOTAL" allocator splits by — without
+	// it the engine would have to guess, and a wrong guess is a silent cost
+	// change (the documented worst case is 50 x 2950 probes).
+	//
+	// Measured, never hand-set: `PluginFanout` reads the generated legality
+	// table. omitempty keeps pre-P2-4 payloads unchanged on the wire.
+	Fanout int `json:"fanout,omitempty"`
 	// UnavailableReason is the user-facing explanation to surface when a run is
 	// rejected. Safe to display: it is a static platform-authored string.
 	UnavailableReason string `json:"unavailable_reason,omitempty"`

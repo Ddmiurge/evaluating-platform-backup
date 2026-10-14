@@ -363,6 +363,16 @@ export const PLUGIN_ID_INVALID_CODE = 'plugin_id_invalid'
 export const PLUGIN_REQUIRES_CONFIG_CODE = 'plugin_requires_config'
 
 /**
+ * P2-4：后端在「用例数量少于选中插件展开后的子插件数」时返回的 error_code
+ * （与 `maclaw.EngineErrNumTestsTooSmall` 逐字一致）。
+ *
+ * 与 `num_tests_too_large` 是一对：一个管上限，一个管下限。下限不是策略而是算术 ——
+ * promptfoo 把 `numTests` 应用到每个展开后的子插件，选了 `harmful` 就一定会跑遍
+ * 26 个子插件。
+ */
+export const NUM_TESTS_TOO_SMALL_CODE = 'num_tests_too_small'
+
+/**
  * 一条插件/策略选项。requires_remote_generation 由后端目录生成。
  *
  * P2-1 新增 `requires_config`：**合法但缺配置**（当前仅 `policy`，它
@@ -382,9 +392,9 @@ export interface EngineCatalogOption {
  * 插件选项额外带风险类别（与后端 catalog 的 category 对齐）。
  *
  * `fanout` 是该 id 展开成的子插件数（`harmful`=26、`pii`=4、`bias`=6，其余为 1）。
- * promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以
- * 「实际探针数 = numTests × Σfanout」—— 只看插件个数会低估最坏路径
- * （表单默认值恰好是 `plugins: ['harmful']`）。由后端目录生成。
+ * promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以 Σfanout 是这次选择
+ * 的**探针数下限**：选了 `harmful` 就一定会跑遍 26 个子插件，`num_tests` 小于 26
+ * 的请求没有合法分配，会被引擎拒绝（P2-4）。由后端目录生成。
  */
 export interface EnginePluginCatalogOption extends EngineCatalogOption {
   category: string
@@ -462,20 +472,21 @@ export function isPluginConfigGated(id: string): boolean {
 /**
  * 返回该 id 展开成的子插件数（默认 1）。
  *
- * promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以实际探针数是
- * `num_tests × Σfanout`：`harmful`=26、`pii`=4、`bias`=6，其余为 1。只按
- * 「选了几个插件」估算成本会把最坏路径低估 26 倍，而表单默认值恰好就是
- * `plugins: ['harmful']`。
+ * 这个数是**探针数下限**，不是乘数：promptfoo 把 `numTests` 应用到每个展开后的
+ * 子插件，而平台的「用例数量」现在是**总探针数上限**（P2-4）——引擎用 Σfanout 去除
+ * 这个总数，再写进每个插件自己的 `numTests`。所以表单要提示的是「选了这些就至少
+ * 跑 Σfanout 条」，而不是「num_tests × Σfanout 条」。
  */
 export function pluginFanout(id: string): number {
   return ENGINE_PLUGIN_OPTIONS.find((o) => o.id === id)?.fanout ?? 1
 }
 
 /**
- * 一组插件 id 展开后的子插件总数，即 `num_tests` 的真实乘数（P0-1 的权重源）。
+ * 一组插件 id 展开后的子插件总数 —— 本组选择的**探针数下限**（P2-4）。
  *
- * 空串与重复项按「一次选择」计：重复勾选同一 id 不应让用户以为成本翻倍，
- * 而空串是下拉多选的正常残留。
+ * 空串与重复项按「一次选择」计：重复勾选同一 id 不应让用户以为下限翻倍，
+ * 而空串是下拉多选的正常残留。与后端 `PromptfooPluginFanoutTotals` 口径一致
+ * （两侧都必须去重，否则同一选择会出现两个下限）。
  */
 export function totalPluginFanout(ids: readonly string[]): number {
   const seen = new Set<string>()
@@ -617,6 +628,26 @@ export function explainPluginConfigRejection(
   const plugins = (body.plugins ?? []).filter((id) => typeof id === 'string' && id.trim() !== '')
   const fallback = `本次选择包含需要平台尚未收集配置的插件${plugins.length > 0 ? `：${plugins.join('、')}` : ''}` +
     '，本次会生成 0 条用例，请改选其它插件。'
+  return {
+    message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
+    code: body.code,
+  }
+}
+
+/**
+ * P2-4：把后端 `num_tests_too_small`（400）翻译成可读提示。
+ *
+ * 后端已经把算式和两种改法写进 `error`，优先原样展示；本地兜底只在后端没给
+ * 文案时使用。
+ */
+export function explainNumTestsTooSmall(
+  data: unknown,
+): { message: string; code: string } | null {
+  const body = data as { code?: string; error?: string; expanded_plugins?: number } | null
+  if (!body || body.code !== NUM_TESTS_TOO_SMALL_CODE) return null
+  const expanded = typeof body.expanded_plugins === 'number' ? body.expanded_plugins : undefined
+  const fallback = `用例数量少于选中插件展开后的子插件数${expanded !== undefined ? `（${expanded}）` : ''}：` +
+    '每个子插件至少要产生 1 条用例。请提高用例数量，或改选具体的子插件。'
   return {
     message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
     code: body.code,

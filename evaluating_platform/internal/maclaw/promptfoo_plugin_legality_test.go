@@ -394,3 +394,34 @@ func TestPromptfooLegalityProvenanceMatchesInstalledPromptfoo(t *testing.T) {
 			table.PromptfooSchemaBinding.SemanticName)
 	}
 }
+
+// TestEngineCatalogShipsPluginFanout pins the field the engine's num_tests
+// allocator divides by (P2-4).
+//
+// A missing fanout is not a cosmetic gap: the engine would weigh every plugin 1,
+// so the total would be split as if `harmful` were a single plugin and the run
+// would execute 26x the intended probes for that selection — the exact cost
+// surprise P2-4 removes, arriving silently through a field nobody checked.
+func TestEngineCatalogShipsPluginFanout(t *testing.T) {
+	catalog := PromptfooEngineCatalog()
+	if len(catalog.Plugins) == 0 {
+		t.Fatal("engine catalog is empty")
+	}
+	collections := 0
+	for _, plugin := range catalog.Plugins {
+		want := PluginFanout(plugin.ID)
+		if plugin.Fanout != want {
+			t.Errorf("catalog ships fanout %d for %q, want %d (the measured expansion)", plugin.Fanout, plugin.ID, want)
+		}
+		if plugin.Fanout < 1 {
+			t.Errorf("catalog ships fanout %d for %q; the allocator would treat an unknown weight as free", plugin.Fanout, plugin.ID)
+		}
+		if plugin.Fanout > 1 {
+			collections++
+		}
+	}
+	// Measured today: harmful 26, bias 6, pii 4.
+	if collections < 3 {
+		t.Errorf("only %d plugins expand; the allocator's weight is barely exercised", collections)
+	}
+}

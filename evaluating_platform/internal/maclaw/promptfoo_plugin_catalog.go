@@ -634,8 +634,10 @@ func promptfooPluginCard(entry promptfooPluginCatalogEntry) CapabilityCard {
 	// capability the platform intends to support.
 	//
 	// `fanout` ships on every plugin card because it is what makes a selection's
-	// cost predictable: promptfoo applies numTests to each EXPANDED sub-plugin,
-	// so `harmful` produces 26x what `policy` does for the same numTests (P0-1).
+	// cost predictable: promptfoo applies numTests to each EXPANDED sub-plugin, so
+	// `harmful` expands to 26 sub-plugins and 26 is the least a run selecting it
+	// can execute (P2-4). The engine divides the platform's total by sum(fanout)
+	// when it writes per-plugin counts, and the wizard shows the floor.
 	if entry.RequiresConfig {
 		card.SafeMetadata["requires_config"] = "true"
 		card.SafeMetadata["requires_config_reason"] = PluginRequiresConfigReason(entry.ID)
@@ -913,6 +915,10 @@ func PromptfooEngineCatalog() *EngineCatalog {
 			Severity:      entry.DefaultSev,
 			JudgeCriteria: criteria,
 			JudgeSource:   judgeSource,
+			// P2-4: the engine splits the platform's "total probes" figure across
+			// the selected plugins by this weight, so it must be the measured
+			// expansion count rather than an assumption.
+			Fanout: PluginFanout(entry.ID),
 		}
 		if entry.RequiresRemoteGeneration {
 			plugin.RequiresRemoteGeneration = true

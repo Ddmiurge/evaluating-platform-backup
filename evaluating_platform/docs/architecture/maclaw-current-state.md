@@ -309,9 +309,20 @@ U7 阶段一实测暴露：U6 的护栏只回答「这个插件要不要远程�
 
 `policy` 是**合法**插件（`safeParse` 通过、fanout=1），0 用例的原因在平台侧——没有 `config.policy` 文本。故标 `requires_config`：目录/卡片下发标记与原因，前端**不置灰**但标「需先提供策略文档」，选中时给出显式警告。把它混进「非法 id」清单会把能力缺口伪装成坏 id，并连带丢掉 U8 已实现的 `promptfoo:policy` 判定语义。
 
-### 成本语义：fanout
+### 成本语义：fanout 与「用例数量 = 探针总数上限」（P2-4 已落地）
 
-promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以实际探针数 = `num_tests × Σfanout`（`harmful`=26、`bias`=6、`pii`=4，其余 1）。目录为每个插件下发 `fanout`，前端据此显示「预计执行约 N 条探针」——不显示这个乘积，用户填 5 会以为跑 5 条而实际是 130 条。`PromptfooPluginFanoutTotals`（后端）与 `totalPluginFanout`（前端）**都必须去重**：重复勾选同一 id 不是两次选择，两处口径不一致会让同一选择算出两个成本数。（`num_tests` 语义本身改为「总数并按 fanout 加权均摊」是 P0-1/P2-4，尚未落地。）
+promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以「每插件份数」语义下实际探针数 = `num_tests × Σfanout`（`harmful`=26、`bias`=6、`pii`=4，其余 1）—— 填 50 会跑 1300 条，而用户无从预见。
+
+P2-4 把这个语义改成用户以为的那个：`num_tests` 是**总探针数上限**。引擎的 `allocateNumTests` 用 `floor(N / Σfanout)` 给每个插件一个基础份数，再把剩余预算按「fanout 大者优先、同 fanout 取当前份数少者」补足，因此：
+
+- 真实探针数 **不超过** N（`harmful`+`pii`+`contracts` 在 N=50 时正好 50；只选 `harmful` 时是 26 —— 26 个子插件各 1 条是不可避免的下限）；
+- Σfanout 是**下限**：低于它的请求没有合法分配，BFF 与引擎都拒绝（`num_tests_too_small` / `native_generation_num_tests_too_small`），提示里给出可选的子插件 id（如 `harmful:cybercrime`）；
+- 未填轮次时按 `max(默认值, 下限)` 解析，否则平台自己的默认选择（`harmful`）会被自己的闸门拒掉；
+- 分配结果写进**每个插件自己的 `numTests`**，且**不再写 `redteam.numTests`**（promptfoo 的 `plugin.numTests || options.numTests || redteamConfig.numTests` 会让留在那里的总数变成漏网插件的每插件语义）。
+
+**与计划 §P0-1 的一处偏离（如实记录）**：计划写的是按 fanout **加权**分配（`q(p) = N·w(p)/Σw`），但它的验收判据（R-1-b）要求「展开后 `numTests` 之和 == N」。两者不自洽 —— 加权版本代入后探针数是 `N·Σf²/Σf`，只选 `harmful` 时仍是 26N，成本问题原样保留（计划自己的实测例子 `pii` 写了 3 却展开成 4×3=12 条，也说明它在数 per-plugin 值之和而不是探针数）。实现按判据走：**除以 Σfanout**，并用真实 zod schema 断言展开后的 `numTests` 之和等于 N。
+
+`PromptfooPluginFanoutTotals`（后端）与 `totalPluginFanout`（前端）**都必须去重**：重复勾选同一 id 不是两次选择，两处口径不一致会让同一选择算出两个下限。`EngineCatalogPlugin` 因此新增 `fanout` 字段下发（缺失会被后端 `TestEngineCatalogShipsPluginFanout` 拦下）。
 
 ### `num_tests` 上限统一
 

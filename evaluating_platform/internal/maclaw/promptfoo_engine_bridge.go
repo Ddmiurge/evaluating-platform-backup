@@ -198,10 +198,9 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		return nil, err
 	}
 	judgeMode := engineJudgeModeFromString(in.JudgeMode)
-	numTests := in.NumTests
-	if numTests <= 0 {
-		numTests = promptfooEngineDefaultTests
-	}
+	// P2-4: resolved against the selection, because the default plugin is
+	// `harmful` (26 sub-plugins) and a flat default of 5 could not be submitted.
+	numTests := ResolveEngineRunNumTests(in.NumTests, promptfooEngineDefaultTests, plugins)
 	// P2-2 (S-4): refuse rather than clamp. A confirmed count is the number the
 	// user approved on the plan card, so quietly running fewer rounds would make
 	// the report and the approval disagree with nothing in the response saying
@@ -209,6 +208,12 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	// same one the engine clamps at, so the three cannot drift apart again.
 	if numTests > EngineMaxNumTests {
 		return nil, &EngineNumTestsTooLargeError{Requested: numTests, Max: EngineMaxNumTests}
+	}
+	// P2-4: same coverage floor as the wizard path, checked once the effective
+	// count is known. A chat plan can name a collection id (`harmful`) together
+	// with a small round count, and that combination has no legal split.
+	if err := ValidateEngineRunNumTestsCoverage(plugins, numTests); err != nil {
+		return nil, err
 	}
 	// U10: resolve expert-published packages and apply admin governance.
 	//

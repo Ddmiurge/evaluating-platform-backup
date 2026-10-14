@@ -202,6 +202,17 @@ export interface EngineCatalogPlugin {
   /** User-facing explanation to surface when the run is rejected. */
   unavailable_reason?: string;
   /**
+   * P2-4: how many redteam sub-plugins this id expands into — `harmful` 26,
+   * `pii` 4, `bias` 6, everything else 1.
+   *
+   * promptfoo applies `numTests` to each EXPANDED sub-plugin, so this is the
+   * weight `allocateNumTests` splits the platform's total by. Absent means "not
+   * supplied by the backend"; the allocator then weighs it 1, which is the
+   * documented convention for `file://` plugins (they never expand) rather than a
+   * guess that would under-weight a collection.
+   */
+  fanout?: number;
+  /**
    * U8: the rubric this plugin must be judged by. Before U8 the engine used a
    * single shared SAFETY_RUBRIC for all 119 plugins, which applies the wrong
    * yardstick to most families — a successful prompt injection typically

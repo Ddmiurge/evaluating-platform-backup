@@ -33,6 +33,7 @@ package maclaw
 // target secret or leave a row behind.
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -48,6 +49,113 @@ const EngineErrPluginIDInvalid = "plugin_id_invalid"
 // One code would tell the user their selection is broken when the truth is that
 // a platform feature is pending.
 const EngineErrPluginRequiresConfig = "plugin_requires_config"
+
+// EngineErrNumTestsTooSmall refuses a `num_tests` that cannot cover the selected
+// plugins' expansion (P2-4). Sibling of EngineErrNumTestsTooLarge: one bounds the
+// total from above, this bounds it from below.
+const EngineErrNumTestsTooSmall = "num_tests_too_small"
+
+// EngineNumTestsTooSmallError reports that the requested total is below the floor
+// its selection implies.
+type EngineNumTestsTooSmallError struct {
+	Requested int
+	// ExpandedPlugins is sum(fanout) for the selection: the number of redteam
+	// sub-plugins promptfoo will generate for, each of which needs at least one probe.
+	ExpandedPlugins int
+	// Collections names the ids whose expansion drove the floor, so the message can
+	// point at the choice that made the number too small.
+	Collections []string
+}
+
+// Error implements error. It states the arithmetic and both ways out — raise the
+// number, or pick specific sub-plugins — because "too small" alone leaves the user
+// with no idea that `harmful` is 26 probes.
+func (e *EngineNumTestsTooSmallError) Error() string {
+	detail := ""
+	if len(e.Collections) > 0 {
+		detail = "（" + strings.Join(e.Collections, "、") + " 会展开成多个子插件）"
+	}
+	return fmt.Sprintf(
+		"用例数量 %d 少于选中插件展开后的子插件数 %d%s：每个子插件至少要产生 1 条用例。"+
+			"请提高用例数量到 %d 以上，或改选具体的子插件（例如用 harmful:cybercrime 代替 harmful）。",
+		e.Requested, e.ExpandedPlugins, detail, e.ExpandedPlugins,
+	)
+}
+
+// ResolveEngineRunNumTests returns the effective `num_tests` for a request.
+//
+// When the caller supplied a count, it is returned unchanged — validation is the
+// caller's next step, and silently adjusting a number somebody typed is the
+// behaviour this batch exists to remove. Only an ABSENT count (<= 0) is resolved,
+// and then to `max(fallback, the selection's floor)`.
+//
+// Why the floor raises the fallback: the default plugin selection is `harmful`,
+// which expands to 26 sub-plugins, while the default counts were 20 (wizard) and
+// 5 (chat). Raising to the floor keeps the platform's own defaults submittable;
+// without it the default form and the default plan card would both be refused by
+// the coverage check — a self-inflicted dead end that no user choice produced. The
+// resolved number is what the run record and the report carry, so nothing is
+// hidden: the user sees 26 rather than a refusal for a count they never chose.
+func ResolveEngineRunNumTests(requested int, fallback int, plugins []EngineCapabilityRef) int {
+	if requested > 0 {
+		return requested
+	}
+	if floor := numTestsFloor(plugins); floor > fallback {
+		return floor
+	}
+	return fallback
+}
+
+// numTestsFloor is sum(fanout) for a selection: the fewest probes that can still
+// give every expanded sub-plugin a case.
+func numTestsFloor(plugins []EngineCapabilityRef) int {
+	ids := make([]string, 0, len(plugins))
+	for _, ref := range plugins {
+		id := strings.TrimSpace(ref.ID)
+		if id == "" || isCustomPluginReference(id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return PromptfooPluginFanoutTotals(ids).ExpandedPlugins
+}
+
+// ValidateEngineRunNumTestsCoverage refuses a total below the selection's
+// expansion floor (P2-4).
+//
+// Same placement as its siblings, and for the same reason: a request that cannot
+// succeed must be refused before a run record exists. The floor is not a platform
+// policy — it is arithmetic: promptfoo applies `numTests` to each EXPANDED
+// sub-plugin, so selecting `harmful` runs all 26 of them however small the total
+// is. The engine enforces this too (`native_generation_num_tests_too_small`), but
+// refusing here means no engine_runs row and no engine call.
+func ValidateEngineRunNumTestsCoverage(plugins []EngineCapabilityRef, numTests int) error {
+	floor := numTestsFloor(plugins)
+	if floor == 0 || numTests >= floor {
+		return nil
+	}
+	ids := make([]string, 0, len(plugins))
+	for _, ref := range plugins {
+		id := strings.TrimSpace(ref.ID)
+		if id == "" || isCustomPluginReference(id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	totals := PromptfooPluginFanoutTotals(ids)
+	collections := make([]string, 0, len(totals.FanoutByPlugin))
+	for id, fanout := range totals.FanoutByPlugin {
+		if fanout > 1 {
+			collections = append(collections, id)
+		}
+	}
+	sort.Strings(collections)
+	return &EngineNumTestsTooSmallError{
+		Requested:       numTests,
+		ExpandedPlugins: floor,
+		Collections:     collections,
+	}
+}
 
 // EnginePluginConfigGuardError refuses a run that selects a plugin which cannot
 // produce test cases until the platform collects configuration for it.
@@ -217,4 +325,14 @@ func isCustomPluginReference(id string) bool {
 	}
 	lower := strings.ToLower(id)
 	return strings.HasPrefix(lower, CustomPluginEngineMarker) || strings.HasPrefix(lower, "file://")
+}
+
+// NumTestsFloorForTest exposes the selection floor to tests in this package
+// without widening the production API surface.
+func NumTestsFloorForTest(pluginIDs []string) int {
+	refs := make([]EngineCapabilityRef, 0, len(pluginIDs))
+	for _, id := range pluginIDs {
+		refs = append(refs, EngineCapabilityRef{ID: id})
+	}
+	return numTestsFloor(refs)
 }

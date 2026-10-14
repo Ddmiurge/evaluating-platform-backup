@@ -59,6 +59,9 @@ func TestPrepareEngineRunRefusesDisabledCustomStrategy(t *testing.T) {
 	_, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
 		Purpose:    "Phase 3 governance",
 		Strategies: []string{CustomStrategyRef("pfh_acme")},
+		// P2-4: with no plugins named the bridge defaults to `harmful`, which
+		// expands to 26 sub-plugins — the default total of 5 has no legal split.
+		NumTests: 30,
 	})
 	if err == nil {
 		t.Fatal("PreparePromptfooEngineRun accepted a strategy package the admin disabled: 治理未生效")
@@ -89,6 +92,7 @@ func TestPrepareEngineRunResolvesEnabledCustomStrategy(t *testing.T) {
 	prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
 		Purpose:    "Phase 3 governance",
 		Strategies: []string{"base64", CustomStrategyRef("pfh_acme")},
+		NumTests:   30,
 	})
 	if err != nil {
 		t.Fatalf("PreparePromptfooEngineRun: %v", err)
@@ -140,6 +144,7 @@ func TestPrepareEngineRunStrategyPackageRejectedBeforeCredentials(t *testing.T) 
 		Purpose:    "Phase 3 governance",
 		Plugins:    []string{"harmful"},
 		Strategies: []string{CustomStrategyRef("pfh_acme")},
+		NumTests:   30,
 	})
 	if err == nil {
 		t.Fatal("a disabled strategy package was accepted")
@@ -157,6 +162,7 @@ func TestPrepareEngineRunWithoutCustomStrategiesIsUnchanged(t *testing.T) {
 	prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
 		Purpose:    "Phase 3 rollback",
 		Strategies: []string{"base64", "direct"},
+		NumTests:   30,
 	})
 	if err != nil {
 		t.Fatalf("built-in strategies were rejected: %v", err)

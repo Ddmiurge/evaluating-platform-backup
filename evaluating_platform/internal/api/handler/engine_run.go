@@ -285,6 +285,16 @@ func writeEnginePreflightRejection(c *gin.Context, err error) bool {
 		return true
 	}
 
+	var tooSmall *maclaw.EngineNumTestsTooSmallError
+	if errors.As(err, &tooSmall) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":            tooSmall.Error(),
+			"code":             maclaw.EngineErrNumTestsTooSmall,
+			"expanded_plugins": tooSmall.ExpandedPlugins,
+		})
+		return true
+	}
+
 	var tooLarge *maclaw.EngineNumTestsTooLargeError
 	if errors.As(err, &tooLarge) {
 		c.JSON(http.StatusConflict, gin.H{
@@ -328,10 +338,20 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid judge_mode"})
 		return
 	}
-	numTests := in.NumTests
-	if numTests <= 0 {
-		numTests = engineRunDefaultTests
+	plugins, ok := parseEngineCapabilityRefs(c, in.Plugins, "plugin id is required")
+	if !ok {
+		return
 	}
+	strategies, ok := parseEngineCapabilityRefs(c, in.Strategies, "strategy id is required")
+	if !ok {
+		return
+	}
+
+	// P2-4: the default count is resolved against the selection, because the
+	// default selection (`harmful`) expands to 26 sub-plugins and the old flat
+	// default of 20 could not be submitted. An explicit count is never adjusted —
+	// see ResolveEngineRunNumTests.
+	numTests := maclaw.ResolveEngineRunNumTests(in.NumTests, engineRunDefaultTests, plugins)
 	// Refuse rather than let the engine clamp. Before this check the wizard
 	// accepted up to 200 while nativeRedteam clamped to 50, so a caller asking
 	// for 120 silently ran 50 — the request and the result disagreed with
@@ -345,15 +365,6 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		return
 	}
 
-	plugins, ok := parseEngineCapabilityRefs(c, in.Plugins, "plugin id is required")
-	if !ok {
-		return
-	}
-	strategies, ok := parseEngineCapabilityRefs(c, in.Strategies, "strategy id is required")
-	if !ok {
-		return
-	}
-
 	// Pre-flight guards. Both run BEFORE credential materialization, run
 	// persistence and engine dispatch, so a request that cannot succeed leaves
 	// no decrypted target secret, no engine_runs row and no engine call behind.
@@ -364,6 +375,14 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	// still can — so the verdict belongs at the request boundary, not in a
 	// promptfoo exception the user never sees.
 	if err := maclaw.ValidateEngineRunPluginLegality(plugins); err != nil {
+		writeEnginePreflightRejection(c, err)
+		return
+	}
+
+	// P2-4: the total has to cover the selection's expansion. Selecting `harmful`
+	// runs all 26 of its sub-plugins, so a total below that has no legal split —
+	// and the engine would refuse it anyway, after a run record existed.
+	if err := maclaw.ValidateEngineRunNumTestsCoverage(plugins, numTests); err != nil {
 		writeEnginePreflightRejection(c, err)
 		return
 	}
