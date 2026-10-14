@@ -222,6 +222,81 @@ export function reportJudgeTrackCaption(input: {
 }
 
 /**
+ * P2-6 生成路径的 metadata 键名与取值。**必须与后端
+ * `internal/maclaw/redteam_generation_path.go` 的
+ * `RedteamGenerationPathMetadataKey` / `RedteamNumTestsEffectiveMetadataKey` /
+ * `GenerationPathPlanA` / `GenerationPathPlanC` 同名同值**——同一条跨语言契约。
+ */
+export const GENERATION_PATH_METADATA_KEY = 'generation_path'
+export const NUM_TESTS_EFFECTIVE_METADATA_KEY = 'num_tests_effective'
+export const GENERATION_PATH_PLAN_A = 'plan_a'
+export const GENERATION_PATH_PLAN_C = 'plan_c'
+
+/**
+ * P2-6 生成路径文案。**必须与后端
+ * `internal/maclaw/redteam_generation_path.go` 的 RedteamGenerationPathCaption
+ * 逐字一致**（片段级，计数部分由前端拼）——报告卡与 PDF 是同一说明的两种呈现。
+ *
+ * 为什么报告卡上必须有这一行：Plan A 与 Plan C 在相同输入下产出的探针数量不同
+ * （阶段一实测：Plan A 50 条 vs Plan C 80 探针/6 子插件），两份报告外观却一样。
+ * U7 item14 记的正是这一点 —— 「两次报告若并列对比必然误导」。
+ */
+const GENERATION_PATH_CAPTION_PLAN_A = '生成路径：平台合成用例（plan_a）'
+const GENERATION_PATH_CAPTION_PLAN_C = '生成路径：promptfoo 原生生成（plan_c）'
+const GENERATION_PATH_CAPTION_PLAN_C_SUFFIX = '·与平台合成用例（plan_a）的报告不可直接比较（探针数量与判定口径均不同）。'
+const GENERATION_PATH_CAPTION_UNRECORDED = '生成路径：未记录（本报告产生于记录生成路径之前，或由其它路径生成）。'
+const GENERATION_PATH_CAPTION_INVALID = '生成路径：报告元数据中的生成路径字段非法，已忽略；请联系报告生成方核对。'
+
+/**
+ * resolveReportGenerationPath 判定一份报告由哪条链路生成。
+ *
+ * 返回：
+ *   - 'plan_a' | 'plan_c' —— 合法枚举值；
+ *   - 'unrecorded'        —— 缺键（P2-6 之前的历史报告），**不推断、不二选一**；
+ *   - null                —— 元数据非法（有值但不在枚举内），必须让用户看见。
+ */
+export function resolveReportGenerationPath(
+  metadata?: Record<string, string> | null,
+): 'plan_a' | 'plan_c' | 'unrecorded' | null {
+  const raw = String(metadata?.[GENERATION_PATH_METADATA_KEY] ?? '').trim().toLowerCase()
+  if (raw === GENERATION_PATH_PLAN_A || raw === GENERATION_PATH_PLAN_C) return raw
+  if (raw !== '') return null
+  return 'unrecorded'
+}
+
+/**
+ * reportGenerationPathCaption 生成报告卡上的生成路径说明。
+ *
+ * 与 `reportJudgeTrackCaption` 不同，**两种异常都要说出来，都不返回空串**：
+ * 对判定链路，「不知道谁判的」属于罕见且无法解释的状态，不渲染是既有约定；
+ * 而生成路径的「未记录」是一个**正常状态**（P2-6 之前的历史报告天然如此）。
+ * 于是「空行」在这里会与「合法但未记录」无法区分 —— 把非法元数据也渲染成一句
+ * 明确的提示，才不会让一份元数据损坏的报告看起来像一份历史报告。
+ */
+export function reportGenerationPathCaption(input: {
+  metadata?: Record<string, string> | null
+  /** 后端已算好的整句（可选）；给了就直接用，避免两侧措辞漂移。 */
+  caption?: string
+}): string {
+  const provided = String(input.caption ?? '').trim()
+  if (provided !== '') return provided
+  const path = resolveReportGenerationPath(input.metadata)
+  if (path === null) return GENERATION_PATH_CAPTION_INVALID
+  if (path === 'unrecorded') return GENERATION_PATH_CAPTION_UNRECORDED
+
+  const raw = String(input.metadata?.[NUM_TESTS_EFFECTIVE_METADATA_KEY] ?? '').trim()
+  const count = /^\d+$/.test(raw) && Number(raw) > 0 ? `·实际配置探针数 ${Number(raw)}` : ''
+  return path === 'plan_c'
+    ? `${GENERATION_PATH_CAPTION_PLAN_C}${count}${GENERATION_PATH_CAPTION_PLAN_C_SUFFIX}`
+    : `${GENERATION_PATH_CAPTION_PLAN_A}${count}。`
+}
+
+/** 非法元数据是否应被提示（供卡片决定是否显示警示，而不是静默按某一路径显示）。 */
+export function isReportGenerationPathInvalid(metadata?: Record<string, string> | null): boolean {
+  return resolveReportGenerationPath(metadata) === null
+}
+
+/**
  * U8 判定**标准**的 metadata 键名与取值档位。
  *
  * 与 `JUDGE_TRACK_METADATA_KEY` 语义正交，**刻意不合并**：

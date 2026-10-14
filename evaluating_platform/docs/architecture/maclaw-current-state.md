@@ -413,3 +413,30 @@ BFF       EngineRunStatus.ErrorMessage
 ### 可见范围
 
 `error_brief` 目前通过记录本身（`GetByID` 会读它）与运维面可达，**没有**加进企业门户的运行 DTO —— 那是一次产品可见的 API 变更，计划未要求。企业侧仍只看 `error_code`。
+
+## 报告口径：生成路径标记（P2-6，2026-10-14）
+
+### 缺陷
+
+Plan A（平台生成 LLM 合成用例 + promptfoo evaluate 模式）与 Plan C（promptfoo 原生 `redteam.run`）**不可比**：相同输入下探针数量不同（阶段一实测 Plan A 50 条 vs Plan C 80 探针 / 6 子插件）、策略维度不同、判定口径也不同。但两份报告**外观完全一样**，没有任何字段说明它由哪条链路产生 —— U7 item14 记的正是这个后果：「两次报告若并列对比必然误导」。这也是为什么阶段三（删 Plan A 代码）的启动条件里有一条是「`generation_path` 已上线且已用它标注过至少 2 份真实报告」。
+
+### 现链路
+
+```
+引擎  SafeRunResult.generation_path ('plan_a'|'plan_c') + num_tests_effective
+        ├─ Plan A（redteamRun.ts）：plan_a，effective = tests.length
+        └─ Plan C（nativeRedteam.ts）：plan_c，effective = configuredProbeCount(产出文档)
+BFF   EngineSafeResult → engineReportMetadata()
+        ├─ generation_path（固定枚举，写入 fail-closed）
+        └─ num_tests_effective（缺 generation_path 时拒绝写入）
+渲染  PDF「报告基本信息」：RedteamGenerationPathCaption
+      聊天报告卡：reportGenerationPathCaption（与后端文案逐字一致）
+```
+
+### 三处刻意的设计
+
+1. **`num_tests_effective` 从产出文档读，不重算**。度量的是真写进 config 的东西（每插件 `numTests` × 该插件的 fanout 之和），所以 builder 里的接线失误会被**报出来**而不是被第二次正确计算盖住 —— P2-4 期间 `withPluginJudgeRubrics` 静默丢掉 `numTests` 正是这样被照出来的。这也把 P2-4 与 P2-6 绑在一处验收（R-5-b）。
+2. **写入 fail-closed、读取不报错、缺键说「未记录」**：与 `judge_track` 同形，但**不需要推断** —— `judge_track` 可以从 `metadata.engine` 反推，生成路径没有任何可反推的旁证（旧报告的 `engine` 键只说明「走引擎」，而引擎下还有 Plan A / Plan C 两条链路）。所以缺键就是未记录，宁可显式说「未记录」也不二选一。
+3. **报告卡上「未记录」必须渲染**（与 `judge_track` 的「非法即不渲染」不同）：对判定链路，「不知道谁判的」是罕见且无法解释的状态；而生成路径的「未记录」是**正常状态**（P2-6 之前的历史报告天然如此）。此处若也不渲染，非法元数据与合法历史报告就无法区分。
+
+文案是跨语言契约：`internal/maclaw/redteam_generation_path.go` 与 `frontend/src/pages/enterprise/chatDisplay.ts` 必须逐字一致，由后端 `TestGenerationPathCaptionMatchesFrontendMirror` 读前端源码断言片段（同形于 `judge_track` 的契约，但那条只钉了字面量、靠注释提醒同步）。

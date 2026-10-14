@@ -215,6 +215,13 @@ func (s *RedteamArtifactService) CompileReport(ctx context.Context, userID uuid.
 	if _, err := ValidateReportJudgeSourceMetadata(metadata); err != nil {
 		return nil, err
 	}
+	// P2-6 fail-closed：生成路径是固定枚举，非法值同样**拒绝写报告** —— 一个没人
+	// 能解释的「哪条链路生成的」会被当作解释报告数字的注脚发布出去。
+	// 与 judge_track 的区别是它**不需要推断**：缺键就是「未记录」（P2-6 之前的
+	// 报告天然如此），渲染层明说「未记录」而不是二选一。
+	if err := ValidateReportGenerationMetadata(metadata); err != nil {
+		return nil, err
+	}
 	metadata["schema_version"] = "redteam_report_zh_v1"
 	metadata["report_template"] = "redteam_report_pdf_layout_v2"
 	record := RedteamReportRecord{
@@ -595,6 +602,8 @@ func reportInfoLines(report *EvaluationReport) []string {
 	// 出现在「报告基本信息」而非结论段落，与 U4 同理——口径是元数据，
 	// 插进摘要/评分会污染结论。
 	lines = append(lines, "- "+RedteamJudgeSourceCaption(report.Metadata, parseJudgeSourceHistogramMetadata(report.Metadata)))
+	// P2-6：生成路径与「plan_a / plan_c 不可比」的说明，同样属元数据而非结论段落。
+	lines = append(lines, "- "+RedteamGenerationPathCaption(report.Metadata))
 	if target := strings.TrimSpace(firstNonEmptyString(report.Metadata["target_summary"], report.Metadata["target_model"], report.Metadata["target_name"])); target != "" {
 		lines = append(lines, "- 评估目标："+target)
 	}

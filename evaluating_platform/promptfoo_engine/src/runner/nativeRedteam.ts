@@ -787,6 +787,32 @@ export function catalogFanout(catalog: EngineCatalog | undefined): Map<string, n
   return weights;
 }
 
+/**
+ * Configured probe count of a BUILT document: for each selected plugin, its
+ * `numTests` copied to every sub-plugin it expands into.
+ *
+ * Measured from the document rather than by recomputing `allocateNumTests`, and
+ * the difference matters: this reports what was actually written into the config
+ * promptfoo runs, not what the allocator intended. A wiring mistake in the
+ * builder — `withPluginJudgeRubrics` silently dropping `numTests` was one — shows
+ * up here as a wrong number instead of being papered over by a second correct
+ * calculation.
+ *
+ * This is also the number P2-6 reports as `num_tests_effective`, which ties the
+ * two changes together: the report states the configured probe count, and the
+ * allocator is what decides it.
+ */
+export function configuredProbeCount(
+  plugins: Array<{ id: string; numTests?: number }>,
+  fanoutOf: ReadonlyMap<string, number>,
+): number {
+  return plugins.reduce((sum, plugin) => {
+    const fanout = fanoutOf.get(plugin.id);
+    const weight = typeof fanout === 'number' && Number.isFinite(fanout) && fanout >= 1 ? Math.floor(fanout) : 1;
+    return sum + weight * (plugin.numTests ?? 0);
+  }, 0);
+}
+
 /** Build the config document. Exported for tests; not part of the REST contract. */
 export async function buildNativeRedteamConfig(input: {
   runId: string;
@@ -1221,6 +1247,13 @@ export async function executeNativeRedteamRun(
     judgeSourceOverrides: nativeJudgeSourceOverrides(request.plugins),
     judgeSourceByPlugin: customPluginJudgeSources(materialized),
   });
+  // P2-6: Plan C's effective count comes from the document that ran (P2-4), not
+  // from the user's raw input — the two differ whenever the selection expands into
+  // sub-plugins or the leftover budget cannot be spent exactly. Reading it off the
+  // built config also means a wiring mistake in the builder (a dropped
+  // `numTests`) is reported rather than hidden by a second correct calculation.
+  result.generation_path = 'plan_c';
+  result.num_tests_effective = configuredProbeCount(config.redteam.plugins, catalogFanout(request.catalog));
   // Second fail-closed gate: rows existed but none survived reduction. Reporting
   // that as a 0-coverage success is the same green-run-zero-coverage shape U7
   // closed for `undefined`, one layer later.

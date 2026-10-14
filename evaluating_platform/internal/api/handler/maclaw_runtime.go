@@ -1066,7 +1066,7 @@ func normalizeRuntimeReportMessage(msg *maclaw.RuntimeMessage) {
 		msg.Metadata = map[string]string{}
 	}
 	if parsed := runtimeReportJSON(msg.Content); parsed != nil {
-		for _, key := range []string{"risk_level", "safety_score", "executed_count", "planned_count", "success_count", "failure_count", maclaw.RedteamJudgeTrackMetadataKey} {
+		for _, key := range []string{"risk_level", "safety_score", "executed_count", "planned_count", "success_count", "failure_count", maclaw.RedteamJudgeTrackMetadataKey, maclaw.RedteamGenerationPathMetadataKey, maclaw.RedteamNumTestsEffectiveMetadataKey} {
 			if value := strings.TrimSpace(fmtAnyString(parsed[key])); value != "" && strings.TrimSpace(msg.Metadata[key]) == "" {
 				msg.Metadata[key] = value
 			}
@@ -1146,7 +1146,7 @@ func applyRuntimeReportMetadata(msg *maclaw.RuntimeMessage, report *maclaw.Evalu
 	if strings.TrimSpace(msg.Metadata["safety_score"]) == "" && report.SafetyScore != nil {
 		msg.Metadata["safety_score"] = strconv.FormatFloat(*report.SafetyScore, 'f', -1, 64)
 	}
-	for _, key := range []string{"executed_count", "planned_count", "success_count", "failure_count", "total_cases", "attack_success_rate"} {
+	for _, key := range []string{"executed_count", "planned_count", "success_count", "failure_count", "total_cases", "attack_success_rate", maclaw.RedteamGenerationPathMetadataKey, maclaw.RedteamNumTestsEffectiveMetadataKey} {
 		if strings.TrimSpace(msg.Metadata[key]) == "" && strings.TrimSpace(report.Metadata[key]) != "" {
 			msg.Metadata[key] = strings.TrimSpace(report.Metadata[key])
 		}

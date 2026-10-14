@@ -273,6 +273,30 @@ export interface RunProgressEvent {
 
 /** Safe terminal summary. Raw results stay inside the engine workdir and die with it. */
 export interface SafeRunResult {
+  /**
+   * P2-6 · which generation path produced this run: `plan_a` (the platform's own
+   * LLM synthesised the attack prompts) or `plan_c` (promptfoo's native redteam
+   * machinery did).
+   *
+   * The two produce reports that ARE NOT comparable — different probe counts for
+   * the same input, different strategies, and for a while a different judging
+   * basis — while looking identical. Item 14 of the U7 acceptance run recorded
+   * exactly that: Plan A 50 cases vs Plan C 80 probes at the same settings, with
+   * nothing on either report saying so.
+   *
+   * Optional because a run reduced by older code has no answer; absent means
+   * "not recorded", and the report says so rather than picking one.
+   */
+  generation_path?: 'plan_a' | 'plan_c';
+  /**
+   * P2-6 · how many probes the run was configured for, after the platform total
+   * was translated into per-plugin counts (P2-4).
+   *
+   * Distinct from `totals.probes`, which counts results that came back: a run
+   * configured for 50 whose target errored on 3 probes executed 47. Keeping both
+   * is what makes "the user asked for 50 and got N" answerable from the record.
+   */
+  num_tests_effective?: number;
   totals: {
     probes: number;
     attack_success: number;

@@ -74,6 +74,8 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 
  **提交闸统一出口（P2-2 补）**：wizard 与 chat confirm 两条入口的预检拒绝统一由 `writeEnginePreflightRejection` 渲染（409），同一拒绝不会因入口不同而措辞/状态码不同。
 
+ **报告口径标记（P2-6，2026-10-14）**：Plan A（平台合成用例）与 Plan C（promptfoo 原生生成）在相同输入下探针数量不同、报告外观却一样 —— 阶段一 item14 的结论是「并列对比必然误导」。现引擎在每个 `SafeRunResult` 上标注 `generation_path`（`plan_a` / `plan_c`）与 `num_tests_effective`（实际配置探针数，由 P2-4 的每插件份数 × fanout 从**产出文档**读出，不是重算），平台落进 `report.metadata`（列已存在，无迁移），PDF「报告基本信息」与聊天报告卡各渲染一句说明。写入 fail-closed（非法值拒绝写报告），读取不报错但必须显式说「未记录」，**不能默认成某条路径**；`num_tests_effective` 缺少 `generation_path` 时拒绝写入（裸数字会被读成探针数而不知由哪条链路配置）。文案在 `frontend/.../chatDisplay.ts` 有镜像，后端 `TestGenerationPathCaptionMatchesFrontendMirror` 逐字断言，单侧改动即红。
+
  **失败诊断链路（P2-5，2026-10-14）**：`engine_runs.error_brief` 此前有列、有字段、有 `$23` 占位符，但**全链路没有写入者** —— 底层 promptfoo 异常只活在引擎进程内存里，所以阶段一的 item8/item12 只能靠进容器复现。现补齐：引擎终态携带 `error_message`（脱敏）→ BFF `ApplyStatus` 只对终态再脱敏一次并落库。两侧**各自独立实现脱敏**（引擎 `src/sanitize/errorBrief.ts`、平台 `internal/maclaw/engine_error_brief.go`），因为漏一条通道就等于凭据/端点进库。同时把 `native_generation_config_invalid` 这个被 10 处共用的码拆成 `native_generation_strategy_unsupported` / `native_generation_workdir_missing` / `native_generation_promptfoo_failed`，并把 `AGENT_SESSION_ERR_*` 从「消息前缀」变成真正的 `EngineRunError` code（保留方括号前缀供人读日志）。
 
  **前端镜像护栏（P2-2 补）**：`requires_remote_generation` / `requires_config` 两个标记与 `RETIRED_ENGINE_PLUGINS` 替代路径均由 `TestFrontendRemoteGenerationFlagsMatchBackend` 与 `TestFrontendRetiredPluginGuidanceMirrorsBackend` 与后端逐项对齐 —— 上批 `iterative:meta` 被闸住而前端未标、以及两条替代引导指向已闸策略，都是手工镜像没有护栏造成的。

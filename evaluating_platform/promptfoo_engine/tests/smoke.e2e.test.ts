@@ -233,13 +233,27 @@ describe('engine smoke (real promptfoo library)', () => {
       const result = (finalStatus ?? {}) as {
         planned_count?: number;
         executed_count?: number;
-        result?: { totals?: { probes?: number; attack_success?: number; pass_rate?: number } };
+        result?: {
+          totals?: { probes?: number; attack_success?: number; pass_rate?: number };
+          // P2-6: the run's shape travels with the result.
+          generation_path?: string;
+          num_tests_effective?: number;
+        };
       };
       expect(result.planned_count).toBe(2);
       expect(result.executed_count).toBe(2);
       expect(result.result?.totals?.probes).toBe(2);
       expect(result.result?.totals?.attack_success).toBe(0);
       expect(result.result?.totals?.pass_rate).toBe(1);
+      // P2-6: a Plan A run must be stamped as one, over the real wire. Without this
+      // a report cannot say which generation path produced it, and the U7 finding
+      // stands: two runs at identical settings produce incomparable numbers while
+      // looking the same.
+      expect(result.result?.generation_path).toBe('plan_a');
+      // The platform asked for 2 and Plan A generated 2, so the effective count is
+      // the configured one — not zero, and not the sum of per-expanded counts,
+      // which does not exist on this path.
+      expect(result.result?.num_tests_effective).toBe(2);
 
       // 5. red line: no raw prompt/response/key material in the status payload
       const dumped = JSON.stringify(finalStatus);

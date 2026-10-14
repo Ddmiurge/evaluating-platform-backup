@@ -309,12 +309,21 @@ type EngineRunStatus struct {
 
 // EngineSafeResult mirrors SafeRunResult (counts/severities/redacted reasons).
 type EngineSafeResult struct {
-	Totals         EngineRunTotals      `json:"totals"`
-	SeverityCounts map[string]int       `json:"severity_counts"`
-	RiskCategories []EngineRiskCategory `json:"risk_categories"`
-	PluginStats    []EnginePluginStat   `json:"plugin_stats"`
-	StrategyStats  []EngineStrategyStat `json:"strategy_stats"`
-	TokenUsage     EngineTokenUsage     `json:"token_usage"`
+	// GenerationPath is the path that produced the run: "plan_a" (platform-synthesised
+	// prompts, promptfoo in evaluate mode) or "plan_c" (promptfoo's native redteam
+	// machinery). P2-6 — the two are not comparable and looked identical before this
+	// field existed. Fixed enum, safe to store and render.
+	GenerationPath string `json:"generation_path,omitempty"`
+	// NumTestsEffective is the probe count actually configured, after the platform
+	// total was divided across the selection (P2-4). Distinct from
+	// `totals.probes`, which counts results that came back.
+	NumTestsEffective int                  `json:"num_tests_effective,omitempty"`
+	Totals            EngineRunTotals      `json:"totals"`
+	SeverityCounts    map[string]int       `json:"severity_counts"`
+	RiskCategories    []EngineRiskCategory `json:"risk_categories"`
+	PluginStats       []EnginePluginStat   `json:"plugin_stats"`
+	StrategyStats     []EngineStrategyStat `json:"strategy_stats"`
+	TokenUsage        EngineTokenUsage     `json:"token_usage"`
 	// JudgeSources counts how many probes were judged by each rubric (U8).
 	// This is the observability half of the fallback chain: a run that fell
 	// back to the unmapped rubric for some probes says so here, per rubric,

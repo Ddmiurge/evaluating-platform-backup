@@ -499,7 +499,17 @@ export async function executePlanARedteamRun(record: RunRecord, emit: Emit): Pro
 
   emit({ run_id: request.run_id, phase: 'engine_judging', status_text: '引擎判定' });
 
+  // P2-6: stamp the run's shape at the seam that owns the knowledge. Both fields
+  // are set here rather than inside `reduceEvalToSafeResult`, because the reducer
+  // sees only results — it cannot know which path produced them, and defaulting
+  // that would put a guess into a report header.
+  //
+  // Plan A's effective count is genuinely `tests.length`: the platform's
+  // generation LLM synthesised exactly that many cases and every one is a probe.
+  // (Plan C's is different — see `executeNativeRedteamRun`.)
   const result = reduceEvalToSafeResult(evalResult, request.catalog);
+  result.generation_path = 'plan_a';
+  result.num_tests_effective = tests.length;
 
   emit({ run_id: request.run_id, phase: 'compiling_report', status_text: '生成报告' });
 

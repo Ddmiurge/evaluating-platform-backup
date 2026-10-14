@@ -461,6 +461,12 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
 
       // The regression this pins: all of these were 0 before loadEvalResults.
       expect(result.totals.probes).toBeGreaterThan(0);
+      // P2-6: a Plan C run is stamped as one, so its report cannot be mistaken for
+      // a Plan A report — the two are not comparable and, before this field, looked
+      // identical. The effective count is the number the allocator configured (3
+      // plugins, 3 probes requested), read off the document that ran.
+      expect(result.generation_path).toBe('plan_c');
+      expect(result.num_tests_effective).toBe(3);
       expect(result.totals.attack_success).toBeGreaterThan(0);
       expect(result.plugin_stats.length).toBeGreaterThan(0);
       // And the per-plugin standards still came through, non-degraded.

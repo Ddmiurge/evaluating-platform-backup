@@ -717,6 +717,18 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 		metadata["attack_success"] = redteam.IntString(result.Totals.AttackSuccess)
 		metadata["pass_rate"] = fmt.Sprintf("%.2f", result.Totals.PassRate)
 	}
+	// P2-6: which generation path produced this report, and how many probes it
+	// configured. Plan A and Plan C are not comparable (different probe counts for
+	// the same input) and before this key existed two such reports looked identical
+	// — U7 item 14. Both keys are added only when the engine supplied them: an
+	// absent value is honest ("not recorded"), while a guessed one would be
+	// published under a heading that claims to explain the numbers.
+	if path := NormalizedGenerationPathOrEmpty(result); path != "" {
+		metadata[RedteamGenerationPathMetadataKey] = path
+		if effective := EffectiveNumTestsMetadata(result); effective != "" {
+			metadata[RedteamNumTestsEffectiveMetadataKey] = effective
+		}
+	}
 	return metadata
 }
 
@@ -783,4 +795,29 @@ func derefOrEmptyEngineCreds(creds *EngineOneShotCredentials) EngineOneShotCrede
 		return EngineOneShotCredentials{}
 	}
 	return *creds
+}
+
+// NormalizedGenerationPathOrEmpty returns the generation path to store, or "" when
+// the engine did not supply one (or supplied an uninterpretable one — stored
+// absence is honest; a guess would be published under a heading that claims to
+// explain the numbers). `ValidateReportGenerationMetadata` re-checks the stored
+// value, so an illegal path cannot reach a report either way.
+func NormalizedGenerationPathOrEmpty(result *EngineSafeResult) string {
+	if result == nil {
+		return ""
+	}
+	path, err := NormalizeRedteamGenerationPath(result.GenerationPath)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// EffectiveNumTestsMetadata returns the configured probe count to store, or ""
+// when the engine did not report one.
+func EffectiveNumTestsMetadata(result *EngineSafeResult) string {
+	if result == nil || result.NumTestsEffective <= 0 {
+		return ""
+	}
+	return redteam.IntString(result.NumTestsEffective)
 }

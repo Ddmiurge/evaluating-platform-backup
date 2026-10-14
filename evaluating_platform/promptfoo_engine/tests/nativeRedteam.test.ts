@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   allocateNumTests,
+  configuredProbeCount,
   assertNativeSlots,
   assertPluginIdsAreAccepted,
   assertSafeProviderUrl,
@@ -943,6 +944,41 @@ describe('buildNativeRedteamConfig — num_tests reaches promptfoo as a total (P
     expect(probes).toBe(50);
     // And none of them is 0, which the schema would have rejected anyway.
     expect(expanded.every((plugin) => (plugin.numTests ?? 0) >= 1)).toBe(true);
+  });
+
+  it('reports an effective probe count that matches the split (R-5-b, ties P2-4 + P2-6)', async () => {
+    // The two changes are verified together on purpose: the report's
+    // `num_tests_effective` must be the probe count the allocator decided, read
+    // off the document that ran. If they could disagree, the report would state a
+    // number no run produced.
+    for (const numTests of [31, 50, 77]) {
+      const cfg = await buildNativeRedteamConfig({
+        runId: `run-p2-6-${numTests}`,
+        purpose: 'p',
+        injectVar: DEFAULT_INJECT_VAR,
+        numTests,
+        plugins: [{ id: 'harmful' }, { id: 'pii' }, { id: 'contracts' }],
+        strategies: [],
+        credentials: creds(),
+        catalog,
+      });
+      const fanoutOf = new Map([
+        ['harmful', 26],
+        ['pii', 4],
+        ['contracts', 1],
+      ]);
+      expect(configuredProbeCount(cfg.redteam.plugins, fanoutOf)).toBe(
+        allocateNumTests([{ id: 'harmful' }, { id: 'pii' }, { id: 'contracts' }], numTests, fanoutOf).total,
+      );
+      // And it is a real count, not a copy of the request: a selection whose
+      // remainder cannot be spent exactly runs fewer probes than asked for.
+      expect(configuredProbeCount(cfg.redteam.plugins, fanoutOf)).toBeLessThanOrEqual(numTests);
+    }
+  });
+
+  it('counts an unknown plugin as one probe, not zero', () => {
+    // `file://` packages never expand; counting them 0 would understate the run.
+    expect(configuredProbeCount([{ id: 'file:///tmp/x.yaml', numTests: 3 }], new Map())).toBe(3);
   });
 
   it('keeps a single collection plugin inside the cap instead of 26x it', async () => {

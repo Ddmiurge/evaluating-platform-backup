@@ -4,7 +4,7 @@ import { ApiOutlined, BugOutlined, CheckCircleOutlined, DownloadOutlined, Export
 
 import type { ChatMessage, PlanInfo, WelcomeCapability } from '../../services/chat'
 import { reportService, triggerBrowserDownload } from '../../services/report'
-import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportJudgeSourceCaption, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
+import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportGenerationPathCaption, reportJudgeSourceCaption, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
 import { parseChatMarkdown, type ChatMarkdownInline } from './chatMarkdown'
 
 const RISK_COLORS: Record<string, string> = {
@@ -408,6 +408,10 @@ function ReportCard({
     // U8：判定标准与判定链路是两件事，必须都出现。只显示链路的话，用户会以为
     // 同一份报告里所有插件都按同一把尺子判 —— 而 U8 恰恰让它们不再如此。
     const sourceCaption = (judgeSourceCaption ?? reportJudgeSourceCaption({ judgeSource, metadata: reportMetadata })).trim()
+    // P2-6：生成路径。与口径说明并列 —— 它回答的是「这份报告的数字由哪条链路产生」，
+    // 而 Plan A 与 Plan C 的数字按设计不可比。缺键的历史报告显式说「未记录」，
+    // 非法值由 caption 返回空串（既有约定：不渲染，而不是渲染一句假的）。
+    const generationPathCaption = reportGenerationPathCaption({ metadata: reportMetadata }).trim()
     return (
       <div style={{ background: 'var(--bg-card)', border: `1px solid ${color}40`, borderRadius: 12, padding: '16px 20px', maxWidth: 420, marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -442,6 +446,16 @@ function ReportCard({
         {sourceCaption && (
           <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6, marginBottom: 10 }}>
             {sourceCaption}
+          </div>
+        )}
+        {/* P2-6：生成路径单独一行，与口径说明并列而不合并 —— 它回答的是第三个
+            问题：「这些数字由哪条链路产生」。Plan A 与 Plan C 在相同输入下的探针
+            数量不同（阶段一实测 50 条 vs 80 探针），报告外观却一样，所以这一行
+            是「不要把两份报告并列比较」的唯一依据。历史报告显示「未记录」，
+            非法元数据由 caption 返回空串（不渲染，而非渲染一句假的）。 */}
+        {generationPathCaption && (
+          <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6, marginBottom: 10 }}>
+            {generationPathCaption}
           </div>
         )}
         {(assessmentId || reportId) && downloadable && (
