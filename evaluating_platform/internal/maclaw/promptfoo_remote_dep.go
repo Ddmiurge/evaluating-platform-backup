@@ -270,6 +270,13 @@ func (e *EngineRemoteDepGuardError) Error() string {
 	if hint := remoteGenerationHint(); hint != "" {
 		msg += "。" + hint
 	}
+	// A strategy rejection needs a strategy answer; the clause above names
+	// plugins, which is the wrong slot for the choice that failed.
+	if len(e.GatedStrategies) > 0 {
+		if hint := remoteGenerationStrategyHint(); hint != "" {
+			msg += "。" + hint
+		}
+	}
 	return msg
 }
 
@@ -339,6 +346,65 @@ func remoteGenerationHint() string {
 // remoteGenerationHintMax caps how many plugins the rejection message names, so
 // a 29-item list never becomes an unreadable wall of text.
 const remoteGenerationHintMax = 6
+
+// remoteGenerationStrategyHintRecommends are the strategies suggested when a run
+// is refused because of a STRATEGY. Ordered by usefulness for the refusals this
+// message actually produces, not alphabetically.
+//
+// Why a second list: the plugin hint answers a question a strategy-rejecting
+// user did not ask ("which plugin should I pick"). P2-2 made that visible by
+// gating `iterative:meta`, which is the very strategy the platform used to
+// recommend for jailbreak testing — a message that listed only plugin
+// alternatives would have said nothing about the choice that actually failed.
+//
+// Every entry must be offered, not gated, engine-forwardable (Plan-A-only
+// dimensions are dropped by the engine, so recommending `direct` would swap one
+// no-op for another) and selectable per the strategy catalogue.
+// TestRemoteGenerationStrategyHintRecommendsAreUsable pins all four.
+var remoteGenerationStrategyHintRecommends = []string{"iterative:tree", "jailbreak-templates", "crescendo", "base64"}
+
+// remoteGenerationStrategyHint renders the "try these strategies instead" clause.
+func remoteGenerationStrategyHint() string {
+	usable := make([]string, 0, remoteGenerationHintMax)
+	seen := map[string]bool{}
+	for _, id := range remoteGenerationStrategyHintRecommends {
+		if strategyRunsInThisDeployment(id) {
+			usable = append(usable, id)
+			seen[id] = true
+		}
+	}
+	// Top up in catalogue order so the clause is never empty when usable
+	// strategies exist.
+	for _, id := range PromptfooEngineSupportedStrategyIDs() {
+		if len(usable) >= remoteGenerationHintMax {
+			break
+		}
+		if seen[id] || !strategyRunsInThisDeployment(id) {
+			continue
+		}
+		usable = append(usable, id)
+	}
+	if len(usable) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("可改用本环境能跑的策略，例如：%s", strings.Join(usable, "、"))
+}
+
+// strategyRunsInThisDeployment reports whether a platform strategy id can
+// actually produce cases here: offered, not remote-gated, forwarded by the
+// engine (has a native id), and selectable per the discovered catalogue.
+func strategyRunsInThisDeployment(platformID string) bool {
+	if StrategyRequiresRemoteGeneration(platformID) {
+		return false
+	}
+	nativeID := StrategyNativeID(platformID)
+	if nativeID == "" {
+		// A platform-invented wrapping dimension: the engine drops it rather than
+		// forwarding it, so it is not an alternative for an engine run.
+		return false
+	}
+	return StrategyIsSelectable(nativeID)
+}
 
 // containsString reports whether needle is present in haystack.
 func containsString(haystack []string, needle string) bool {

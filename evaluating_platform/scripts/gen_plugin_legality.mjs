@@ -6,6 +6,8 @@
  * P2-1 · plugin-id legality + fanout guardrail. Run this after ANY promptfoo
  * upgrade:
  *
+ *   cd evaluating_platform && node scripts/gen_strategy_catalog.mjs
+ *   cd evaluating_platform && node scripts/gen_remote_dep.mjs
  *   cd evaluating_platform && node scripts/gen_plugin_legality.mjs
  *
  * # The defect this file exists to prevent

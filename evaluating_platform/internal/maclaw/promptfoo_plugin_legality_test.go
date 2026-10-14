@@ -202,11 +202,16 @@ func TestPromptfooRetiredPluginsMatchIllegalPluginIDs(t *testing.T) {
 //
 // Withdrawing an id fixes "the option crashes" and leaves "where did my
 // capability go" unanswered. The strategy side already answered that question
-// for its own deprecated aliases; this asserts the plugin side now does too, and
-// that every replacement it names actually resolves in the slot it points at.
+// for its own deprecated aliases; this asserts the plugin side now does too.
 //
-// Counter-proof: change a replacement id to a typo → red. Without this the
-// guidance could rot into a sentence pointing at nothing.
+// It asserts the replacement is USABLE, not merely present. The distinction is
+// not academic: P2-2 shipped `iterative:meta` as the recommendation for the
+// withdrawn `jailbreak` plugin, and `iterative:meta` is itself remote-gated —
+// the same "the platform told me to pick something broken" failure this whole
+// batch exists to remove, reproduced inside the guidance. A resolution-only
+// check passes on a dead end; this one does not.
+//
+// Counter-proof: point a replacement at a gated strategy → red; at a typo → red.
 func TestPromptfooRetiredPluginReplacementsResolve(t *testing.T) {
 	pluginIDs := toIDSet(PromptfooEngineSupportedPluginIDs())
 	strategyIDs := make(map[string]bool)
@@ -220,12 +225,24 @@ func TestPromptfooRetiredPluginReplacementsResolve(t *testing.T) {
 			for _, id := range entry.ReplacementIDs {
 				if !pluginIDs[id] {
 					t.Errorf("withdrawn %q points at plugin %q, which is not in the plugin catalog", entry.ID, id)
+					continue
+				}
+				if PluginRequiresRemoteGeneration(id) {
+					t.Errorf("withdrawn %q points at plugin %q, which is remote-gated — the guidance sends the user to another refusal", entry.ID, id)
+				}
+				if PluginRequiresConfig(id) {
+					t.Errorf("withdrawn %q points at plugin %q, which cannot generate cases until configuration exists", entry.ID, id)
 				}
 			}
 		case "strategy":
 			for _, id := range entry.ReplacementIDs {
 				if !strategyIDs[id] {
 					t.Errorf("withdrawn %q points at strategy %q, which is not in the strategy catalog", entry.ID, id)
+					continue
+				}
+				if !strategyRunsInThisDeployment(id) {
+					t.Errorf("withdrawn %q points at strategy %q, which cannot run in this deployment — "+
+						"the guidance sends the user to another failure instead of to a working alternative", entry.ID, id)
 				}
 			}
 		default:

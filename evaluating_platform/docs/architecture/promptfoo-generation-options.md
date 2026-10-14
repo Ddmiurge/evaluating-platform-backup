@@ -277,9 +277,20 @@ DeepSeek（key 失效，官方 401）切换为：
 → P2-1 后：目录 **116 个插件**，其中 **26 个可纯本地生成**（清单见 `internal/maclaw/testdata/promptfoo_remote_dep.json` 的 `catalog_marked_plugins`，其补集被 `TestLocalOnlyPluginIDsAreTheDocumentedList` 硬钉住）。
 原来写作「**90 / 119、仅 29 个可本地生成**」，那个 29 里含 3 个 promptfoo 根本不接受的 id（`prompt-injection` / `jailbreak` / `security-exploit`），已在 P2-1 移出目录，故可用面由 29 收敛为 26——**收敛掉的是从来跑不通的选项，不是能力**。id 合法性由 promptfoo 自己的 `RedteamConfigSchema.safeParse` 实测，见 `internal/maclaw/testdata/promptfoo_plugin_legality.json`。
 
-策略侧被屏蔽 4 个：`bestOfN` / `likert` / `citation` / `singleTurnComposite`
-（promptfoo 原生 id 分别是 `best-of-n` / `jailbreak:likert` / `citation` /
-`jailbreak:composite`，**平台 id 与上游 id 不一致**，映射表里一并记录）。
+策略侧被屏蔽 **6 个**（P2-2 由 4 个增至 6 个）：
+
+| 平台 id | promptfoo 原生 id | 何时发现的 |
+|---|---|---|
+| `bestOfN` | `best-of-n` | U6 手写表 |
+| `likert` | `jailbreak:likert` | U6 手写表 |
+| `citation` | `citation` | U6 手写表 |
+| `singleTurnComposite` | `jailbreak:composite` | U6 手写表 |
+| `iterative:meta` | `jailbreak:meta` | **P2-2 实测补上** |
+| `jailbreak` | `jailbreak` | **P2-2 实测补上**（废弃别名，委派给上面那个 provider） |
+
+平台 id 与上游 id 不一致者（`likert` / `singleTurnComposite` / `iterative:meta`）的译名记录在闸门表里。
+
+**这两条为什么会漏**：U6 的策略闸是一张**手写的 4 项表**，而 promptfoo 的远程要求在 provider 构造时才抛错，`gen_strategy_catalog.mjs` 的探针只调 `action()`，看不见（该文件自己为 `best-of-n` 记过这一点）。P2-2 改为**实测**：扫描 dist 里 `getRemoteGenerationExplicitlyDisabledError("<name>")` 的抛错点，加上 `REMOTE_DELEGATIONS` 处理「废弃别名用 provider 种类而非策略 id 委派」的那一类（`jailbreak` 的 action 调 `addIterativeJailbreaks(…, "iterative:meta", …)`）。遇到未登记的抛错标签或消失的委派字面量，生成器直接失败，不再静默漏闸。
 
 ### 6.3 三层护栏
 

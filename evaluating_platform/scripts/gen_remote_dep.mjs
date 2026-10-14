@@ -4,7 +4,13 @@
  *
  * U6 · 远程依赖能力护栏. Run this after ANY promptfoo upgrade:
  *
+ *   cd evaluating_platform && node scripts/gen_strategy_catalog.mjs   # FIRST
  *   cd evaluating_platform && node scripts/gen_remote_dep.mjs
+ *
+ * P2-2: the strategy gate (`remote_gated_strategies`) is DERIVED from the
+ * strategy catalogue's measured verdict, so step 1 must run first. It used to be
+ * a hand-written four-entry map, and that is how `iterative:meta` and its
+ * deprecated alias `jailbreak` stayed un-gated while both failed mid-run.
  *
  * Why a generator instead of a hand-maintained list:
  *   1. `REMOTE_ONLY_PLUGIN_IDS` is built from 26 literals + 8 `...spread`
@@ -171,16 +177,124 @@ function readCatalogPluginIds() {
   return ids;
 }
 
-/** Platform strategy id -> promptfoo native id, for strategies gated on remote generation. */
-const REMOTE_GATED_STRATEGIES = {
+/** Sorted platform strategy ids the Go catalogue offers (`s("…")` literals). */
+function readCatalogStrategyIds() {
+  const go = fs.readFileSync(catalogGo, 'utf8');
+  const start = go.indexOf('var promptfooStrategyCatalog');
+  if (start < 0) throw new Error('could not locate var promptfooStrategyCatalog in the Go catalog');
+  const end = go.indexOf('\n}\n', start);
+  const ids = [...go.slice(start, end).matchAll(/\bs\("([^"]+)"/g)].map((m) => m[1]);
+  if (ids.length === 0) throw new Error('parsed zero strategy ids from the catalog');
+  return ids;
+}
+
+/**
+ * Platform id -> promptfoo native id for strategies whose translation is NOT in
+ * the strategy catalogue's `platform_to_native_map`.
+ *
+ * Why these four are separate: `nativeStrategyMap.ts` deliberately omits them
+ * (they are remote-gated, so their translation has always lived with the gate),
+ * and the platform's id vocabulary for them predates the native one. The
+ * translation is curated vocabulary; the VERDICT is not — each native id here
+ * must come back from the strategy catalogue as `remote_required`, and the
+ * generator throws otherwise. A typo therefore fails the build instead of
+ * silently gating nothing.
+ */
+const GATED_NATIVE_IDS = {
   bestOfN: 'best-of-n',
   likert: 'jailbreak:likert',
   citation: 'citation',
   singleTurnComposite: 'jailbreak:composite',
 };
 
+/**
+ * Platform strategy id -> promptfoo native id for every strategy this
+ * deployment cannot run, DERIVED from the measured strategy catalogue.
+ *
+ * This used to be a hand-written four-entry map, and that hand-writing is what
+ * let two un-gated strategies through: `jailbreak` (promptfoo's deprecated
+ * alias, whose action delegates to the remote-only iterative:meta provider) and
+ * `iterative:meta` (whose provider refuses to construct under fail-closed).
+ * Both were offered in the selector and both failed mid-run instead of at
+ * submit — the same "hand-kept list drifts" failure U6's 29 had.
+ *
+ * The verdict now comes from `promptfoo_strategy_catalog.json`, where it is
+ * MEASURED: `gen_strategy_catalog.mjs` reads promptfoo's own
+ * "remote generation explicitly disabled" throw sites out of the installed dist
+ * and follows the deprecated-alias delegations. Run that generator FIRST.
+ */
+function deriveRemoteGatedStrategies() {
+  const strategyCatalogPath = path.join(repoRoot, 'internal', 'maclaw', 'testdata', 'promptfoo_strategy_catalog.json');
+  if (!fs.existsSync(strategyCatalogPath)) {
+    throw new Error(
+      `${strategyCatalogPath} is missing. Run \`node scripts/gen_strategy_catalog.mjs\` first — the ` +
+        'remote-gate table is derived from its measured verdict, and a missing input would emit an ' +
+        'empty gate.',
+    );
+  }
+  const catalog = JSON.parse(fs.readFileSync(strategyCatalogPath, 'utf8'));
+  const nativeRows = new Map((catalog.native_strategies ?? []).map((row) => [row.id, row]));
+  const remoteRequired = new Set([...nativeRows].filter(([, row]) => row.remote_required).map(([id]) => id));
+  if (remoteRequired.size === 0) {
+    throw new Error('the strategy catalogue reports zero remote-required strategies; that is the shape of a failed measurement');
+  }
+  const platformToNative = catalog.platform_to_native_map ?? {};
+
+  for (const [platformId, nativeId] of Object.entries(GATED_NATIVE_IDS)) {
+    if (!nativeRows.has(nativeId)) {
+      throw new Error(`GATED_NATIVE_IDS maps ${platformId} -> ${nativeId}, which is not in promptfoo's strategy registry`);
+    }
+    if (!remoteRequired.has(nativeId)) {
+      throw new Error(
+        `GATED_NATIVE_IDS maps ${platformId} -> ${nativeId}, but the measurement does not gate it. ` +
+          'Either the translation is wrong or promptfoo no longer needs remote generation here; ' +
+          'both need a human decision, so refusing to emit the table.',
+      );
+    }
+  }
+
+  // Every platform id this deployment can name:
+  //   - the Go `s("…")` dimensions, and the native idents exposed under their
+  //     own name (both selectable, so both need a verdict);
+  //   - plus every key of the platform→native map, which includes ids that are
+  //     NOT in the selector any more. `jailbreak` is the case: it is the
+  //     deprecated alias of the gated `iterative:meta`, so it is no longer
+  //     offered — but a stored request or a direct API call can still name it,
+  //     and if it is left un-gated it reaches promptfoo and fails mid-run. The
+  //     verdict belongs at submit, so it is gated even though it is not offered.
+  const offered = new Set([
+    ...readCatalogStrategyIds(),
+    ...Object.keys(catalog.native_exposure ?? {}),
+    ...Object.keys(platformToNative),
+  ]);
+
+  const gated = {};
+  for (const platformId of [...offered].sort()) {
+    const nativeId = GATED_NATIVE_IDS[platformId] ?? platformToNative[platformId] ?? platformId;
+    if (remoteRequired.has(nativeId)) gated[platformId] = nativeId;
+  }
+
+  // Fail closed on an un-gating. A strategy disappearing from this table means
+  // promptfoo changed its mind — which may be correct after an upgrade, but it
+  // must be a reviewed decision, not a silent side effect of regenerating.
+  const previousPath = path.join(repoRoot, 'internal', 'maclaw', 'testdata', 'promptfoo_remote_dep.json');
+  if (fs.existsSync(previousPath)) {
+    const previous = JSON.parse(fs.readFileSync(previousPath, 'utf8')).remote_gated_strategies ?? {};
+    const dropped = Object.keys(previous).filter((id) => !(id in gated));
+    if (dropped.length > 0) {
+      throw new Error(
+        `regenerating would UN-GATE these strategies: ${dropped.join(', ')}. Either the measurement ` +
+          'lost them (fix the strategy generator) or promptfoo no longer requires remote generation ' +
+          'for them — in which case confirm it with a real run before accepting the change.',
+      );
+    }
+  }
+  return gated;
+}
+
 const { chunk, remoteOnly, bias, unaligned } = await resolveRemoteTables();
 const catalogPluginIds = readCatalogPluginIds();
+const REMOTE_GATED_STRATEGIES = deriveRemoteGatedStrategies();
 
 const remoteSet = new Set(remoteOnly);
 const unalignedSet = new Set(unaligned);

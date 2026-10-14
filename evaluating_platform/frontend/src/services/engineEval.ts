@@ -261,7 +261,9 @@ export const ENGINE_STRATEGY_OPTIONS: ReadonlyArray<EngineCatalogOption> = [
 { id: 'goblin', name: 'Goblin 多轮攻击' },
 { id: 'iterative', name: '迭代越狱' },
 { id: 'iterative:tree', name: '树搜索越狱' },
-{ id: 'iterative:meta', name: '元提示越狱' },
+// P2-2：`iterative:meta` 委派给 promptfoo 的 jailbreak:meta provider，该 provider
+// 在 fail-closed 下构造即抛错 —— 选中它会整 run 失败。实测见生成器的抛错点扫描。
+{ id: 'iterative:meta', name: '元提示越狱', requires_remote_generation: true },
 { id: 'bestOfN', name: 'Best-of-N 多次采样', requires_remote_generation: true },
 { id: 'likert', name: 'Likert 量表包装', requires_remote_generation: true },
 { id: 'citation', name: '引用包装', requires_remote_generation: true },
@@ -294,11 +296,16 @@ export const ENGINE_STRATEGY_OPTIONS: ReadonlyArray<EngineCatalogOption> = [
 { id: 'custom', name: '自定义策略' },
 /* ---- 已废弃但仍可用的上游别名 ----
  *
- * promptfoo 只 log 一句 deprecated 警告、并不拒绝，所以它们仍然能跑。
- * 保留但明确标注，避免与它们真正委派到的目标（越狱模板库 / 元提示越狱）
- * 看起来像两种不同手法。
+ * promptfoo 只 log 一句 deprecated 警告、并不拒绝，所以它们仍然能跑。保留但明确
+ * 标注，避免与它们真正委派到的目标看起来像两种不同手法。
+ *
+ * P2-2：`jailbreak` 已从这里移除。它不是「log 一句警告然后照跑」——它的 action
+ * 委派给 iterative:meta provider，而那个 provider 在 fail-closed 下**构造即抛错**
+ * （实测见 gen_strategy_catalog.mjs 的 REMOTE_DELEGATIONS）。既然它不再可选，就
+ * 不该占据选择器里的一格；越狱这一面由「元提示越狱」置灰 + 说明来交代，用户不
+ * 会因为少了一行而找不到原因。`prompt-injection` 的委派目标（越狱模板库）本地
+ * 可跑，所以它留下。
  */
-{ id: 'jailbreak', name: '元提示越狱（旧别名）' },
 { id: 'prompt-injection', name: '提示注入模板（旧别名）' },
 ]
 
@@ -344,6 +351,16 @@ export const REMOTE_GENERATION_ERROR_CODES = {
  * 从来就不存在」，后者还附带 `guidance`（能力搬到哪里去了）。
  */
 export const PLUGIN_ID_INVALID_CODE = 'plugin_id_invalid'
+
+/**
+ * P2-2：后端在插件合法但缺配置时返回的 error_code（与
+ * `maclaw.EngineErrPluginRequiresConfig` 逐字一致）。
+ *
+ * 与 `PLUGIN_ID_INVALID_CODE` 分开：那个说「这个 id 从来不存在」，这个说「id
+ * 没问题，平台还没收集它需要的配置」。合成一个码会让「补一个上传入口就能用」的
+ * 能力和「坏掉的 id」在对用户的解释上无法区分。
+ */
+export const PLUGIN_REQUIRES_CONFIG_CODE = 'plugin_requires_config'
 
 /**
  * 一条插件/策略选项。requires_remote_generation 由后端目录生成。
@@ -500,9 +517,13 @@ export const RETIRED_ENGINE_PLUGINS: ReadonlyArray<RetiredEnginePlugin> = [
     reason:
       'jailbreak 在 promptfoo 里是攻击策略而非插件，作为插件 id 会被引擎拒绝，该次运行必然失败。',
     replacement_slot: 'strategy',
-    replacement_ids: ['iterative:meta', 'iterative:tree'],
+    // P2-2：原为 `iterative:meta`，但那个策略自己也被远程闸住了（jailbreak:meta
+    // provider 构造即抛错）——推荐它等于把用户从一个必然失败送到另一个必然失败。
+    // 推荐项必须是本环境真能跑的，后端 TestPromptfooRetiredPluginReplacementsResolve
+    // 与本文件的镜像一致性测试共同钉住这一点。
+    replacement_ids: ['iterative:tree', 'jailbreak-templates'],
     replacement_label:
-      '「越狱对抗检测」是攻击维度、不是插件维度；越狱类攻击手法请在「攻击策略」中选择「元提示越狱」或「树搜索越狱」。',
+      '「越狱对抗检测」是攻击维度、不是插件维度；越狱类攻击手法请在「攻击策略」中选择「树搜索越狱」或「越狱模板库」（「元提示越狱」需远程生成，本环境已屏蔽）。',
   },
   {
     id: 'prompt-injection',
@@ -520,9 +541,11 @@ export const RETIRED_ENGINE_PLUGINS: ReadonlyArray<RetiredEnginePlugin> = [
     reason:
       '平台自造的 id，promptfoo 把它拆成 sql-injection / shell-injection / ssrf 等多个具体插件，没有单一对应项。',
     replacement_slot: 'plugin',
-    replacement_ids: ['reasoning-dos'],
+    // P2-2：原为 `reasoning-dos`，而它同样是远程闸住的 —— 与 jailbreak 那条一样，
+    // 推荐项必须是本环境真能跑的。后端与镜像一致性测试共同钉住。
+    replacement_ids: ['cyberseceval', 'harmful'],
     replacement_label:
-      '「安全利用类检测」已下线；资源耗尽类攻击请选「推理资源耗尽」。SQL 注入 / 命令注入等具体利用面尚未入库。',
+      '「安全利用类检测」已下线；网络攻击协助类风险请改用「CybersecurityEval 基准」或「有害内容检测」（含网络犯罪家族）。「推理资源耗尽」需远程生成，本环境已屏蔽。',
   },
 ]
 
@@ -574,6 +597,26 @@ export function explainPluginIDRejection(
   // 只说「id 无效」而不说能力去哪了，用户只能自己猜。
   const fallback = `本次请求包含 promptfoo 不接受的插件 id${invalid.length > 0 ? `：${invalid.join('、')}` : ''}。`
     + (guidance.length > 0 ? ` ${guidance.join(' ')}` : '')
+  return {
+    message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
+    code: body.code,
+  }
+}
+
+/**
+ * P2-2：把后端 `plugin_requires_config`（409）翻译成可读提示。
+ *
+ * 这几个 explainer 各自只认自己的 code，调用方按顺序试——共享一个函数会让
+ * 「哪个码该说什么」在一个 if 链里纠缠，改一处容易漏另一处。
+ */
+export function explainPluginConfigRejection(
+  data: unknown,
+): { message: string; code: string } | null {
+  const body = data as { code?: string; error?: string; plugins?: string[] } | null
+  if (!body || body.code !== PLUGIN_REQUIRES_CONFIG_CODE) return null
+  const plugins = (body.plugins ?? []).filter((id) => typeof id === 'string' && id.trim() !== '')
+  const fallback = `本次选择包含需要平台尚未收集配置的插件${plugins.length > 0 ? `：${plugins.join('、')}` : ''}` +
+    '，本次会生成 0 条用例，请改选其它插件。'
   return {
     message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
     code: body.code,

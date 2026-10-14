@@ -192,6 +192,11 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if err := ValidateEngineRunPluginLegality(plugins); err != nil {
 		return nil, err
 	}
+	// P2-2 (D-3): same rule as the wizard path — a plugin the platform cannot
+	// feed fails the run with 0 cases, so refuse it before the run record exists.
+	if err := ValidateEngineRunPluginConfig(plugins); err != nil {
+		return nil, err
+	}
 	judgeMode := engineJudgeModeFromString(in.JudgeMode)
 	numTests := in.NumTests
 	if numTests <= 0 {

@@ -231,8 +231,10 @@
   },
   "remote_gated_strategies": {
     "bestOfN": "best-of-n",
-    "likert": "jailbreak:likert",
     "citation": "citation",
+    "iterative:meta": "jailbreak:meta",
+    "jailbreak": "jailbreak",
+    "likert": "jailbreak:likert",
     "singleTurnComposite": "jailbreak:composite"
   }
 }

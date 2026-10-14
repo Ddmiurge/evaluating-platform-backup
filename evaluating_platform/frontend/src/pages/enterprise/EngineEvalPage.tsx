@@ -11,7 +11,7 @@ import {
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS,
-  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, engineEvalService, explainPluginIDRejection, explainRemoteGenerationRejection,
+  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, engineEvalService, explainPluginConfigRejection, explainPluginIDRejection, explainRemoteGenerationRejection,
   isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, retiredEnginePluginGuidance,
   toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
@@ -322,6 +322,13 @@ export function EngineEvalPage() {
       message.error(`本次选择包含已下线的插件 id：${retired.join('、')}。${details}`)
       return
     }
+    // P2-1/P2-2 客户端侧二次拦截：缺配置的插件能选中，但本次会生成 0 条用例。
+    // 后端已显式拒绝，这里提前到提交前，省一次往返。
+    const needsConfig = (values.plugins ?? []).filter((id) => isPluginConfigGated(id))
+    if (needsConfig.length > 0) {
+      message.error(`本次选择包含需要先提供策略文档的插件：${needsConfig.join('、')}，本次会生成 0 条用例。请改选其它插件。`)
+      return
+    }
     setSubmitting(true)
     try {
       const run = await engineEvalService.createRun({
@@ -337,7 +344,9 @@ export function EngineEvalPage() {
     } catch (e: unknown) {
       // U6：远程依赖拒绝是可读的业务错误，单独翻译；其余沿用原提示。
       const data = (e as { response?: { data?: unknown } })?.response?.data
-      const rejection = explainRemoteGenerationRejection(data) ?? explainPluginIDRejection(data)
+      const rejection = explainRemoteGenerationRejection(data)
+        ?? explainPluginIDRejection(data)
+        ?? explainPluginConfigRejection(data)
       if (rejection) {
         message.error(rejection.message)
       } else {

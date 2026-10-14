@@ -29,7 +29,12 @@ func TestSearchPromptfooPluginCatalog(t *testing.T) {
 		// （jailbreak / jailbreak-templates）与基准插件（harmbench / pliny）。
 		{"chinese injection", "提示注入", []string{"promptfoo_plugin:indirect-prompt-injection"}},
 		{"chinese jailbreak", "越狱", []string{"promptfoo_plugin:harmbench", "promptfoo_strategy:goat"}},
-		{"english id", "jailbreak", []string{"promptfoo_strategy:jailbreak"}},
+		// P2-2: `promptfoo_strategy:jailbreak` no longer appears — that strategy is
+		// now measured as remote-required (its action delegates to the
+		// iterative:meta provider, which refuses to construct under fail-closed)
+		// and is withheld. The query must still reach a jailbreak capability that
+		// does run locally.
+		{"english id", "jailbreak", []string{"promptfoo_strategy:jailbreak-templates"}},
 		{"generic engine", "promptfoo 引擎评测", []string{"promptfoo_plugin:harmful"}},
 	}
 	for _, tc := range cases {

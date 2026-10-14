@@ -301,8 +301,15 @@ func TestPromptfooRemoteDepStrategyGate(t *testing.T) {
 	inCatalog := toIDSet(strategyIDs)
 
 	for platformID, nativeID := range table.RemoteGatedStrategies {
-		if !inCatalog[platformID] {
-			t.Errorf("gated strategy %q is not in the strategy catalog; the mapping is stale", platformID)
+		// A gated id must be either OFFERED, or a platform id the platform can
+		// still express. P2-2: `jailbreak` is gated precisely because it is no
+		// longer offered — it is the deprecated alias of the gated
+		// `iterative:meta`, and a stored request or a direct API call can still
+		// name it. Requiring catalogue membership would have forced leaving it
+		// un-gated, which is how it failed mid-run in the first place.
+		_, translated := strategyCatalogData.PlatformToNativeMap[platformID]
+		if !inCatalog[platformID] && !translated {
+			t.Errorf("gated strategy %q is neither offered nor a known platform→native translation; the mapping is stale", platformID)
 		}
 		if !StrategyRequiresRemoteGeneration(platformID) {
 			t.Errorf("StrategyRequiresRemoteGeneration(%q) = false, but the table gates it", platformID)
@@ -323,9 +330,11 @@ func TestPromptfooRemoteDepStrategyGate(t *testing.T) {
 		}
 	}
 
-	// Pinned: four strategies are gated, and the platform/promptfoo id mapping
-	// differs for three of them (audit-2026-10-09/14 §3.3).
-	if got, want := len(table.RemoteGatedStrategies), 4; got != want {
+	// Pinned: six strategies are gated. Was four until P2-2; the two additions
+	// (`iterative:meta`, and `jailbreak` as its deprecated alias) were offered
+	// and failed mid-run because the gate was a hand-kept list that never learned
+	// about them.
+	if got, want := len(table.RemoteGatedStrategies), 6; got != want {
 		t.Errorf("gated strategies = %d, want %d", got, want)
 	}
 	for platformID, nativeID := range map[string]string{
@@ -333,10 +342,56 @@ func TestPromptfooRemoteDepStrategyGate(t *testing.T) {
 		"likert":              "jailbreak:likert",
 		"citation":            "citation",
 		"singleTurnComposite": "jailbreak:composite",
+		"iterative:meta":      "jailbreak:meta",
+		"jailbreak":           "jailbreak",
 	} {
 		if table.RemoteGatedStrategies[platformID] != nativeID {
 			t.Errorf("strategy %q maps to %q, want %q", platformID, table.RemoteGatedStrategies[platformID], nativeID)
 		}
+	}
+}
+
+// TestEveryOfferedRemoteRequiredStrategyIsGated is the completeness guard the
+// P2-2 defect needed: the gate table is derived from the MEASURED
+// `remote_required` verdict, so any strategy the platform offers whose native
+// implementation refuses to run must appear in it.
+//
+// Counter-proof: drop `iterative:meta` from remote_gated_strategies → this goes
+// red and names it. Before this test, the gate was a hand-written four-entry map
+// and nothing compared it against what promptfoo actually requires.
+func TestEveryOfferedRemoteRequiredStrategyIsGated(t *testing.T) {
+	table := readRemoteDepTable(t)
+
+	platformToNative := strategyCatalogData.PlatformToNativeMap
+	checked := 0
+	for _, platformID := range PromptfooEngineSupportedStrategyIDs() {
+		nativeID := StrategyNativeID(platformID)
+		row, ok := NativeStrategyByID(nativeID)
+		if !ok {
+			continue
+		}
+		if !row.RemoteRequired {
+			continue
+		}
+		checked++
+		gatedNative, gated := table.RemoteGatedStrategies[platformID]
+		if !gated {
+			t.Errorf("offered strategy %q reaches promptfoo's remote-required implementation %q "+
+				"but is not gated; selecting it fails the run instead of being refused at submit. "+
+				"Regenerate with `node scripts/gen_strategy_catalog.mjs && node scripts/gen_remote_dep.mjs`.",
+				platformID, nativeID)
+			continue
+		}
+		// The gate's translation must be the same one the rest of the platform
+		// uses, or the error message would name a strategy the engine cannot
+		// recognise.
+		if want := platformToNative[platformID]; want != "" && want != gatedNative {
+			t.Errorf("gated %q translates to %q but the strategy catalogue says %q",
+				platformID, gatedNative, want)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no offered strategy is measured remote-required; the comparison is not exercising anything")
 	}
 }
 
@@ -544,8 +599,12 @@ func TestPromptfooRemoteDepSurfacesInCatalogAndEnginePayload(t *testing.T) {
 	if gatedPlugins != 90 {
 		t.Errorf("engine catalog gated plugins = %d, want 90", gatedPlugins)
 	}
-	if gatedStrategies != 4 {
-		t.Errorf("engine catalog gated strategies = %d, want 4", gatedStrategies)
+	// P2-2: 5, not 4. `iterative:meta` joined the gate; `jailbreak` is gated too
+	// but is not in the engine catalogue, because it is no longer offered — the
+	// engine catalogue carries what a request can name, and `jailbreak` is only
+	// reachable through a stale request, which the BFF refuses first.
+	if gatedStrategies != 5 {
+		t.Errorf("engine catalog gated strategies = %d, want 5", gatedStrategies)
 	}
 }
 
@@ -601,7 +660,67 @@ func TestPromptfooRemoteDepStatsAreConsistent(t *testing.T) {
 	if stats.UnavailableMessage != RemoteGenerationUnavailableMessage {
 		t.Errorf("stats carry a different message than the canonical constant")
 	}
-	if stats.GatedStrategies != 4 {
-		t.Errorf("GatedStrategies = %d, want 4", stats.GatedStrategies)
+	// P2-2: the gate grew to 6 when `iterative:meta` and its deprecated alias
+	// `jailbreak` were measured as remote-required.
+	if stats.GatedStrategies != 6 {
+		t.Errorf("GatedStrategies = %d, want 6", stats.GatedStrategies)
+	}
+}
+
+// TestRemoteGenerationStrategyHintRecommendsAreUsable pins the property that
+// makes the strategy hint worth having: every id it suggests must produce a run
+// that actually works.
+//
+// A strategy hint has one extra failure mode over the plugin one — recommending
+// a platform-invented wrapping dimension (`direct`, `role-play`, …). Those are
+// legitimate ids but the engine DROPS them rather than forwarding them, so
+// suggesting one would trade a refusal for a silently strategy-less run.
+//
+// Counter-proof: put `iterative:meta` in the list → fails on gating; put
+// `direct` in → fails on engine-forwardability.
+func TestRemoteGenerationStrategyHintRecommendsAreUsable(t *testing.T) {
+	if len(remoteGenerationStrategyHintRecommends) == 0 {
+		t.Fatal("the strategy hint recommends nothing; the message loses its actionable half")
+	}
+	offered := toIDSet(PromptfooEngineSupportedStrategyIDs())
+	for _, id := range remoteGenerationStrategyHintRecommends {
+		if !offered[id] {
+			t.Errorf("hint recommends %q, which the catalogue does not offer", id)
+		}
+		if StrategyRequiresRemoteGeneration(id) {
+			t.Errorf("hint recommends %q, which is remote-gated — it would hit this same refusal", id)
+		}
+		if StrategyNativeID(id) == "" {
+			t.Errorf("hint recommends %q, which the engine drops instead of forwarding", id)
+		}
+		if !strategyRunsInThisDeployment(id) {
+			t.Errorf("hint recommends %q, which cannot produce cases in this deployment", id)
+		}
+	}
+
+	// The rendered clause must actually reach the user, and must name a
+	// recommendation rather than only restating what failed.
+	err := &EngineRemoteDepGuardError{
+		Code:            EngineErrStrategyRequiresRemoteGeneration,
+		GatedStrategies: []string{"iterative:meta"},
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "可改用本环境能跑的策略") {
+		t.Errorf("strategy rejection carries no strategy hint: %q", msg)
+	}
+	for _, want := range remoteGenerationStrategyHintRecommends {
+		if !strings.Contains(msg, want) {
+			t.Errorf("strategy hint does not name %q: %q", want, msg)
+		}
+	}
+
+	// A plugin-only rejection must NOT grow a strategy clause: it would answer a
+	// question the user did not ask and bury the plugin hint.
+	pluginOnly := &EngineRemoteDepGuardError{
+		Code:         EngineErrPluginRequiresRemoteGeneration,
+		GatedPlugins: []string{"financial:hallucination"},
+	}
+	if strings.Contains(pluginOnly.Error(), "可改用本环境能跑的策略") {
+		t.Errorf("plugin-only rejection grew a strategy clause: %q", pluginOnly.Error())
 	}
 }

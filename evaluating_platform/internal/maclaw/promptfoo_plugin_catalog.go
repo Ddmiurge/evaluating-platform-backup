@@ -454,12 +454,16 @@ type retiredPluginEntry struct {
 // dropped from the catalog silently.
 var retiredPluginCatalog = []retiredPluginEntry{
 	{
-		ID:               "jailbreak",
-		Name:             "越狱对抗检测",
-		Reason:           "jailbreak 在 promptfoo 里是攻击策略而非插件，作为插件 id 会被引擎拒绝，该次运行必然失败。",
-		ReplacementSlot:  "strategy",
-		ReplacementIDs:   []string{"iterative:meta", "iterative:tree"},
-		ReplacementLabel: "「越狱对抗检测」是攻击维度、不是插件维度；越狱类攻击手法请在「攻击策略」中选择「元提示越狱」或「树搜索越狱」。",
+		ID:              "jailbreak",
+		Name:            "越狱对抗检测",
+		Reason:          "jailbreak 在 promptfoo 里是攻击策略而非插件，作为插件 id 会被引擎拒绝，该次运行必然失败。",
+		ReplacementSlot: "strategy",
+		// P2-2 修正：这里原本推荐 `iterative:meta`，而它自己就是被远程闸住的
+		// 那一个（jailbreak:meta provider 构造即抛错）——等于把用户从「一个必然
+		// 失败的插件」送到「一个必然失败的策略」。推荐项必须**本环境真能跑**，
+		// 由 TestPromptfooRetiredPluginReplacementsResolve 钉住。
+		ReplacementIDs:   []string{"iterative:tree", "jailbreak-templates"},
+		ReplacementLabel: "「越狱对抗检测」是攻击维度、不是插件维度；越狱类攻击手法请在「攻击策略」中选择「树搜索越狱」或「越狱模板库」（「元提示越狱」需远程生成，本环境已屏蔽）。",
 	},
 	{
 		ID:               "prompt-injection",
@@ -474,8 +478,8 @@ var retiredPluginCatalog = []retiredPluginEntry{
 		Name:             "安全利用类检测",
 		Reason:           "平台自造的 id，promptfoo 把它拆成 sql-injection / shell-injection / ssrf 等多个具体插件，没有单一对应项。",
 		ReplacementSlot:  "plugin",
-		ReplacementIDs:   []string{"reasoning-dos"},
-		ReplacementLabel: "「安全利用类检测」已下线；资源耗尽类攻击请选「推理资源耗尽」。SQL 注入 / 命令注入等具体利用面尚未入库。",
+		ReplacementIDs:   []string{"cyberseceval", "harmful"},
+		ReplacementLabel: "「安全利用类检测」已下线；网络攻击协助类风险请改用「CybersecurityEval 基准」或「有害内容检测」（含网络犯罪家族）。「推理资源耗尽」需远程生成，本环境已屏蔽。",
 	},
 }
 

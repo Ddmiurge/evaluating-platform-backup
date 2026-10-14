@@ -241,36 +241,61 @@ func writeRemoteDepRejection(c *gin.Context, err error) {
 	})
 }
 
-// writePluginLegalityRejection renders the P2-2 pre-flight rejection.
+// writeEnginePreflightRejection maps a pre-flight guard error to its HTTP
+// response, returning false when the error is not one of them.
 //
-// 409 for the same reason as the U6 rejection: the request is well-formed and
-// the caller can retry successfully with a valid id. The body carries the
-// machine-readable `code`, the offending ids, and — for withdrawn ids — the
-// replacement path, so the UI can explain where the capability moved instead of
-// showing a bare "invalid plugin".
-//
-// promptfoo's own zod text is deliberately NOT included: it is upstream internal
-// wording that changes between builds, and the platform already ships a reviewed
-// sentence per id (`reasons` + `guidance`). The verbatim text stays on the
-// server, where the guard uses it only as a fallback for an id the platform has
-// no reason recorded for.
-func writePluginLegalityRejection(c *gin.Context, err error) {
-	var guard *maclaw.EnginePluginLegalityGuardError
-	if !errors.As(err, &guard) {
-		// Not a guard error — fail closed without leaking internals.
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "invalid plugin id",
-			"code":  maclaw.EngineErrPluginIDInvalid,
-		})
-		return
+// One dispatcher rather than one writer per guard, because both submission
+// surfaces (the wizard handler and the chat confirm fast path) can produce every
+// one of these, and a refusal that reads differently depending on which door the
+// user came through is its own kind of wrong. 409 throughout: the request is
+// well-formed and succeeds as soon as the caller picks a different capability or
+// count.
+func writeEnginePreflightRejection(c *gin.Context, err error) bool {
+	var remoteDep *maclaw.EngineRemoteDepGuardError
+	if errors.As(err, &remoteDep) {
+		writeRemoteDepRejection(c, err)
+		return true
 	}
-	c.JSON(http.StatusConflict, gin.H{
-		"error":           guard.Error(),
-		"code":            guard.Code,
-		"invalid_plugins": guard.InvalidPlugins,
-		"reasons":         guard.Reasons,
-		"guidance":        guard.Guidance,
-	})
+
+	var illegal *maclaw.EnginePluginLegalityGuardError
+	if errors.As(err, &illegal) {
+		// promptfoo's own zod text is deliberately NOT included: it is upstream
+		// internal wording that changes between builds, and the platform already
+		// ships a reviewed sentence per id (`reasons` + `guidance`). The verbatim
+		// text stays on the server, where the guard uses it only as a fallback for
+		// an id the platform has no reason recorded for.
+		c.JSON(http.StatusConflict, gin.H{
+			"error":           illegal.Error(),
+			"code":            illegal.Code,
+			"invalid_plugins": illegal.InvalidPlugins,
+			"reasons":         illegal.Reasons,
+			"guidance":        illegal.Guidance,
+		})
+		return true
+	}
+
+	var needsConfig *maclaw.EnginePluginConfigGuardError
+	if errors.As(err, &needsConfig) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   needsConfig.Error(),
+			"code":    needsConfig.Code,
+			"plugins": needsConfig.Plugins,
+			"reasons": needsConfig.Reasons,
+		})
+		return true
+	}
+
+	var tooLarge *maclaw.EngineNumTestsTooLargeError
+	if errors.As(err, &tooLarge) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": tooLarge.Error(),
+			"code":  maclaw.EngineErrNumTestsTooLarge,
+			"max":   tooLarge.Max,
+		})
+		return true
+	}
+
+	return false
 }
 
 func (h *EngineRunHandler) CreateRun(c *gin.Context) {
@@ -339,7 +364,17 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	// still can — so the verdict belongs at the request boundary, not in a
 	// promptfoo exception the user never sees.
 	if err := maclaw.ValidateEngineRunPluginLegality(plugins); err != nil {
-		writePluginLegalityRejection(c, err)
+		writeEnginePreflightRejection(c, err)
+		return
+	}
+
+	// P2-2 (D-3): refuse a plugin the platform cannot feed yet. The catalogue
+	// advertises `requires_config` and the selector warns, but advertising is not
+	// refusing — without this the request reaches the engine, generates 0 cases
+	// and fails with `native_generation_no_test_cases`, which the user cannot act
+	// on.
+	if err := maclaw.ValidateEngineRunPluginConfig(plugins); err != nil {
+		writeEnginePreflightRejection(c, err)
 		return
 	}
 

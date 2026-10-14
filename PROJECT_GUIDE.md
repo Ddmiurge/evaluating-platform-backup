@@ -68,6 +68,14 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 - **成本语义**：目录为每个插件下发 `fanout`（`harmful`=26 / `bias`=6 / `pii`=4），前端据此提示「预计探针数 = 用例数量 × Σfanout」，避免用户把 5 当成 5 条而实际跑 130 条。
 - **`num_tests` 上限统一为 50**（`maclaw.EngineMaxNumTests`）：wizard 原先接受 200 而引擎静默夹到 50，现三条链路（wizard 校验、chat confirm 校验、引擎兜底 clamp）共用同一数值并**拒绝而非静默改小**（`num_tests_too_large`，409/400）。
 
+ **策略侧远程闸（P2-2 补，2026-10-14）**：策略闸原先是一张**手写的 4 项表**，而 promptfoo 的远程要求在 provider 构造时才抛错、`action()` 探针看不见 —— 于是 `iterative:meta`（元提示越狱）与 `jailbreak`（它的废弃别名）都在选择器里且选中即失败。现改为**实测派生**：`gen_strategy_catalog.mjs` 扫描 promptfoo dist 里 `getRemoteGenerationExplicitlyDisabledError("<label>")` 的抛错点，并用 `REMOTE_DELEGATIONS` 处理「废弃别名按 provider 种类而非策略 id 委派」那一类；`gen_remote_dep.mjs` 从该结果**派生**闸门表（现 6 项），生成器链固定为 **strategy_catalog → remote_dep → plugin_legality**，遇到未登记标签、消失的委派字面量、陈旧译名或「会解除闸门」的重生成一律**失败退出**，不再静默漏闸。
+
+ **缺配置插件的提交闸（P2-2 补，D-3）**：`policy` 是合法插件、只是平台还没有 `config.policy` 文本，因此**不置灰**（置灰会把「补一份配置就能用」伪装成不可用），但目录、卡片、选择器提示与**后端提交闸**（`ValidateEngineRunPluginConfig` → 409 `plugin_requires_config`）四者齐备 —— D-3 要求的「提交时显式拒绝」此前只有前端提示，选中它仍会跑到引擎才以 `native_generation_no_test_cases` 失败。
+
+ **提交闸统一出口（P2-2 补）**：wizard 与 chat confirm 两条入口的预检拒绝统一由 `writeEnginePreflightRejection` 渲染（409），同一拒绝不会因入口不同而措辞/状态码不同。
+
+ **前端镜像护栏（P2-2 补）**：`requires_remote_generation` / `requires_config` 两个标记与 `RETIRED_ENGINE_PLUGINS` 替代路径均由 `TestFrontendRemoteGenerationFlagsMatchBackend` 与 `TestFrontendRetiredPluginGuidanceMirrorsBackend` 与后端逐项对齐 —— 上批 `iterative:meta` 被闸住而前端未标、以及两条替代引导指向已闸策略，都是手工镜像没有护栏造成的。
+
 ## 多租户与安全边界
 
 - 每个企业、专家、管理员账号 lazy provision 一个独立 MaClaw tenant/user/credential/instance。

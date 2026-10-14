@@ -41,6 +41,79 @@ import (
 // maps it to a readable message; operators grep for it when a run is refused.
 const EngineErrPluginIDInvalid = "plugin_id_invalid"
 
+// EngineErrPluginRequiresConfig is the refusal code for a LEGAL plugin the
+// platform cannot feed yet. Distinct from EngineErrPluginIDInvalid on purpose:
+// the id is fine and the capability is intended to work — what is missing is
+// configuration the platform does not collect (currently only `config.policy`).
+// One code would tell the user their selection is broken when the truth is that
+// a platform feature is pending.
+const EngineErrPluginRequiresConfig = "plugin_requires_config"
+
+// EnginePluginConfigGuardError refuses a run that selects a plugin which cannot
+// produce test cases until the platform collects configuration for it.
+//
+// P2-2 / plan 18 D-3(a): the catalogue and the selector already advertise
+// `requires_config`, but advertising is not refusing. Without this guard the
+// request reaches the engine, generates 0 cases, and fails with
+// `native_generation_no_test_cases` — a failure the user cannot act on, which is
+// the shape D-3 exists to remove.
+type EnginePluginConfigGuardError struct {
+	Code string
+	// Plugins are the offending ids, deduplicated and sorted.
+	Plugins []string
+	// Reasons maps each id to why it needs configuration.
+	Reasons map[string]string
+}
+
+// Error implements error. It names each plugin and what the platform is missing.
+func (e *EnginePluginConfigGuardError) Error() string {
+	parts := make([]string, 0, len(e.Plugins))
+	for _, id := range e.Plugins {
+		if reason := strings.TrimSpace(e.Reasons[id]); reason != "" {
+			parts = append(parts, id+"（"+reason+"）")
+			continue
+		}
+		parts = append(parts, id)
+	}
+	return "以下插件需要平台尚未收集的配置，选中它们本次会生成 0 条用例并使运行失败，请改选其它插件：" +
+		strings.Join(parts, "；")
+}
+
+// ValidateEngineRunPluginConfig refuses a request naming a plugin that is legal
+// but cannot generate cases until configuration exists (`policy` today).
+//
+// Runs alongside ValidateEngineRunPluginLegality and for the same reason: the
+// verdict belongs at the request boundary, before credential materialization,
+// persistence and dispatch, so a request that cannot produce cases costs
+// nothing. Custom plugin references are exempt for the same reason as there.
+func ValidateEngineRunPluginConfig(plugins []EngineCapabilityRef) error {
+	invalid := make(map[string]bool)
+	for _, ref := range plugins {
+		id := strings.TrimSpace(ref.ID)
+		if id == "" || isCustomPluginReference(id) {
+			continue
+		}
+		if PluginRequiresConfig(id) {
+			invalid[id] = true
+		}
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+
+	guard := &EnginePluginConfigGuardError{
+		Code:    EngineErrPluginRequiresConfig,
+		Plugins: make([]string, 0, len(invalid)),
+		Reasons: make(map[string]string, len(invalid)),
+	}
+	for id := range invalid {
+		guard.Plugins = append(guard.Plugins, id)
+		guard.Reasons[id] = PluginRequiresConfigReason(id)
+	}
+	sort.Strings(guard.Plugins)
+	return guard
+}
+
 // EnginePluginLegalityGuardError reports which requested plugin ids promptfoo
 // does not accept. It carries the engine's own rejection text (so the user sees
 // the real reason rather than a paraphrase) and, for withdrawn ids, the

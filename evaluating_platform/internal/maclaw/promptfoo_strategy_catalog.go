@@ -145,6 +145,7 @@ type strategyCatalogTotals struct {
 	NativeStrategies     int `json:"native_strategies"`
 	Local                int `json:"local"`
 	Remote               int `json:"remote"`
+	RemoteRequired       int `json:"remote_required"`
 	NoOp                 int `json:"no_op"`
 	RequiresRuntimeInput int `json:"requires_runtime_input"`
 	Media                int `json:"media"`
@@ -163,7 +164,17 @@ type NativeStrategyRow struct {
 	ProbeError             *string  `json:"probe_error"`
 	ProbeLoggedDeprecation bool     `json:"probe_logged_deprecation"`
 	NeedsRuntimeInput      []string `json:"needs_runtime_input"`
-	RemoteGatedByU6        bool     `json:"remote_gated_by_u6"`
+	// RemoteRequired is MEASURED, not listed: the generator reads promptfoo's own
+	// "remote generation explicitly disabled" throw sites out of the installed
+	// dist and follows deprecated-alias delegations (`jailbreak` -> the
+	// iterative:meta provider). It used to be a hand-written flag fed from the
+	// remote-gate table, which is why `jailbreak` and `jailbreak:meta` were
+	// offered and then failed mid-run.
+	RemoteRequired bool `json:"remote_required"`
+	// RemoteEvidence names which measurement produced the verdict
+	// ("throw-site" / "probe-helper" / "delegation:<detail>"), so a reader can
+	// audit it rather than take the boolean on faith.
+	RemoteEvidence string `json:"remote_evidence"`
 }
 
 //go:embed testdata/promptfoo_strategy_catalog.json

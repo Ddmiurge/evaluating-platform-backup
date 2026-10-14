@@ -382,6 +382,54 @@ func TestEngineRunHandlerNumTestsCapIsBoundaryChecked(t *testing.T) {
 	}
 }
 
+// TestEngineRunHandlerRejectsConfigGatedPlugin is the P2-2 D-3 gate: a plugin
+// that is LEGAL but cannot generate cases yet (`policy`, which needs
+// config.policy text the platform does not collect) must be refused at submit
+// rather than accepted and failed with `native_generation_no_test_cases`.
+//
+// The distinction from the legality gate is the point: the id is fine, a platform
+// feature is pending, and the two produce different codes so the UI can say
+// which. Counter-proof: delete the ValidateEngineRunPluginConfig call → the
+// request reaches the fake engine and a record is created.
+func TestEngineRunHandlerRejectsConfigGatedPlugin(t *testing.T) {
+	configGated := maclaw.RequiresConfigPluginIDs()
+	if len(configGated) == 0 {
+		t.Fatal("no config-gated plugin to test against; the guard would be untested")
+	}
+
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m",
+		CredentialSecret: "sk-secret", Enabled: true,
+	}}
+	h := newEngineRunHandler(newEnabledFakeEngine(), maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	r := newEngineRunRouter(h, "enterprise")
+
+	for _, id := range configGated {
+		body := `{"purpose":"p","plugins":[{"id":"` + id + `"}],"num_tests":5}`
+		w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("config-gated %q returned %d, want 409; body = %s", id, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), maclaw.EngineErrPluginRequiresConfig) {
+			t.Errorf("refusal does not carry the %s code: %s", maclaw.EngineErrPluginRequiresConfig, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), id) {
+			t.Errorf("refusal does not name %q: %s", id, w.Body.String())
+		}
+		if len(store.records) != 0 {
+			t.Fatalf("run record created for a config-gated plugin: %+v", store.records)
+		}
+	}
+
+	// And it must not be confused with the legality gate: a legal, feedable
+	// plugin still passes both.
+	okBody := `{"purpose":"p","plugins":[{"id":"harmful"}],"num_tests":5}`
+	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", okBody); strings.Contains(w.Body.String(), maclaw.EngineErrPluginRequiresConfig) {
+		t.Fatalf("legal plugin refused by the config gate: %s", w.Body.String())
+	}
+}
+
 func TestEngineRunHandlerCreateRunRequiresTarget(t *testing.T) {
 	store := newFakeRunStore()
 	targets := &fakeTargetConfigService{target: nil}
@@ -428,7 +476,11 @@ func TestEngineRunHandlerCreateRunSuccessNoSecretLeak(t *testing.T) {
 	h := newEngineRunHandler(engine, maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
 	r := newEngineRunRouter(h, "enterprise")
 
-	body := `{"purpose":"合规安全评测","plugins":[{"id":"harmful"},{"id":"pii"}],"strategies":[{"id":"jailbreak"}],"num_tests":5,"judge_mode":"auto","session_id":"sess-1"}`
+	// P2-2: the strategy here used to be `jailbreak`, which is now (correctly)
+	// refused — it delegates to promptfoo's remote-only iterative:meta provider.
+	// `base64` is local, so this case still exercises the success path it is
+	// about rather than the new pre-flight gate.
+	body := `{"purpose":"合规安全评测","plugins":[{"id":"harmful"},{"id":"pii"}],"strategies":[{"id":"base64"}],"num_tests":5,"judge_mode":"auto","session_id":"sess-1"}`
 	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())

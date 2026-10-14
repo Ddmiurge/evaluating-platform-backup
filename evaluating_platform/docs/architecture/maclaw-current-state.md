@@ -322,3 +322,34 @@ promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以实际
 - `promptfoo_plugin_legality_test.go`：表与目录一致性、目录零非法 id、下线记录与判定表双向一致、替代 id 在目标槽位可解析、插件 id 与 promptfoo 策略名零撞名、fanout 钉值、provenance。
 - `promptfoo_remote_dep_test.go`：可用面数字由 90/29 更新为 **90/26**；新增 `TestRemoteGenerationHintRecommendsAreLegal`——拒绝提示里推荐的每个插件必须**合法 + 本地可跑 + 不缺配置**（原先推荐了 `jailbreak` / `prompt-injection` 两个必然失败的 id，以及需要配置的 `policy`）。
 - `gen_remote_dep.mjs` / `gen_plugin_legality.mjs` 的目录解析**先剔注释行**：P2-1 的说明性注释里引用了 `p("prompt-injection", …)` 字面量，裸正则会把注释当声明解析（解析出 120 而非 116，并触发 `security-exploit` 重复报错）。
+
+### 策略侧远程闸：从手写表改为实测派生（P2-2 补，2026-10-14）
+
+插件侧的「id 是否合法」有实测表，策略侧的「是否需要远程生成」此前没有：它是一张**手写的 4 项表**（`bestOfN` / `likert` / `citation` / `singleTurnComposite`），而 promptfoo 的远程要求在 **provider 构造时**才抛错，`gen_strategy_catalog.mjs` 的 `action()` 探针看不见（该文件自己为 `best-of-n` 记过这个盲区）。后果是两个已提供的策略从未被闸住、选中即整 run 失败：
+
+| 平台 id | promptfoo 原生 id | 为什么漏 |
+|---|---|---|
+| `iterative:meta`（元提示越狱） | `jailbreak:meta` | provider 构造函数里 `if (!shouldGenerateRemote()) throw …getRemoteGenerationExplicitlyDisabledError("jailbreak:meta strategy")` |
+| `jailbreak`（元提示越狱·旧别名） | `jailbreak` | promptfoo 的废弃别名，action 调 `addIterativeJailbreaks(…, "iterative:meta", …)` —— 用 **provider 种类**而非策略 id 委派，任何按 id 的扫描都看不到 |
+
+现改为**实测派生**：
+
+1. `gen_strategy_catalog.mjs` 扫描 dist 里 `getRemoteGenerationExplicitlyDisabledError("<label>")` / `getRemoteGenerationDisabledError("<label>")` 的抛错点（promptfoo 自报组件名，是**同一条会失败运行的代码路径**），用 `REMOTE_THROW_LABELS` 把标签映射到策略 id（标签是散文不是 id：`"Composite jailbreak strategy"` → `jailbreak:composite`）；未登记的标签**直接失败**，不再静默忽略。
+2. `REMOTE_DELEGATIONS` 处理「废弃别名委派」那一类，并**断言委派字面量仍在**该策略的 action 源码里；字面量消失则生成器失败（它消失意味着上游改了实现，闸门可能不再适用）。
+3. 每个原生策略记录 `remote_required` + `remote_evidence`（`throw-site` / `probe-helper` / `delegation:…`），可审计。
+4. `gen_remote_dep.mjs` 从该结果**派生** `remote_gated_strategies`（4 → 6 项），并对**会解除闸门**的重生成 fail-closed —— 上游不再需要远程是可以接受的，但必须是人工确认的决定，而不是重新生成时的副作用。
+5. 生成器链固定为 **strategy_catalog → remote_dep → plugin_legality**，缺输入即拒绝运行。
+
+`jailbreak` 被闸但**不再出现在选择器里**（它已不可用，且与 `iterative:meta` 是同一手法的两个名字，代码本就避免重复占位）；它留在闸门表里是为了让**残留请求或直接 API 调用**在提交时被拒，而不是跑到 run 中途才失败。
+
+### 缺配置插件的提交闸（P2-2 补，D-3）
+
+`policy` 是**合法**插件（`safeParse` 通过、fanout=1），0 用例的原因在平台侧（没有 `config.policy` 文本）。因此它**不置灰**——置灰会把「补一份配置就能用」伪装成「本环境不可用」。但 D-3 要求的「**提交时显式拒绝**」此前只做到一半：目录/卡片/选择器提示都有，后端没有闸，选中它仍会跑到引擎以 `native_generation_no_test_cases` 失败。现补上 `ValidateEngineRunPluginConfig`（两条 Go 入口各一次）→ 409 `plugin_requires_config` + 每个 id 的原因，与 `plugin_id_invalid` 分开编码（一个是「id 不存在」，一个是「能力待补配置」，对用户的解释不同）。
+
+### 提交闸统一出口
+
+wizard 与 chat confirm 两条入口都会产生全部四类预检拒绝（远程依赖 / id 非法 / 缺配置 / 轮次超限）。它们现在统一由 `writeEnginePreflightRejection` 渲染成 409，**同一拒绝不会因入口不同而措辞或状态码不同**；confirm 路径此前会把全部错误都映射成 502 `engine_submit_failed`。
+
+### 前端镜像护栏
+
+`requires_remote_generation`、`requires_config` 与 `RETIRED_ENGINE_PLUGINS` 的替代路径都是前端手工镜像后端的。三处都加了逐项一致性断言（`TestFrontendRemoteGenerationFlagsMatchBackend` / `TestFrontendRetiredPluginGuidanceMirrorsBackend`）。加它们的原因很直接：上批把 `iterative:meta` 闸住而前端没标（选择器仍可选），以及**两条替代引导指向了已闸策略**——`jailbreak` 插件曾推荐 `iterative:meta`、`security-exploit` 曾推荐 `reasoning-dos`，等于把用户从一个必然失败送到另一个必然失败。后者现在由 `TestPromptfooRetiredPluginReplacementsResolve` 钉住「替代项必须**本环境真能跑**」，而不只是「存在」。

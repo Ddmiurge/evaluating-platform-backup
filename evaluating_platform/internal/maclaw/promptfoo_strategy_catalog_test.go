@@ -119,33 +119,58 @@ func TestPromptfooStrategyCatalogOffersNothingThatGeneratesNothing(t *testing.T)
 	}
 }
 
-// TestPromptfooStrategyCatalogStillHonoursU6 verifies the Phase 3 widening did
-// not weaken U6. Every strategy U6 gates must remain unavailable here, and the
-// platform's own vocabulary must still map onto the same native ids.
-func TestPromptfooStrategyCatalogStillHonoursU6(t *testing.T) {
+// TestPromptfooStrategyCatalogHonoursTheMeasuredRemoteGate verifies the Phase 3
+// widening did not weaken the remote-generation gate, and that the gate's
+// verdict is the MEASURED one rather than a hand-kept flag.
+//
+// P2-2: the gate grew from four strategies to six. `jailbreak` (promptfoo's
+// deprecated alias, whose action delegates to the iterative:meta provider) and
+// `jailbreak:meta` were both offered and both failed mid-run — the alias because
+// nothing linked it to the gated implementation by name.
+func TestPromptfooStrategyCatalogHonoursTheMeasuredRemoteGate(t *testing.T) {
 	for platformID, nativeID := range remoteDepTableData.RemoteGatedStrategies {
 		if StrategyIsSelectable(nativeID) {
-			t.Errorf("native strategy %q (platform %q) is gated by U6 but is offered as selectable", nativeID, platformID)
+			t.Errorf("native strategy %q (platform %q) is gated but is offered as selectable", nativeID, platformID)
 		}
 		row, ok := NativeStrategyByID(nativeID)
 		if !ok {
-			t.Errorf("U6-gated native strategy %q is missing from the discovered table", nativeID)
+			t.Errorf("gated native strategy %q is missing from the discovered table", nativeID)
 			continue
 		}
 		if row.Availability != StrategyAvailabilityRemote {
-			t.Errorf("U6-gated %q has availability %q, want %q", nativeID, row.Availability, StrategyAvailabilityRemote)
+			t.Errorf("gated %q has availability %q, want %q", nativeID, row.Availability, StrategyAvailabilityRemote)
+		}
+		// The verdict must come from a measurement, and the measurement must say
+		// so — a gate with no recorded evidence cannot be audited after an upgrade.
+		if !row.RemoteRequired {
+			t.Errorf("gated %q does not carry the measured remote_required verdict", nativeID)
+		}
+		if strings.TrimSpace(row.RemoteEvidence) == "" {
+			t.Errorf("gated %q records no remote_evidence", nativeID)
 		}
 	}
-	// `best-of-n` is the case that proves U6's verdict must win over a runtime
-	// probe: its strategy wrapper happily rewrites test cases and returns them
-	// (so a probe counts N cases), while `new BestOfNProvider()` throws
+
+	// P2-2 的具体回归点：这两个 id 曾经都在选择器里且都跑不通。
+	for _, nativeID := range []string{"jailbreak", "jailbreak:meta"} {
+		row, ok := NativeStrategyByID(nativeID)
+		if !ok {
+			t.Fatalf("%q must be present so its unavailability is explainable", nativeID)
+		}
+		if !row.RemoteRequired || StrategyIsSelectable(nativeID) {
+			t.Errorf("%q requires remote generation at provider construction and must not be offered", nativeID)
+		}
+	}
+
+	// `best-of-n` is the case that proves the measured verdict must win over a
+	// runtime probe: its strategy wrapper happily rewrites test cases and returns
+	// them (so a probe counts N cases), while `new BestOfNProvider()` throws
 	// "requires remote generation, which has been explicitly disabled". Trusting
-	// the probe would have quietly opened a U6-gated capability.
+	// the probe would have quietly opened a gated capability.
 	row, ok := NativeStrategyByID("best-of-n")
 	if !ok {
 		t.Fatal("best-of-n must be present in the table")
 	}
-	if !row.RemoteGatedByU6 || StrategyIsSelectable("best-of-n") {
+	if !row.RemoteRequired || StrategyIsSelectable("best-of-n") {
 		t.Error("best-of-n is remote-gated at provider construction and must not be offered")
 	}
 }
@@ -204,11 +229,20 @@ func TestPromptfooStrategyNativeMappingMatchesEngineTable(t *testing.T) {
 			t.Errorf("engine maps platform id %q but the Go table does not", platformID)
 		}
 	}
-	// No native mapping may point at a withheld strategy: that would forward a
-	// strategy this deployment cannot generate.
+	// A native mapping may point at a withheld strategy only when the platform id
+	// for it is ITSELF gated. That is the case where the id names the withheld
+	// capability (`iterative:meta` -> `jailbreak:meta`, `jailbreak` -> the same
+	// provider via promptfoo's deprecated alias): the BFF pre-flight refuses it,
+	// so nothing is forwarded. Any other withheld mapping would send a request to
+	// a strategy this deployment cannot generate.
 	for platformID, nativeID := range strategyCatalogData.PlatformToNativeMap {
-		if !StrategyIsSelectable(nativeID) {
-			t.Errorf("platform %q maps to withheld native strategy %q", platformID, nativeID)
+		if StrategyIsSelectable(nativeID) {
+			continue
+		}
+		if _, gated := remoteDepTableData.RemoteGatedStrategies[platformID]; !gated {
+			t.Errorf("platform %q maps to withheld native strategy %q and is not itself gated; "+
+				"a request naming it would be forwarded to a strategy this deployment cannot generate",
+				platformID, nativeID)
 		}
 	}
 }
