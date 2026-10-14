@@ -263,6 +263,12 @@ services:
       PROMPTFOO_ENGINE_BEARER_TOKEN: "${PROMPTFOO_ENGINE_BEARER_TOKEN:-change-me-promptfoo-engine-bearer-secret}"
       PROMPTFOO_ENGINE_PORT: "8090"
       PROMPTFOO_ENGINE_DATA_ROOT: /data/runs
+      # P2-3: this value is CLAMPED TO 1 at boot whenever native generation is
+      # on (PROMPTFOO_ENGINE_NATIVE_GENERATION=1), with a line in the engine log.
+      # promptfoo keeps one SQLite file per process and the terminal cleanup
+      # deletes it, so concurrent native runs would delete each other's results.
+      # Setting a higher number here is therefore inert on the native path; it
+      # only applies to Plan A runs. See promptfooDbLifecycle.ts.
       PROMPTFOO_ENGINE_WORKERS: "${PROMPTFOO_ENGINE_WORKERS:-2}"
       PROMPTFOO_ENGINE_MAX_QUEUE: "${PROMPTFOO_ENGINE_MAX_QUEUE:-100}"
     # Internal only: no host port mapping. The BFF reaches the engine over

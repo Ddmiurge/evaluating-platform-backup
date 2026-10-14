@@ -38,11 +38,16 @@
  *
  * # Why the whole directory is not removed
  *
- * `~/.promptfoo` can hold a developer's cloud login (`auth.json`) and a
- * hand-written `promptfoo.yaml`; neither is ours to delete, and removing them
- * would be a nasty surprise. Only the files a run actually produces are removed.
- * On an ephemeral container both would vanish on their own anyway — this is
- * defence for the case where the home directory *is* a mounted volume.
+ * `~/.promptfoo` can hold a developer's cloud login (`auth.json`); that is not
+ * ours to delete, and removing it would be a nasty surprise. Only the files a
+ * run actually produces are removed. On an ephemeral container it would vanish
+ * on its own anyway — this is defence for the case where the home directory *is*
+ * a mounted volume.
+ *
+ * `promptfoo.yaml` used to be protected by the same reasoning and that was a
+ * mistake: measured against the U7 run it is promptfoo's own global config,
+ * whose entire content in this container is one anonymous installation id. See
+ * the note on `RUN_ARTIFACTS`.
  *
  * # Safety properties
  *
@@ -66,8 +71,28 @@ import process from 'node:process';
  *  - `evalLastWritten`  written by `getDbSignalPath()` on each persisted eval
  *  - `cache/`           the on-disk response cache (`cache: false` stops new
  *                       entries, but an earlier Plan A run may have made these)
+ *  - `promptfoo.yaml`   promptfoo's own global config file, whose whole content
+ *                       in a container is one anonymous installation id
+ *                       (`crypto.randomUUID()`, 41 bytes — measured against the
+ *                       U7 acceptance run, which recorded exactly that residue).
+ *
+ * The last one was excluded for a while and the exclusion was wrong. The
+ * original comment here said it was left alone because it "can hold a
+ * hand-written config", which is true on a developer's machine and false in this
+ * container: nobody hand-writes promptfoo config here, `auth.json` is the file
+ * that actually holds a cloud login (and is still, correctly, left alone), and
+ * promptfoo re-creates its id on demand. Leaving it meant every run added a
+ * permanent artifact while the module's contract says a terminal run leaves
+ * nothing behind — one of the two had to give, and the contract is the promise
+ * users and operators rely on.
  */
-const RUN_ARTIFACTS = ['promptfoo.db', 'promptfoo.db-wal', 'promptfoo.db-shm', 'evalLastWritten'] as const;
+const RUN_ARTIFACTS = [
+  'promptfoo.db',
+  'promptfoo.db-wal',
+  'promptfoo.db-shm',
+  'evalLastWritten',
+  'promptfoo.yaml',
+] as const;
 
 /** Raised when an artifact that exists cannot be removed. */
 export class PromptfooStateCleanupError extends Error {

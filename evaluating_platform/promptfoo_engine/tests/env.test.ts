@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  assertNativeGenerationInvariants,
-  assertSecuritySwitches,
-  loadEnv,
-  nativeGenerationEnabled,
-} from '../src/env.js';
+import { assertNativeGenerationInvariants, assertSecuritySwitches, effectiveWorkerCount, loadEnv, nativeGenerationEnabled } from '../src/env.js';
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return {
@@ -205,5 +200,31 @@ describe('assertNativeGenerationInvariants (additive, never relaxing)', () => {
     expect(() => loadEnv(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_DISABLE_SHARE: '0' }))).toThrow(
       /share\/cloud export/,
     );
+  });
+});
+
+// P2-3 · native generation serializes runs onto one worker.
+//
+// The invariant this pins: promptfoo has ONE database file per process
+// (`PROMPTFOO_CONFIG_DIR` is latched at import, `getDb()` memoizes), and the
+// terminal cleanup deletes it — so two concurrent native runs delete each
+// other's results. Measured on the U7 probe: after cleanup + re-migrate, run 2
+// still read run 1's rows through the memoized handle.
+//
+// Counter-proof: make `effectiveWorkerCount` return `configured` for the native
+// path → this goes red.
+describe('effectiveWorkerCount — native runs are serialized', () => {
+  it('clamps to one worker when native generation is on', () => {
+    for (const configured of [1, 2, 4, 8]) {
+      expect(effectiveWorkerCount(configured, true)).toBe(1);
+    }
+  });
+
+  it('leaves the configured count alone on the Plan A path', () => {
+    // Plan A never touches promptfoo's storage, so the shared-database hazard
+    // does not exist and there is nothing to serialize.
+    for (const configured of [1, 2, 4, 8]) {
+      expect(effectiveWorkerCount(configured, false)).toBe(configured);
+    }
   });
 });

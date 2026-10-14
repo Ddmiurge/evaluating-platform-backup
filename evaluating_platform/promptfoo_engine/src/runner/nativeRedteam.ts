@@ -100,6 +100,7 @@ import {
   wantsAgentConversation,
 } from './agentSession.js';
 import { buildJudgeRubricMap, resolveJudgeRubric, type JudgeRubric } from './judgeRubric.js';
+import { ensurePromptfooSchema } from './promptfooDbLifecycle.js';
 import {
   applyCustomPluginRefs,
   materializeCustomPlugins,
@@ -869,6 +870,16 @@ export async function executeNativeRedteamRun(
   // Fail closed before promptfoo is touched at all.
   assertNativeSlots(request);
   assertNativeStrategyMapIsCurrent();
+
+  // P2-3 · promptfoo's `checkRedteamProbeLimit()` queries `eval_results` before
+  // it generates anything, and library mode never migrates the schema — the
+  // migration call sits inside `doEval({write:true})`, i.e. after generation.
+  // Without this, every native run dies with `no such table: eval_results`
+  // unless someone migrates by hand inside the container (which is what the U7
+  // acceptance run had to do). `ensurePromptfooSchema` also closes any open
+  // connection first, so the migration cannot land in an unlinked inode while
+  // promptfoo keeps writing to the old one.
+  await ensurePromptfooSchema();
 
   const { native, planAOnly } = resolveNativeStrategies(request.strategies);
   if (planAOnly.length > 0) {

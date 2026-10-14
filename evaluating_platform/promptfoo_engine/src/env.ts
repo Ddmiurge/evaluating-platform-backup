@@ -179,6 +179,39 @@ export async function assertSandboxInvariants(env: NodeJS.ProcessEnv = process.e
  *     how an operator states that intent; the variable being set at all is
  *     what we check, because a login is then the only cloud signal left.
  */
+/**
+ * P2-3 · workers to actually run with, given the configured count.
+ *
+ * Native generation serializes to one worker, and this is where that policy
+ * lives so it is a testable function rather than a line buried in `main()`.
+ *
+ * # Why serialization is required, not merely conservative
+ *
+ * promptfoo keeps ONE database file for the whole process: `PROMPTFOO_CONFIG_DIR`
+ * is latched at import and `getDb()` memoizes its connection. The terminal
+ * cleanup deletes that file. Two concurrent native runs therefore share a
+ * database, so one run's cleanup deletes the other's results, and the other's
+ * schema can disappear mid-run. Measured on the U7 probe: after a cleanup and a
+ * re-migrate, run 2 still read run 1's rows through the memoized handle while the
+ * path held a different database.
+ *
+ * # Why it clamps instead of refusing to boot
+ *
+ * A worker count is a throughput preference, and clamping it costs latency while
+ * refusing to boot costs availability. The trade the plan records the user
+ * choosing is "queueing beats occasional failure plus data loss" — so the safe
+ * value wins, loudly (the caller logs the clamp), and the failure mode of a
+ * forgotten setting is a slower engine rather than quietly interleaved runs.
+ *
+ * A queued run stays `queued` until a worker picks it up, so the wait is visible
+ * on /health and through the progress card rather than showing as a run that
+ * claims to be executing while it waits.
+ */
+export function effectiveWorkerCount(configured: number, nativeGeneration: boolean): number {
+  if (!nativeGeneration) return configured;
+  return 1;
+}
+
 export function assertNativeGenerationInvariants(env: NodeJS.ProcessEnv = process.env): void {
   if (!nativeGenerationEnabled(env)) return;
 

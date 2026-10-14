@@ -67,9 +67,16 @@ describe('promptfooConfigDir', () => {
 });
 
 describe('cleanupPromptfooRunArtifacts', () => {
-  it('resolves to the db, its WAL siblings, the signal file and the cache', () => {
+  it('resolves to the db, its WAL siblings, the signal file, the config file and the cache', () => {
     const names = promptfooRunArtifactPaths(env).map((p) => path.basename(p));
-    expect(names).toEqual(['promptfoo.db', 'promptfoo.db-wal', 'promptfoo.db-shm', 'evalLastWritten', 'cache']);
+    expect(names).toEqual([
+      'promptfoo.db',
+      'promptfoo.db-wal',
+      'promptfoo.db-shm',
+      'evalLastWritten',
+      'promptfoo.yaml',
+      'cache',
+    ]);
   });
 
   it('removes every artifact a run produced', async () => {
@@ -129,18 +136,35 @@ describe('cleanupPromptfooRunArtifacts', () => {
   });
 
   // Never deletes a developer's own promptfoo state.
-  it('leaves auth.json and promptfoo.yaml untouched', async () => {
+  //
+  // P2-3 split this assertion in two, because the two files are not the same
+  // case. `auth.json` is a cloud login and stays — it is not ours. `promptfoo.yaml`
+  // was protected by the same sentence, and measuring the file showed the
+  // sentence's premise does not hold in this container: its entire content is
+  // promptfoo's own anonymous installation id (`crypto.randomUUID()`), nobody
+  // hand-writes promptfoo config here, and promptfoo recreates it on demand.
+  // Leaving it meant every run left a permanent artifact behind while this
+  // module's contract promised otherwise.
+  it('leaves a developer’s auth.json untouched', async () => {
     const auth = path.join(configDir, 'auth.json');
-    const yaml = path.join(configDir, 'promptfoo.yaml');
     await writeFile(auth, '{"token":"user-owned"}', 'utf8');
-    await writeFile(yaml, 'description: user-authored', 'utf8');
     await seedArtifacts();
 
     await cleanupPromptfooRunArtifacts(env);
 
     expect(existsSync(auth)).toBe(true);
-    expect(existsSync(yaml)).toBe(true);
     expect(await readFile(auth, 'utf8')).toBe('{"token":"user-owned"}');
+  });
+
+  it('removes promptfoo.yaml, which is promptfoo’s own anonymous install id', async () => {
+    const yaml = path.join(configDir, 'promptfoo.yaml');
+    await writeFile(yaml, 'id: 3f1b6f4e-0000-4000-8000-000000000000\n', 'utf8');
+    await seedArtifacts();
+
+    const removed = await cleanupPromptfooRunArtifacts(env);
+
+    expect(existsSync(yaml)).toBe(false);
+    expect(removed).toContain(yaml);
   });
 });
 
