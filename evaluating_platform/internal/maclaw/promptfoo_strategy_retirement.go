@@ -25,6 +25,26 @@ package maclaw
 // 有几种情形**没有替代**（promptfoo 没有等价策略 / 该能力是配置项而非策略），
 // 硬凑一个近邻就是「静默改变用户要的手法」—— 那正是本平台反复拒绝的事。
 // 无替代时由 `ReplacementLabel` 承担全部解释责任，并由测试钉住它非空且说明了原因。
+//
+// # D 类四项：永久移除，不是待办（2026-10-15 修订）
+//
+// `role-play` / `assumed-knowledge` / `few-shot` / `many-shot` 曾经记着一条待办
+// （原计划 P3-7a）：用 promptfoo 的 `custom:<variant>` + `config.strategyText` 把它们
+// 实现回来。那条待办**已撤销**，这四项的处置是**永久移除**。
+//
+// 撤销的理由是它把问题问反了。这四项不是「promptfoo 有、平台没接」，而是**平台自己
+// 造的**：实测（`testdata/promptfoo_strategy_catalog.json` 与
+// `testdata/promptfoo_plugin_legality.json`，promptfoo 0.123.0）确认这 4 个 id
+// **既不在 35 条原生策略里，也不在 119 个插件里** —— 两个槽位都没有。
+//
+// 用 `custom:` 把它们实现回来，等于承认平台可以继续自造攻击维度，只是换个更绕的
+// 写法。而「两套词汇表并存」正是 P3-1 要消除的负债本身：向导的**默认值**曾经就是
+// 其中一个（`direct`），默认提交得到一个 `strategy_stats=none` 的运行且无人告知。
+//
+// 所以策略轴的口径定为：**平台的策略词汇表就是 promptfoo 的策略词汇表**。需要新的
+// 攻击手法时，先看 promptfoo 有没有；没有就不提供，而不是先造一个 id、再想办法让引擎
+// 认识它。`custom` 这个扩展点仍然保留给**专家发布的策略包** —— 那是用户内容，不是
+// 平台自造维度，两者不能混为一谈。
 
 import (
 	"fmt"
@@ -70,6 +90,10 @@ type retiredStrategyEntry struct {
 
 // retiredStrategyCatalog records P3-1's nine removals.
 //
+// Nine entries, and they stay nine: the four D-class ids (role-play /
+// assumed-knowledge / few-shot / many-shot) are permanently removed rather than
+// waiting to be re-implemented as custom strategies — see the file header.
+//
 // Asserted against the *absence* of these ids from `promptfooStrategyCatalog` (a
 // withdrawal and a lingering catalog entry are mutually exclusive), so an id cannot
 // be dropped from the selector without a record, nor recorded without being dropped.
@@ -84,12 +108,13 @@ var retiredStrategyCatalog = []retiredStrategyEntry{
 		ReplacementLabel: "「直接攻击」不需要选择：不选任何攻击策略时，评测就是直接向目标提问。",
 	},
 	{
-		ID:               "role-play",
-		Name:             "角色扮演",
-		Reason:           "平台自造的提示词维度；promptfoo 的 strategies 是它自己的可执行变换词汇表，没有角色扮演包装。",
+		ID:   "role-play",
+		Name: "角色扮演",
+		Reason: "平台自造的提示词维度；promptfoo 的策略词汇表里没有角色扮演包装" +
+			"（实测 35 条原生策略、119 个插件都没有）。平台不再自造攻击维度，因此永久移除。",
 		ReplacementKind:  strategyReplacementByIDs,
 		ReplacementIDs:   []string{"jailbreak-templates"},
-		ReplacementLabel: "「角色扮演」已下线；最接近的是「越狱模板库」（静态框架式越狱话术，其中含角色包装类模板），但它不是等价项。需要一个等价的自定义包装，应作为 promptfoo 自定义策略实现（阶段三待办 P3-7a）。",
+		ReplacementLabel: "「角色扮演」已下线且不会再提供（promptfoo 没有该策略，平台不再自造维度）；最接近的是「越狱模板库」（静态框架式越狱话术，其中含角色包装类模板），但它不是等价项。",
 	},
 	{
 		ID:               "encoding",
@@ -110,27 +135,27 @@ var retiredStrategyCatalog = []retiredStrategyEntry{
 	{
 		ID:     "assumed-knowledge",
 		Name:   "假设已知",
-		Reason: "平台自造的提示词维度；promptfoo 没有「以已知为前提诱导补全」这类策略。",
+		Reason: "平台自造的提示词维度；promptfoo 没有「以已知为前提诱导补全」这类策略。平台不再自造攻击维度，因此永久移除。",
 		// 有近邻（伪造权威标记）但语义不同 —— 映射过去就是静默改变手法，故不映射。
 		ReplacementKind:  strategyReplacementNoEquivalent,
 		ReplacementIDs:   nil,
-		ReplacementLabel: "「假设已知」已下线；promptfoo 没有等价策略，平台不做近似映射（近似会静默改变你要的攻击手法）。若需要它，应作为 promptfoo 自定义策略实现（阶段三待办 P3-7a）。",
+		ReplacementLabel: "「假设已知」已下线且不会再提供；promptfoo 没有等价策略，平台不做近似映射（近似会静默改变你要的攻击手法）。",
 	},
 	{
 		ID:               "few-shot",
 		Name:             "少样本诱导",
-		Reason:           "平台自造的提示词维度；promptfoo 没有示例注入类策略。",
+		Reason:           "平台自造的提示词维度；promptfoo 没有示例注入类策略。平台不再自造攻击维度，因此永久移除。",
 		ReplacementKind:  strategyReplacementNoEquivalent,
 		ReplacementIDs:   nil,
-		ReplacementLabel: "「少样本诱导」已下线；promptfoo 没有示例注入类策略，平台不做近似映射。若需要它，应作为 promptfoo 自定义策略实现（阶段三待办 P3-7a）。",
+		ReplacementLabel: "「少样本诱导」已下线且不会再提供；promptfoo 没有示例注入类策略，平台不做近似映射。",
 	},
 	{
 		ID:               "many-shot",
 		Name:             "多样本诱导",
-		Reason:           "平台自造的提示词维度；promptfoo 没有示例注入类策略（长上下文诱导同样无对应项）。",
+		Reason:           "平台自造的提示词维度；promptfoo 没有示例注入类策略（长上下文诱导同样无对应项）。平台不再自造攻击维度，因此永久移除。",
 		ReplacementKind:  strategyReplacementNoEquivalent,
 		ReplacementIDs:   nil,
-		ReplacementLabel: "「多样本诱导」已下线；promptfoo 没有示例注入类策略，平台不做近似映射。若需要它，应作为 promptfoo 自定义策略实现（阶段三待办 P3-7a）。",
+		ReplacementLabel: "「多样本诱导」已下线且不会再提供；promptfoo 没有示例注入类策略，平台不做近似映射。",
 	},
 	{
 		ID:     "translate",

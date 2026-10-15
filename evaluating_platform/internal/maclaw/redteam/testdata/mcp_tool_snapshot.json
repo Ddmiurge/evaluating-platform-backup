@@ -444,7 +444,7 @@
             "type": "integer"
           },
           "plugins": {
-            "description": "Plugin ids from search_redteam_plugin_catalog, for example harmful, pii, prompt-injection, jailbreak.",
+            "description": "Plugin ids from search_redteam_plugin_catalog, for example harmful, pii, bias, contracts.",
             "items": {
               "type": "string"
             },
@@ -463,7 +463,7 @@
             "type": "string"
           },
           "strategies": {
-            "description": "Optional strategy ids such as direct, role-play, encoding, multi-turn.",
+            "description": "Optional strategy ids such as base64, crescendo, jailbreak-templates, iterative:tree. Omit to run plugins without a strategy wrapper.",
             "items": {
               "type": "string"
             },
@@ -600,7 +600,7 @@
       }
     },
     "search_redteam_plugin_catalog": {
-      "description": "Search the built-in promptfoo-engine plugin and strategy catalog (harmful, pii, prompt-injection, jailbreak, bias, security-exploit and strategy wrappers). Returns safe cards with plugin ids for run_promptfoo_redteam_evaluation.",
+      "description": "Search the built-in promptfoo-engine plugin and strategy catalog (harmful, pii, bias, contracts, plus further risk categories and strategy wrappers). Returns safe cards with plugin ids for run_promptfoo_redteam_evaluation.",
       "input_schema": {
         "properties": {
           "limit": {

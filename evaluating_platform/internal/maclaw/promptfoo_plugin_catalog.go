@@ -579,9 +579,10 @@ var promptfooStrategyCatalog = []promptfooStrategyCatalogEntry{
 	//                 promptfoo 抛 "No target IDs found in config"（评测进行中抛）
 	//   mathPrompt —— 远程生成屏蔽后回落到直连 OpenAI 的分支，报 "API key is not set"
 	//
-	// 保留会让用户反复踩同一个坑，因此从目录移除；引擎侧
-	// `nativeStrategyMap.ts` 把它们降级为 plan_a_only（附原因），选中时仍有
-	// 交代，而不是变成一个静默失效的开关。
+	// 保留会让用户反复踩同一个坑，因此从目录移除。它们不在 retiredStrategyCatalog
+	// 里（那是平台**自己造的**维度的退役表），因此提交闸放行，由引擎侧兜底：P3-3 之后
+	// `nativeStrategyMap.ts` 对认不出的 id 抛 `native_generation_strategy_unknown`，
+	// 是一次显式失败，而不是过去那种「静默丢弃、报告里 strategy_stats=none」。
 	s("mischievousUser", "顽劣用户", "持续不听劝告的顽劣用户人设施压。"),
 	s("authoritativeMarkupInjection", "权威标记注入", "伪造系统级标记/指令格式注入。"),
 	s("singleTurnComposite", "单轮组合攻击", "在单轮内组合多种越狱手法。"),

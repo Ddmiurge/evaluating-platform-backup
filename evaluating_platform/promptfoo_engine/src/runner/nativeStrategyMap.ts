@@ -11,12 +11,11 @@
  *     throw new Error(`Invalid strategy(s): ${invalid}. Valid strategies are: …`)
  *
  * So an unmapped platform id is not a degraded run, it is a hard mid-run crash.
- * This module is the single place that decides, per platform id, one of:
- *
- *   - `native`     → forward promptfoo's own id; promptfoo generates with it
- *   - `plan_a_only`→ the platform invented this dimension; there is no native
- *                    counterpart, so it stays on the Plan A prompt-synthesis
- *                    path and is NOT put into promptfoo's `strategies`
+ * This module is the single place that decides, per platform id, whether
+ * promptfoo's own id can be forwarded — and it says so by *omission*: an id in
+ * the table maps, an id outside it is refused (P3-3; the `plan_a_only`
+ * disposition that used to absorb the platform's invented dimensions is gone,
+ * see below).
  *
  * # Why this is not a second copy of U6's table
  *
@@ -111,8 +110,9 @@ const NATIVE: Readonly<Record<string, string>> = {
   // its own generated table classifies as runnable — so a strategy that cannot
   // generate here never reaches this map from the API. The four that cannot
   // (best-of-n, citation, jailbreak:composite, jailbreak:likert) stay absent
-  // for U6's reason; simba/basic/media stay absent for the reasons recorded in
-  // PLAN_A_ONLY and in the platform's catalogue table.
+  // for U6's reason; simba/retry/mathPrompt/media stay absent for the reasons
+  // recorded in the platform's catalogue table (they are not in U6's remote
+  // gate, which is why they were offered for as long as they were).
   morse: 'morse',
   piglatin: 'piglatin',
   camelcase: 'camelcase',

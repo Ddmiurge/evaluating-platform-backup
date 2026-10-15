@@ -474,7 +474,14 @@ Phase 3 任务 1 只做了「动态发现」（把 promptfoo 的 35 个原生策
 | A | `direct` | 不是策略：Plan C 下不选择任何策略就是直接攻击 | 移出 + 提交闸拒绝 + 向导默认值改为空 |
 | B | `encoding`、`otherEncodings`、`multi-turn` | **聚合项**，能力早已逐个提供（base64/hex/…；crescendo/goat/hydra/…） | 移出 + 替代引导指向具体原生策略 |
 | C | `translate` | 换了机制：promptfoo 用 `language` **配置**而非策略 | 移出 + 记待办（尚未接入该配置项） |
-| D | `role-play`、`assumed-knowledge`、`few-shot`、`many-shot` | promptfoo 无对应策略 | 移出；等价实现应作为 promptfoo **自定义策略**（`custom:<variant>` + `strategyText`）重做（待办） |
+| D | `role-play`、`assumed-knowledge`、`few-shot`、`many-shot` | promptfoo **两个槽位都没有**（实测 35 条原生策略、119 个插件） | 移出 + **永久移除**：它们不是「promptfoo 有、平台没接」，而是平台自造维度；用 `custom:<variant>` 重做等于平台继续自造 id，原记的待办已撤销 |
+
+> **D 类为什么不是待办**：promptfoo 的 `custom` / `custom:<variant>` + `config.strategyText`
+> 确实是个可用的扩展点，这 4 项技术上能在 Plan C 上跑起来。判据不是「能不能实现」，而是
+> **该不该有**：它们不是 promptfoo 原生策略，把它们实现回来就是让平台继续自造攻击维度，
+> 而「两套词汇表并存」正是 P3-1 要消除的负债。策略轴口径因此定为：**平台的策略词汇表就是
+> promptfoo 的策略词汇表**；`custom` 扩展点只留给**专家发布的策略包**（用户内容，不是平台
+> 自造维度）。`retiredStrategyCatalog` 长期保持 9 条。
 
 机制复用插件轴那套：`retiredStrategyCatalog`（理由 + 处置种类 + 替代 id/替代说明）、
 提交边界 `ValidateEngineRunStrategyRetirement` → 409 `strategy_id_invalid`、前端

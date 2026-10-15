@@ -588,6 +588,13 @@ export function retiredEnginePluginGuidance(id: string): RetiredEnginePlugin | u
  *   - `none_needed`   能力没丢，它本来就是「不选择」（只有 direct）
  *   - `no_equivalent` promptfoo 没有对应机制（或它走配置项而非策略）
  * 用数据区分，而不是去 grep 文案 —— 后端测试对同一组三态做断言。
+ *
+ * 这 9 条**长期保持 9 条**：其中 role-play / assumed-knowledge / few-shot / many-shot
+ * 曾记着一条待办（用 promptfoo 的 custom:<variant> + strategyText 实现回来），该待办
+ * **已撤销**。这四项不是「promptfoo 有、平台没接」，而是平台自己造的 —— 实测 35 条原生
+ * 策略与 119 个插件两个槽位都没有它们。用 custom 实现回来等于平台继续自造攻击维度，
+ * 而两套词汇表并存正是 P3-1 要消除的负债（表单默认值曾是其中之一）。所以口径是：
+ * **平台的策略词汇表就是 promptfoo 的策略词汇表**；custom 扩展点只留给专家发布的策略包。
  */
 export interface RetiredEngineStrategy {
   id: string
@@ -610,11 +617,12 @@ export const RETIRED_ENGINE_STRATEGIES: ReadonlyArray<RetiredEngineStrategy> = [
   {
     id: 'role-play',
     name: '角色扮演',
-    reason: '平台自造的提示词维度；promptfoo 的可执行策略词汇表里没有角色扮演包装。',
+    reason:
+      '平台自造的提示词维度；promptfoo 的策略词汇表里没有角色扮演包装（实测 35 条原生策略、119 个插件都没有）。平台不再自造攻击维度，因此永久移除。',
     replacement_kind: 'ids',
     replacement_ids: ['jailbreak-templates'],
     replacement_label:
-      '「角色扮演」已下线；最接近的是「越狱模板库」（静态框架式越狱话术，其中含角色包装类模板），但它不是等价项。需要一个等价的自定义包装，应作为 promptfoo 自定义策略实现。',
+      '「角色扮演」已下线且不会再提供（promptfoo 没有该策略，平台不再自造维度）；最接近的是「越狱模板库」（静态框架式越狱话术，其中含角色包装类模板），但它不是等价项。',
   },
   {
     id: 'encoding',
@@ -637,27 +645,31 @@ export const RETIRED_ENGINE_STRATEGIES: ReadonlyArray<RetiredEngineStrategy> = [
   {
     id: 'assumed-knowledge',
     name: '假设已知',
-    reason: '平台自造的提示词维度；promptfoo 没有「以已知为前提诱导补全」这类策略。',
+    reason:
+      '平台自造的提示词维度；promptfoo 没有「以已知为前提诱导补全」这类策略。平台不再自造攻击维度，因此永久移除。',
     replacement_kind: 'no_equivalent',
     replacement_ids: [],
     replacement_label:
-      '「假设已知」已下线；promptfoo 没有等价策略，平台不做近似映射（近似会静默改变你要的攻击手法）。',
+      '「假设已知」已下线且不会再提供；promptfoo 没有等价策略，平台不做近似映射（近似会静默改变你要的攻击手法）。',
   },
   {
     id: 'few-shot',
     name: '少样本诱导',
-    reason: '平台自造的提示词维度；promptfoo 没有示例注入类策略。',
+    reason: '平台自造的提示词维度；promptfoo 没有示例注入类策略。平台不再自造攻击维度，因此永久移除。',
     replacement_kind: 'no_equivalent',
     replacement_ids: [],
-    replacement_label: '「少样本诱导」已下线；promptfoo 没有示例注入类策略，平台不做近似映射。',
+    replacement_label:
+      '「少样本诱导」已下线且不会再提供；promptfoo 没有示例注入类策略，平台不做近似映射。',
   },
   {
     id: 'many-shot',
     name: '多样本诱导',
-    reason: '平台自造的提示词维度；promptfoo 没有示例注入类策略（长上下文诱导同样无对应项）。',
+    reason:
+      '平台自造的提示词维度；promptfoo 没有示例注入类策略（长上下文诱导同样无对应项）。平台不再自造攻击维度，因此永久移除。',
     replacement_kind: 'no_equivalent',
     replacement_ids: [],
-    replacement_label: '「多样本诱导」已下线；promptfoo 没有示例注入类策略，平台不做近似映射。',
+    replacement_label:
+      '「多样本诱导」已下线且不会再提供；promptfoo 没有示例注入类策略，平台不做近似映射。',
   },
   {
     id: 'translate',

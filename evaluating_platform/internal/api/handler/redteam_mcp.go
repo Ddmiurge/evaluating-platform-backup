@@ -443,6 +443,37 @@ func (h *RedteamMCPHandler) writeToolText(c *gin.Context, id any, out any, isErr
 	})
 }
 
+// redteamToolExamplePluginIDs / redteamToolExampleStrategyIDs are the ids quoted
+// as examples inside the MCP tool descriptions below.
+//
+// They are not decoration. MaClaw reads these strings and passes what they name
+// into `run_promptfoo_redteam_evaluation`, so an example that cannot run is the
+// platform instructing the agent to break its own run. That is not hypothetical:
+// this list used to read `harmful, pii, prompt-injection, jailbreak` (plugins) and
+// `direct, role-play, encoding, multi-turn` (strategies). Five of those eight were
+// already dead — `prompt-injection` / `jailbreak` are refused by promptfoo's own
+// `RedteamConfigSchema.safeParse`, so selecting one fails the WHOLE run, and the
+// other four are platform-invented strategy ids withdrawn in P3-1. The
+// descriptions had been left behind by the catalog edits that removed them.
+//
+// Hence the same bar `remoteGenerationHintRecommends` uses — an example must be
+// something a user can pick today and get a complete evaluation — and the same
+// enforcement: TestRedteamToolExampleIDsAreUsable pins every id here against the
+// live catalogs, so a withdrawal cannot leave a stale example behind.
+//
+// `policy` is excluded for the reason it is excluded from the hint list: legal and
+// local-only, but it needs `config.policy` text the platform does not collect, so
+// selecting it generates 0 cases.
+var (
+	redteamToolExamplePluginIDs   = []string{"harmful", "pii", "bias", "contracts"}
+	redteamToolExampleStrategyIDs = []string{"base64", "crescendo", "jailbreak-templates", "iterative:tree"}
+)
+
+// toolExampleIDs renders an example list for a tool description.
+func toolExampleIDs(ids []string) string {
+	return strings.Join(ids, ", ")
+}
+
 func redteamMCPToolDefinitions() []gin.H {
 	return []gin.H{
 		toolDef("search_platform_redteam_capabilities", "Search safe platform security-evaluation data resources and expert MCP capability summaries. Use MaClaw native manage_skill for Skills.", []string{"query"}, gin.H{
@@ -459,7 +490,7 @@ func redteamMCPToolDefinitions() []gin.H {
 			"languages":    stringArraySchema("Optional language filters such as zh or classical_chinese."),
 			"limit":        integerSchema("Maximum results. Default 5, maximum 8."),
 		}),
-		toolDef("search_redteam_plugin_catalog", "Search the built-in promptfoo-engine plugin and strategy catalog (harmful, pii, prompt-injection, jailbreak, bias, security-exploit and strategy wrappers). Returns safe cards with plugin ids for run_promptfoo_redteam_evaluation.", []string{"query"}, gin.H{
+		toolDef("search_redteam_plugin_catalog", "Search the built-in promptfoo-engine plugin and strategy catalog ("+toolExampleIDs(redteamToolExamplePluginIDs)+", plus further risk categories and strategy wrappers). Returns safe cards with plugin ids for run_promptfoo_redteam_evaluation.", []string{"query"}, gin.H{
 			"query": stringSchema("Natural-language search query such as harmful content, privacy leak, prompt injection, jailbreak, or promptfoo."),
 			"limit": integerSchema("Maximum results. Default 5, maximum 8."),
 		}),
@@ -468,8 +499,8 @@ func redteamMCPToolDefinitions() []gin.H {
 			"session_id": stringSchema("Runtime session id that received the execution confirmation grant."),
 			"purpose":    stringSchema("Chinese evaluation purpose describing the system under test."),
 			"num_tests":  gin.H{"type": "integer", "description": "Number of attack cases to generate. Default 5, maximum 50.", "minimum": 1, "maximum": 50},
-			"plugins":    stringArraySchema("Plugin ids from search_redteam_plugin_catalog, for example harmful, pii, prompt-injection, jailbreak."),
-			"strategies": stringArraySchema("Optional strategy ids such as direct, role-play, encoding, multi-turn."),
+			"plugins":    stringArraySchema("Plugin ids from search_redteam_plugin_catalog, for example " + toolExampleIDs(redteamToolExamplePluginIDs) + "."),
+			"strategies": stringArraySchema("Optional strategy ids such as " + toolExampleIDs(redteamToolExampleStrategyIDs) + ". Omit to run plugins without a strategy wrapper."),
 			"judge_mode": stringSchema("Optional judge mode: auto, promptfoo_native, or platform_rejudge."),
 			"metadata":   metadataSchema(),
 		}),

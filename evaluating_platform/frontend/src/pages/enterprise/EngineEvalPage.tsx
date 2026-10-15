@@ -370,7 +370,10 @@ export function EngineEvalPage() {
         purpose: values.purpose,
         num_tests: values.num_tests,
         plugins: values.plugins.map(id => ({ id })),
-        strategies: (values.strategies ?? ['direct']).map(id => ({ id })),
+        // P3-1：兜底值必须是**空**。这里原来是 `?? ['direct']` —— 一个已被下线的
+        // 平台自造 id，也就是说「字段意外缺失」时的兜底路径唯一可能的结果是被提交闸
+        // 409 拒绝。空数组才是 Plan C 下的合法默认（不选策略即直接攻击）。
+        strategies: (values.strategies ?? []).map(id => ({ id })),
         judge_mode: 'auto',
       })
       setActiveRun(run)

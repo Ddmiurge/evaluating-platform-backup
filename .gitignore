@@ -36,6 +36,10 @@ _tmp*.json
 **/artifacts/
 **/.tmp/
 
+# TypeScript 增量编译信息（构建产物；tsc -b / -p 会写，不应入库）
+*.tsbuildinfo
+**/*.tsbuildinfo
+
 postgres_data/
 redis_data/
 minio_data/

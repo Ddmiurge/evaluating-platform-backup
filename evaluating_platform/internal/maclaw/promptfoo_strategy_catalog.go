@@ -59,17 +59,31 @@ package maclaw
 // `nativeStrategyMap.ts` was mapping `simba → simba`, i.e. shipping a strategy
 // that provably generates nothing while claiming it ran.
 //
-// # What is deliberately preserved
+// # The platform's invented dimensions are gone, and stay gone
 //
-// The platform's own invented dimensions (`direct`, `role-play`, `encoding`,
-// `multi-turn`, `assumed-knowledge`, `few-shot`, `many-shot`, `translate`,
-// `otherEncodings`) are NOT promptfoo ids and are NOT in the 35. They describe
-// *how the platform wraps an attack prompt* and are produced by the engine's
-// own prompt synthesis, so they stay in the catalogue and keep their entries in
-// `promptfooStrategyCatalog`. Deleting them would drop real attack-technique
-// coverage that promptfoo has no counterpart for — the brief's instruction to
-// keep this layer, and the reason `nativeStrategyMap.ts` classifies them
-// `plan_a_only` rather than dropping them.
+// This file used to argue the opposite: that the platform's own dimensions
+// (`direct`, `role-play`, `encoding`, `multi-turn`, `assumed-knowledge`,
+// `few-shot`, `many-shot`, `translate`, `otherEncodings`) described *how the
+// platform wraps an attack prompt*, that they were produced by the engine's own
+// prompt synthesis, and that deleting them would drop real coverage. That
+// argument was true under Plan A, where a strategy id was **text** handed to the
+// platform's own generation model (`generateTests.ts`), so any string "worked".
+//
+// Under Plan C the vocabulary belongs to promptfoo, and those nine ids are in
+// neither of its slots — verified against the generated tables, not by reading
+// the docs: none of them appears among the 35 native strategies
+// (`testdata/promptfoo_strategy_catalog.json`) or the 119 plugins
+// (`testdata/promptfoo_plugin_legality.json`). Forwarding one threw; dropping
+// one did nothing, silently.
+//
+// P3-1 therefore withdrew all nine, and P3-3 removed the machinery that used to
+// classify them. They are recorded in `retiredStrategyCatalog`
+// (promptfoo_strategy_retirement.go) with a reason and a replacement path, and a
+// request naming one is refused at the submit boundary. Four of them
+// (`role-play` / `assumed-knowledge` / `few-shot` / `many-shot`) were once
+// scheduled to come back as promptfoo **custom** strategies; that todo was
+// cancelled — see that file's header for why re-adding them would reinstate the
+// two-vocabulary debt P3-1 exists to remove.
 //
 // # Update procedure (after any promptfoo upgrade)
 //
@@ -261,9 +275,8 @@ func UnavailableNativeStrategyIDs() map[string]string {
 // native id it corresponds to, for the ids promptfoo owns.
 //
 // Platform-invented dimensions are absent by construction: there is no native
-// counterpart to map them to. That is the same partition
-// `nativeStrategyMap.ts` draws on the engine side (`native` vs `plan_a_only`),
-// and the two are asserted to agree by
+// counterpart to map them to, and after P3-1 the catalogue contains none anyway.
+// The map is asserted to agree with the engine's `nativeStrategyMap.ts` by
 // TestPromptfooStrategyNativeMappingMatchesEngineTable.
 func PlatformToNativeStrategyID(platformID string) string {
 	return strategyCatalogData.PlatformToNativeMap[strings.TrimSpace(platformID)]
@@ -279,9 +292,12 @@ func PlatformToNativeStrategyID(platformID string) string {
 // the "is there a difference?" question. So this is the accessor to use, and
 // `PlatformToNativeStrategyID` stays the difference query.
 //
-// Ids with no native counterpart (the platform's invented dimensions) also
-// return their own value: they are ids the engine recognises on the Plan A path,
-// and handing back "" would make a caller treat a legitimate id as unknown.
+// An id in no table at all also returns its own value. That is a deliberate
+// fallback, not a claim: it lets a caller distinguish "no id at all" (empty
+// string) from "an id this build cannot place", and the engine refuses the
+// latter explicitly (`native_generation_strategy_unknown`, P3-3). It is not a
+// licence to accept invented ids — the catalogue and the submit gate are what
+// keep those out (P3-1).
 func StrategyNativeID(platformID string) string {
 	id := strings.TrimSpace(platformID)
 	if id == "" {
