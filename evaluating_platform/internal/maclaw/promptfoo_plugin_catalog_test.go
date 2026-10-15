@@ -77,9 +77,8 @@ func TestPromptfooStrategyCatalogL1Expansion(t *testing.T) {
 	// reasons). Their absence is asserted below so a future edit cannot quietly
 	// re-add a strategy that cannot run.
 	for _, want := range []string{
-		"direct", "role-play", "encoding", "multi-turn",
-		"crescendo", "assumed-knowledge", "few-shot", "homoglyph", "many-shot", "translate",
-		"base64", "rot13", "hex", "leetspeak", "otherEncodings",
+		"crescendo", "homoglyph",
+		"base64", "rot13", "hex", "leetspeak",
 		"goat", "hydra", "goblin", "iterative", "iterative:tree", "iterative:meta",
 		"bestOfN", "likert", "citation",
 		"mischievousUser", "authoritativeMarkupInjection", "singleTurnComposite",
@@ -90,10 +89,22 @@ func TestPromptfooStrategyCatalogL1Expansion(t *testing.T) {
 			t.Fatalf("missing strategy id %q in %v", want, ids)
 		}
 	}
-	for _, withdrawn := range []string{"simba", "retry", "mathPrompt"} {
+	// Withdrawn ids must not come back. Two groups, one reason each:
+	//
+	//   - upstream ids that provably cannot run here (measured in Phase 3 任务 1);
+	//   - the platform's own vocabulary, which has no implementation on the Plan C
+	//     path at all (P3-1) — it was valid under Plan A, where the strategy id was
+	//     text handed to our own generation LLM.
+	for _, withdrawn := range []string{
+		"simba", "retry", "mathPrompt",
+		"direct", "role-play", "encoding", "multi-turn",
+		"assumed-knowledge", "few-shot", "many-shot", "translate", "otherEncodings",
+	} {
 		if byID[withdrawn] {
-			t.Errorf("strategy %q is offered again, but it provably cannot run here "+
-				"(simba: deprecated no-op; retry: needs targetIds; mathPrompt: needs an OpenAI key)", withdrawn)
+			t.Errorf("strategy %q is offered again; it cannot run on the Plan C path "+
+				"(upstream no-op / needs config / platform-invented with no promptfoo implementation). "+
+				"If it is intentional, remove it from retiredStrategyCatalog and explain where the capability went.",
+				withdrawn)
 		}
 	}
 }

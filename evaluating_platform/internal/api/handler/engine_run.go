@@ -285,6 +285,17 @@ func writeEnginePreflightRejection(c *gin.Context, err error) bool {
 		return true
 	}
 
+	var retiredStrategy *maclaw.EngineStrategyRetiredGuardError
+	if errors.As(err, &retiredStrategy) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      retiredStrategy.Error(),
+			"code":       retiredStrategy.Code,
+			"strategies": retiredStrategy.Strategies,
+			"guidance":   retiredStrategy.Guidance,
+		})
+		return true
+	}
+
 	var tooSmall *maclaw.EngineNumTestsTooSmallError
 	if errors.As(err, &tooSmall) {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -375,6 +386,13 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	// still can — so the verdict belongs at the request boundary, not in a
 	// promptfoo exception the user never sees.
 	if err := maclaw.ValidateEngineRunPluginLegality(plugins); err != nil {
+		writeEnginePreflightRejection(c, err)
+		return
+	}
+
+	// P3-1: 已下线的平台自造策略（direct / role-play / encoding / …）在 Plan C 下
+	// 没有实现，转发抛错、丢弃静默。在提交边界拒绝并给出替代路径 —— 与插件轴同形。
+	if err := maclaw.ValidateEngineRunStrategyRetirement(strategies); err != nil {
 		writeEnginePreflightRejection(c, err)
 		return
 	}

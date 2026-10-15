@@ -160,15 +160,16 @@ func TestPrepareEngineRunStrategyPackageRejectedBeforeCredentials(t *testing.T) 
 func TestPrepareEngineRunWithoutCustomStrategiesIsUnchanged(t *testing.T) {
 	bridge, _, _ := newPromptfooTestBridge(t)
 	prepared, err := bridge.PreparePromptfooEngineRun(context.Background(), uuid.New(), "inst-1", PromptfooEngineRunInput{
-		Purpose:    "Phase 3 rollback",
-		Strategies: []string{"base64", "direct"},
+		Purpose: "Phase 3 rollback",
+		// P3-1: `direct` 已下线，换成另一个原生策略以保持「两个内置策略透传」的断言形状。
+		Strategies: []string{"base64", "rot13"},
 		NumTests:   30,
 	})
 	if err != nil {
 		t.Fatalf("built-in strategies were rejected: %v", err)
 	}
 	got := prepared.NormalizedIn.Strategies
-	if len(got) != 2 || got[0] != "base64" || got[1] != "direct" {
+	if len(got) != 2 || got[0] != "base64" || got[1] != "rot13" {
 		t.Fatalf("built-in strategy ids = %v, want [base64 direct]", got)
 	}
 }

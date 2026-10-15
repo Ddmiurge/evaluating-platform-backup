@@ -209,6 +209,11 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if numTests > EngineMaxNumTests {
 		return nil, &EngineNumTestsTooLargeError{Requested: numTests, Max: EngineMaxNumTests}
 	}
+	// P3-1: same retired-strategy gate as the wizard path — a chat plan card can
+	// name one of the withdrawn platform dimensions just as easily.
+	if err := ValidateEngineRunStrategyRetirement(strategies); err != nil {
+		return nil, err
+	}
 	// P2-4: same coverage floor as the wizard path, checked once the effective
 	// count is known. A chat plan can name a collection id (`harmful`) together
 	// with a small round count, and that combination has no legal split.

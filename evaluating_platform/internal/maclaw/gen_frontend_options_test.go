@@ -203,7 +203,15 @@ func extractTSFlaggedIDs(t *testing.T, src, constName, flag string) map[string]b
 // nesting today, which is exactly why a first-`]` scan survived this long.
 func tsArrayBlock(t *testing.T, src, constName string) string {
 	t.Helper()
-	marker := strings.Index(src, constName)
+	// Anchor on the DECLARATION, not the bare name: a const may be mentioned in an
+	// earlier comment (or JSDoc) before it is declared, and anchoring on the first
+	// mention then walks forward into whatever array literal comes next — which
+	// silently parses the WRONG array. That is how this parser first reported
+	// "zero entries" for a table that exists.
+	marker := strings.Index(src, "const "+constName)
+	if marker < 0 {
+		marker = strings.Index(src, constName)
+	}
 	if marker < 0 {
 		t.Fatalf("frontend engineEval.ts: const %q not found", constName)
 	}
@@ -367,6 +375,67 @@ func TestFrontendRetiredPluginGuidanceMirrorsBackend(t *testing.T) {
 		sort.Strings(want)
 		if strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Errorf("withdrawn %q: frontend replacements %v, backend %v", entry.ID, got, want)
+		}
+	}
+}
+
+// tsRetiredStrategyPattern captures each RETIRED_ENGINE_STRATEGIES entry's id, its
+// replacement_kind and its replacement_ids.
+var tsRetiredStrategyPattern = regexp.MustCompile(
+	`id:\s*'([^']+)'[\s\S]*?replacement_kind:\s*'([^']+)'[\s\S]*?replacement_ids:\s*\[([^\]]*)\]`,
+)
+
+// TestFrontendRetiredStrategyGuidanceMirrorsBackend is P3-1's mirror guard, the
+// strategy-side twin of TestFrontendRetiredPluginGuidanceMirrorsBackend.
+//
+// Both sides render the same sentence to the same user (the frontend in the wizard's
+// fold-out, the backend in the 409 body), so a divergence means one user is told the
+// capability moved somewhere the other one is not. The *data* comparison is what
+// matters: replacement_kind is what the UI branches on, and an empty
+// replacement_ids list is meaningful (no equivalent) rather than a gap.
+//
+// Counter-proof: change a replacement id or a kind on one side → red.
+func TestFrontendRetiredStrategyGuidanceMirrorsBackend(t *testing.T) {
+	raw, err := os.ReadFile(frontendEngineEvalPath(t))
+	if err != nil {
+		t.Fatalf("read frontend engine catalog: %v", err)
+	}
+	block := tsArrayBlock(t, string(raw), "RETIRED_ENGINE_STRATEGIES")
+
+	type mirror struct {
+		kind string
+		ids  []string
+	}
+	frontend := map[string]mirror{}
+	for _, match := range tsRetiredStrategyPattern.FindAllStringSubmatch(block, -1) {
+		ids := make([]string, 0)
+		for _, quoted := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(match[3], -1) {
+			ids = append(ids, quoted[1])
+		}
+		sort.Strings(ids)
+		frontend[match[1]] = mirror{kind: match[2], ids: ids}
+	}
+	if len(frontend) == 0 {
+		t.Fatal("parsed zero retired strategies from the frontend; the parser anchored wrongly")
+	}
+
+	backend := PromptfooRetiredStrategies()
+	if len(frontend) != len(backend) {
+		t.Fatalf("frontend has %d retired strategies, backend has %d", len(frontend), len(backend))
+	}
+	for _, entry := range backend {
+		got, ok := frontend[entry.ID]
+		if !ok {
+			t.Errorf("withdrawn strategy %q is missing from the frontend guidance", entry.ID)
+			continue
+		}
+		if got.kind != entry.ReplacementKind {
+			t.Errorf("withdrawn %q: frontend kind %q, backend %q", entry.ID, got.kind, entry.ReplacementKind)
+		}
+		want := append([]string(nil), entry.ReplacementIDs...)
+		sort.Strings(want)
+		if strings.Join(got.ids, ",") != strings.Join(want, ",") {
+			t.Errorf("withdrawn %q: frontend replacements %v, backend %v", entry.ID, got.ids, want)
 		}
 	}
 }

@@ -384,6 +384,68 @@ func TestEngineRunHandlerNumTestsCapIsBoundaryChecked(t *testing.T) {
 	}
 }
 
+// TestEngineRunHandlerRejectsRetiredStrategy is P3-1's boundary assertion: a
+// request naming one of the platform's withdrawn strategy dimensions is refused at
+// submit with 409, the offending ids and the replacement path — instead of being
+// accepted and then dropped silently by the engine (which is what produced a
+// `strategy_stats=none` run nobody was told about).
+//
+// Counter-proof: delete the ValidateEngineRunStrategyRetirement call → the request
+// reaches the fake engine and a record is created.
+func TestEngineRunHandlerRejectsRetiredStrategy(t *testing.T) {
+	retired := maclaw.RetiredStrategyIDs()
+	if len(retired) == 0 {
+		t.Fatal("no withdrawn strategy ids to test against")
+	}
+
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m",
+		CredentialSecret: "sk-secret", Enabled: true,
+	}}
+	h := newEngineRunHandler(newEnabledFakeEngine(), maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	r := newEngineRunRouter(h, "enterprise")
+
+	for _, id := range retired {
+		t.Run(id, func(t *testing.T) {
+			body := `{"purpose":"p","plugins":[{"id":"contracts"}],"strategies":[{"id":"` + id + `"}],"num_tests":5}`
+			w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+			}
+			response := w.Body.String()
+			if !strings.Contains(response, maclaw.EngineErrStrategyIDInvalid) {
+				t.Errorf("refusal carries no %s code: %s", maclaw.EngineErrStrategyIDInvalid, response)
+			}
+			if !strings.Contains(response, id) {
+				t.Errorf("refusal does not name the offending id %q: %s", id, response)
+			}
+			// The replacement path is the whole reason this is a refusal rather than a
+			// silent drop — without it the user just sees an option disappear.
+			if !strings.Contains(response, "guidance") {
+				t.Errorf("refusal carries no replacement guidance: %s", response)
+			}
+			if len(store.records) != 0 {
+				t.Fatalf("run record created for a withdrawn strategy: %+v", store.records)
+			}
+		})
+	}
+
+	// A promptfoo-native strategy must pass: the gate is about the platform's own
+	// vocabulary, not a blanket ban on strategies.
+	okBody := `{"purpose":"p","plugins":[{"id":"contracts"}],"strategies":[{"id":"base64"}],"num_tests":5}`
+	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", okBody); strings.Contains(w.Body.String(), maclaw.EngineErrStrategyIDInvalid) {
+		t.Fatalf("native strategy refused by the retirement gate: %s", w.Body.String())
+	}
+
+	// And an EMPTY strategy list is valid: on Plan C "no strategy" is the direct
+	// attack, which is why `direct` did not need to exist as an id at all.
+	emptyBody := `{"purpose":"p","plugins":[{"id":"contracts"}],"strategies":[],"num_tests":5}`
+	if w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", emptyBody); strings.Contains(w.Body.String(), maclaw.EngineErrStrategyIDInvalid) {
+		t.Fatalf("empty strategy list refused: %s", w.Body.String())
+	}
+}
+
 // TestEngineRunHandlerRejectsConfigGatedPlugin is the P2-2 D-3 gate: a plugin
 // that is LEGAL but cannot generate cases yet (`policy`, which needs
 // config.policy text the platform does not collect) must be refused at submit

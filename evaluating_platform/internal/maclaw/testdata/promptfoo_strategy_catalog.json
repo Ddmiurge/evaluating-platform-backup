@@ -23,7 +23,7 @@
     "media": 2,
     "unknown": 1,
     "unsupported": 0,
-    "platform_invented": 27
+    "platform_invented": 18
   },
   "native_strategies": [
     {
@@ -448,19 +448,10 @@
     }
   ],
   "platform_invented_strategy_ids": [
-    "direct",
-    "role-play",
-    "encoding",
-    "multi-turn",
-    "assumed-knowledge",
-    "few-shot",
-    "many-shot",
-    "translate",
     "base64",
     "rot13",
     "hex",
     "leetspeak",
-    "otherEncodings",
     "homoglyph",
     "crescendo",
     "goat",

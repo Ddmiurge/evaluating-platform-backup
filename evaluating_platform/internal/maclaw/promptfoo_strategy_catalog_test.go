@@ -175,37 +175,110 @@ func TestPromptfooStrategyCatalogHonoursTheMeasuredRemoteGate(t *testing.T) {
 	}
 }
 
-// TestPromptfooStrategyCatalogKeepsPlatformInventedDimensions verifies the
-// platform's own wrapping dimensions survived the switch to dynamic discovery.
+// TestPromptfooStrategyCatalogWithdrawsPlatformInventedDimensions pins P3-1.
 //
-// They are not promptfoo ids and never were: `direct`, `role-play`, `encoding`,
-// `multi-turn`, `assumed-knowledge`, `few-shot`, `many-shot`, `translate` and
-// `otherEncodings` describe *how the platform wraps an attack prompt* and are
-// satisfied by the engine's own prompt synthesis. Dropping them because a
-// generator produced a list of promptfoo ids would delete real attack-technique
-// coverage.
-func TestPromptfooStrategyCatalogKeepsPlatformInventedDimensions(t *testing.T) {
+// The previous version of this test asserted the OPPOSITE — that the platform's own
+// dimensions survived the switch to dynamic discovery. That assertion was right for
+// its time and is now the defect: those ids have no implementation on the Plan C
+// path, so keeping them in the selector meant offering nine dimensions that silently
+// did nothing (the wizard's own default was one of them). The test is inverted rather
+// than deleted, because the reason the inversion is SAFE is what has to stay pinned:
+// every withdrawal carries a reason and a replacement path, and every replacement
+// actually runs here.
+//
+// Counter-proof: put `role-play` back in promptfooStrategyCatalog → red.
+// Drop its record from retiredStrategyCatalog → red.
+func TestPromptfooStrategyCatalogWithdrawsPlatformInventedDimensions(t *testing.T) {
 	present := make(map[string]bool, len(promptfooStrategyCatalog))
 	for _, entry := range promptfooStrategyCatalog {
 		present[entry.ID] = true
 	}
-	for _, id := range []string{
+
+	withdrawn := []string{
 		"direct", "role-play", "encoding", "multi-turn",
 		"assumed-knowledge", "few-shot", "many-shot", "translate", "otherEncodings",
-	} {
-		if !present[id] {
-			t.Errorf("platform-invented dimension %q was dropped from the catalogue", id)
+	}
+	for _, id := range withdrawn {
+		if present[id] {
+			t.Errorf("platform-invented dimension %q is still offered; on the Plan C path it has no implementation and is dropped silently", id)
+		}
+		entry, ok := PromptfooRetiredStrategyGuidance(id)
+		if !ok {
+			t.Fatalf("withdrawn dimension %q has no record in retiredStrategyCatalog, so a user who selected it gets no explanation", id)
+		}
+		if strings.TrimSpace(entry.Reason) == "" || strings.TrimSpace(entry.ReplacementLabel) == "" {
+			t.Errorf("withdrawn dimension %q records no reason / no replacement sentence", id)
+		}
+		if strings.TrimSpace(entry.Name) == "" {
+			t.Errorf("withdrawn dimension %q lost the label users saw", id)
 		}
 	}
-	// And they must remain in the generated file's platform_invented list, so a
-	// regeneration cannot quietly drop them from the source of truth.
-	invented := make(map[string]bool)
-	for _, id := range strategyCatalogData.PlatformInventedStrategyIDs {
-		invented[id] = true
+
+	// The retired set must be exactly the withdrawn set. A withdrawal without a
+	// record would mean it vanished silently; a record without a withdrawal would
+	// mean an id is both gone and unexplained.
+	recorded := RetiredStrategyIDs()
+	if len(recorded) != len(withdrawn) {
+		t.Errorf("RetiredStrategyIDs() has %d entries, want %d (%v)", len(recorded), len(withdrawn), recorded)
 	}
-	for _, id := range []string{"direct", "role-play", "otherEncodings"} {
-		if !invented[id] {
-			t.Errorf("platform-invented dimension %q is missing from the generated table", id)
+	recordedSet := toIDSet(recorded)
+	for _, id := range withdrawn {
+		if !recordedSet[id] {
+			t.Errorf("withdrawn dimension %q is not in RetiredStrategyIDs()", id)
+		}
+	}
+
+	// All three dispositions must be represented, so the enum cannot silently collapse
+	// to "everything points at ids" (which is the shape that would hide the
+	// no-equivalent cases behind a plausible-looking near neighbour).
+	kinds := map[string]int{}
+	for _, entry := range PromptfooRetiredStrategies() {
+		kinds[entry.ReplacementKind]++
+	}
+	for _, want := range []string{strategyReplacementByIDs, strategyReplacementNoneNeeded, strategyReplacementNoEquivalent} {
+		if kinds[want] == 0 {
+			t.Errorf("no withdrawn dimension uses replacement_kind %q; the enum is not exercising it", want)
+		}
+	}
+	// `direct` specifically: its replacement is the ABSENCE of a selection, which is
+	// why it must not be lumped in with "no equivalent" — one says the capability
+	// never existed as a strategy, the other says it did and is gone.
+	if entry, ok := PromptfooRetiredStrategyGuidance("direct"); !ok || entry.ReplacementKind != strategyReplacementNoneNeeded {
+		t.Errorf("direct should be kind=%s (不选策略即直接攻击), got %q", strategyReplacementNoneNeeded, entry.ReplacementKind)
+	}
+
+	// Every replacement id must be OFFERED and runnable here. A replacement that
+	// cannot run is the "the platform told me to pick something broken" failure this
+	// mechanism exists to prevent — the same bar the plugin axis uses.
+	offered := toIDSet(PromptfooEngineSupportedStrategyIDs())
+	for _, entry := range PromptfooRetiredStrategies() {
+		for _, id := range entry.ReplacementIDs {
+			if !offered[id] {
+				t.Errorf("withdrawn %q points at strategy %q, which is not offered", entry.ID, id)
+				continue
+			}
+			if StrategyRequiresRemoteGeneration(id) {
+				t.Errorf("withdrawn %q points at strategy %q, which is remote-gated — the guidance sends the user to another refusal", entry.ID, id)
+			}
+			if !StrategyIsSelectable(StrategyNativeID(id)) {
+				t.Errorf("withdrawn %q points at strategy %q, which cannot run in this deployment", entry.ID, id)
+			}
+		}
+		// The three dispositions are expressed as DATA, not as prose — the same
+		// discipline the plugin axis uses for `replacement_slot`. Asserting on wording
+		// would make the test fragile and, worse, would let a label drift while the
+		// data stayed wrong.
+		switch entry.ReplacementKind {
+		case strategyReplacementByIDs:
+			if len(entry.ReplacementIDs) == 0 {
+				t.Errorf("withdrawn %q is kind=%s but names no replacement ids", entry.ID, entry.ReplacementKind)
+			}
+		case strategyReplacementNoneNeeded, strategyReplacementNoEquivalent:
+			if len(entry.ReplacementIDs) != 0 {
+				t.Errorf("withdrawn %q is kind=%s but names ids (%v)", entry.ID, entry.ReplacementKind, entry.ReplacementIDs)
+			}
+		default:
+			t.Errorf("withdrawn %q has unknown replacement_kind %q", entry.ID, entry.ReplacementKind)
 		}
 	}
 }

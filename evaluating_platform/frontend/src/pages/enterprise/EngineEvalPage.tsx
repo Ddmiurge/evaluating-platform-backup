@@ -11,9 +11,11 @@ import {
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS,
-  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, engineEvalService, explainNumTestsTooSmall,
+  REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, RETIRED_ENGINE_STRATEGIES, engineEvalService,
+  explainNumTestsTooSmall, explainStrategyRetiredRejection,
   explainPluginConfigRejection, explainPluginIDRejection, explainRemoteGenerationRejection,
-  isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, retiredEnginePluginGuidance,
+  isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, isStrategyRetired,
+  retiredEnginePluginGuidance, retiredEngineStrategyGuidance,
   toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
 import type { EngineRun, EngineRunResult } from '../../services/engineEval'
@@ -336,6 +338,16 @@ export function EngineEvalPage() {
       message.error(`本次选择包含已下线的插件 id：${retired.join('、')}。${details}`)
       return
     }
+    // P3-1 客户端侧二次拦截：已下线的平台自造策略不在选择器里，只能从预填/旧草稿进来。
+    // 后端与引擎都会拒，这里提前到提交前并顺带说明能力搬到了哪里。
+    const retiredStrategies = (values.strategies ?? []).filter((id) => isStrategyRetired(id))
+    if (retiredStrategies.length > 0) {
+      const details = retiredStrategies
+        .map((id) => retiredEngineStrategyGuidance(id)?.replacement_label ?? id)
+        .join(' ')
+      message.error(`本次选择包含已下线的攻击策略：${retiredStrategies.join('、')}。${details}`)
+      return
+    }
     // P2-4：用例数量少于展开后的子插件数时，引擎必须拒绝（每个子插件至少 1 条），
     // 提前到提交前拦截，省一次往返并给出可执行的两种改法。
     if (expandedPlugins > 0 && values.num_tests < expandedPlugins) {
@@ -370,6 +382,7 @@ export function EngineEvalPage() {
       const rejection = explainRemoteGenerationRejection(data)
         ?? explainPluginIDRejection(data)
         ?? explainPluginConfigRejection(data)
+        ?? explainStrategyRetiredRejection(data)
         ?? explainNumTestsTooSmall(data)
       if (rejection) {
         message.error(rejection.message)
@@ -410,7 +423,10 @@ export function EngineEvalPage() {
               平台将使用默认生成模型合成攻击用例，对当前已连接的被测模型执行安全评测。
             </Paragraph>
             <Form form={form} layout="vertical" onFinish={onSubmit}
-              initialValues={{ num_tests: DEFAULT_NUM_TESTS, plugins: DEFAULT_PLUGINS, strategies: ['direct'] }}>
+              // P3-1：默认**不选策略**。旧的默认值 `direct` 是平台自造维度，在 Plan C 下
+              // 被静默丢弃 —— 也就是「什么都不改直接提交」会得到一个 strategy_stats=none
+              // 的运行且无人告知。Plan C 下不选策略就是直接攻击，这正是想要的行为。
+              initialValues={{ num_tests: DEFAULT_NUM_TESTS, plugins: DEFAULT_PLUGINS, strategies: [] }}>
               <Form.Item name="purpose" label="评测目的" rules={[{ required: true, message: '请描述评测目的' }]}>
                 <Select mode="tags" placeholder="例如：企业客服助手的合规安全评测" maxTagCount={1} />
               </Form.Item>
@@ -469,16 +485,33 @@ export function EngineEvalPage() {
               style={{ marginTop: 8 }}
               items={[{
                 key: 'retired',
-                label: <Text type="secondary">{RETIRED_ENGINE_PLUGINS.length} 个已下线的插件 id 及替代路径</Text>,
+                label: (
+                  <Text type="secondary">
+                    {RETIRED_ENGINE_PLUGINS.length} 个已下线的插件 id、
+                    {RETIRED_ENGINE_STRATEGIES.length} 个已下线的攻击策略及替代路径
+                  </Text>
+                ),
                 children: (
-                  <ul style={{ margin: 0, paddingLeft: 18 }}>
-                    {RETIRED_ENGINE_PLUGINS.map((item) => (
-                      <li key={item.id} style={{ marginBottom: 6 }}>
-                        <Text delete>{item.name}</Text>
-                        <Text type="secondary">（{item.id}）：{item.replacement_label}</Text>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {RETIRED_ENGINE_PLUGINS.map((item) => (
+                        <li key={item.id} style={{ marginBottom: 6 }}>
+                          <Text delete>{item.name}</Text>
+                          <Text type="secondary">（{item.id}）：{item.replacement_label}</Text>
+                        </li>
+                      ))}
+                    </ul>
+                    {/* P3-1：策略侧的下线记录。与插件侧同一处展示，因为对用户来说是
+                        同一件事 ——「我想要的选项不见了，它去哪了」。 */}
+                    <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                      {RETIRED_ENGINE_STRATEGIES.map((item) => (
+                        <li key={item.id} style={{ marginBottom: 6 }}>
+                          <Text delete>{item.name}</Text>
+                          <Text type="secondary">（{item.id}）：{item.replacement_label}</Text>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
                 ),
               }]}
             />

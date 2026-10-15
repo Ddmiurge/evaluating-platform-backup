@@ -240,20 +240,22 @@ export const ENGINE_PLUGIN_CATEGORY_LABELS: Record<string, string> = {
   dataset: "数据集基准",
 }
 
+/**
+ * P3-1：策略选择器**只含 promptfoo 原生策略**。
+ *
+ * 目录开头原本有 9 个平台自造维度（direct / role-play / encoding / multi-turn /
+ * assumed-knowledge / few-shot / many-shot / translate / otherEncodings）。它们在
+ * Plan A 下是有效的 —— 那时策略 id 是**文本**，由平台自己的生成 LLM 解释；Plan C 把
+ * 生成主体换成 promptfoo 之后，它们在 promptfoo 的策略词汇表里没有实现，转发抛错、
+ * 丢弃则静默什么都不做（表单默认值曾经就是其中之一）。
+ *
+ * 处置记录在 RETIRED_ENGINE_STRATEGIES 与后端 retiredStrategyCatalog（同源）。
+ */
 export const ENGINE_STRATEGY_OPTIONS: ReadonlyArray<EngineCatalogOption> = [
-{ id: 'direct', name: '直接攻击' },
-{ id: 'role-play', name: '角色扮演' },
-{ id: 'encoding', name: '编码混淆' },
-{ id: 'multi-turn', name: '多轮诱导' },
-{ id: 'assumed-knowledge', name: '假设已知' },
-{ id: 'few-shot', name: '少样本诱导' },
-{ id: 'many-shot', name: '多样本诱导' },
-{ id: 'translate', name: '翻译绕过' },
 { id: 'base64', name: 'Base64 编码' },
 { id: 'rot13', name: 'ROT13 编码' },
 { id: 'hex', name: '十六进制编码' },
 { id: 'leetspeak', name: 'Leet 字符替换' },
-{ id: 'otherEncodings', name: '其他编码变体' },
 { id: 'homoglyph', name: '同形字符混淆' },
 { id: 'crescendo', name: '渐进升级' },
 { id: 'goat', name: 'GOAT 多轮越狱' },
@@ -371,6 +373,15 @@ export const PLUGIN_REQUIRES_CONFIG_CODE = 'plugin_requires_config'
  * 26 个子插件。
  */
 export const NUM_TESTS_TOO_SMALL_CODE = 'num_tests_too_small'
+
+/**
+ * P3-1：后端在请求含已下线策略时返回的 error_code（与
+ * `maclaw.EngineErrStrategyIDInvalid` 逐字一致）。
+ *
+ * 与 `PLUGIN_ID_INVALID_CODE` 分开：它们分属两侧词汇表（插件 / 策略），合成一个码会让
+ * 「哪一侧的选项有问题」在日志里不可分辨。
+ */
+export const STRATEGY_ID_INVALID_CODE = 'strategy_id_invalid'
 
 /**
  * 一条插件/策略选项。requires_remote_generation 由后端目录生成。
@@ -566,6 +577,119 @@ export function retiredEnginePluginGuidance(id: string): RetiredEnginePlugin | u
 }
 
 /**
+ * P3-1 已下线的**策略** id 及其处置（与后端 retiredStrategyCatalog 同源）。
+ *
+ * 为什么策略轴也要有一张：插件轴的先例已经证明「删掉只解决会报错，不解决能力去哪了」。
+ * 这 9 个 id 在 Plan A 下是真的有效的（那时策略 id 是交给平台生成 LLM 的**文本**），
+ * 在 Plan C 下没有实现 —— 直接删掉它们会得到一个「选项消失了但没人解释」的选择器。
+ *
+ * `replacement_kind` 是给**代码**读的，`replacement_label` 是给**人**读的：
+ *   - `ids`           能力搬到了别的策略 id 上（编码/多轮那两个聚合项就是这类）
+ *   - `none_needed`   能力没丢，它本来就是「不选择」（只有 direct）
+ *   - `no_equivalent` promptfoo 没有对应机制（或它走配置项而非策略）
+ * 用数据区分，而不是去 grep 文案 —— 后端测试对同一组三态做断言。
+ */
+export interface RetiredEngineStrategy {
+  id: string
+  name: string
+  reason: string
+  replacement_kind: 'ids' | 'none_needed' | 'no_equivalent'
+  replacement_ids: string[]
+  replacement_label: string
+}
+
+export const RETIRED_ENGINE_STRATEGIES: ReadonlyArray<RetiredEngineStrategy> = [
+  {
+    id: 'direct',
+    name: '直接攻击',
+    reason: '「直接攻击」不是策略：Plan C 下不选择任何策略就是直接攻击。',
+    replacement_kind: 'none_needed',
+    replacement_ids: [],
+    replacement_label: '「直接攻击」不需要选择：不选任何攻击策略时，评测就是直接向目标提问。',
+  },
+  {
+    id: 'role-play',
+    name: '角色扮演',
+    reason: '平台自造的提示词维度；promptfoo 的可执行策略词汇表里没有角色扮演包装。',
+    replacement_kind: 'ids',
+    replacement_ids: ['jailbreak-templates'],
+    replacement_label:
+      '「角色扮演」已下线；最接近的是「越狱模板库」（静态框架式越狱话术，其中含角色包装类模板），但它不是等价项。需要一个等价的自定义包装，应作为 promptfoo 自定义策略实现。',
+  },
+  {
+    id: 'encoding',
+    name: '编码混淆',
+    reason: '平台自造的聚合维度；promptfoo 把编码拆成具体策略并已逐个提供。',
+    replacement_kind: 'ids',
+    replacement_ids: ['base64', 'rot13', 'hex', 'leetspeak', 'homoglyph'],
+    replacement_label:
+      '「编码混淆」是聚合项，已下线；请直接选择具体编码策略：Base64 编码 / ROT13 编码 / 十六进制编码 / Leet 字符替换 / 同形字符混淆。',
+  },
+  {
+    id: 'multi-turn',
+    name: '多轮诱导',
+    reason: '平台自造的聚合维度；promptfoo 的多轮策略是具体项并已逐个提供。',
+    replacement_kind: 'ids',
+    replacement_ids: ['crescendo', 'goat', 'hydra'],
+    replacement_label:
+      '「多轮诱导」是聚合项，已下线；请直接选择具体多轮策略：渐进升级 / GOAT 多轮越狱 / Hydra 多分支越狱（另有树搜索越狱）。',
+  },
+  {
+    id: 'assumed-knowledge',
+    name: '假设已知',
+    reason: '平台自造的提示词维度；promptfoo 没有「以已知为前提诱导补全」这类策略。',
+    replacement_kind: 'no_equivalent',
+    replacement_ids: [],
+    replacement_label:
+      '「假设已知」已下线；promptfoo 没有等价策略，平台不做近似映射（近似会静默改变你要的攻击手法）。',
+  },
+  {
+    id: 'few-shot',
+    name: '少样本诱导',
+    reason: '平台自造的提示词维度；promptfoo 没有示例注入类策略。',
+    replacement_kind: 'no_equivalent',
+    replacement_ids: [],
+    replacement_label: '「少样本诱导」已下线；promptfoo 没有示例注入类策略，平台不做近似映射。',
+  },
+  {
+    id: 'many-shot',
+    name: '多样本诱导',
+    reason: '平台自造的提示词维度；promptfoo 没有示例注入类策略（长上下文诱导同样无对应项）。',
+    replacement_kind: 'no_equivalent',
+    replacement_ids: [],
+    replacement_label: '「多样本诱导」已下线；promptfoo 没有示例注入类策略，平台不做近似映射。',
+  },
+  {
+    id: 'translate',
+    name: '翻译绕过',
+    reason: '该能力在 promptfoo 里由 language 配置表达，不是策略；平台尚未接入这个配置项。',
+    replacement_kind: 'no_equivalent',
+    replacement_ids: [],
+    replacement_label:
+      '「翻译绕过」已下线；跨语言绕过在 promptfoo 里是 language 配置而不是攻击策略，平台尚未接入该项。',
+  },
+  {
+    id: 'otherEncodings',
+    name: '其他编码变体',
+    reason: '平台对若干具体编码策略的聚合项；promptfoo 已把它们作为独立策略提供。',
+    replacement_kind: 'ids',
+    replacement_ids: ['morse', 'piglatin', 'camelcase', 'emoji'],
+    replacement_label:
+      '「其他编码变体」是聚合项，已下线；请直接选择具体编码策略：摩斯电码 / Pig Latin / 驼峰式 / Emoji 替换。',
+  },
+]
+
+/** 查某个已下线策略 id 的处置；未下线返回 undefined。 */
+export function retiredEngineStrategyGuidance(id: string): RetiredEngineStrategy | undefined {
+  return RETIRED_ENGINE_STRATEGIES.find((o) => o.id === id)
+}
+
+/** 判断某个策略 id 是否已下线（提交前拦截用）。 */
+export function isStrategyRetired(id: string): boolean {
+  return retiredEngineStrategyGuidance(id) !== undefined
+}
+
+/**
  * 把后端 409 拒绝响应翻译成可读提示。返回 null 表示不是远程依赖拒绝，
  * 调用方应按原逻辑处理。
  */
@@ -648,6 +772,26 @@ export function explainNumTestsTooSmall(
   const expanded = typeof body.expanded_plugins === 'number' ? body.expanded_plugins : undefined
   const fallback = `用例数量少于选中插件展开后的子插件数${expanded !== undefined ? `（${expanded}）` : ''}：` +
     '每个子插件至少要产生 1 条用例。请提高用例数量，或改选具体的子插件。'
+  return {
+    message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
+    code: body.code,
+  }
+}
+
+/**
+ * P3-1：把后端 `strategy_id_invalid`（409）翻译成可读提示。
+ *
+ * 后端已经把每个 id 的替代路径写进 `error` 与 `guidance`，优先原样展示 —— 前端再拼
+ * 一遍只会让两处措辞漂移。
+ */
+export function explainStrategyRetiredRejection(
+  data: unknown,
+): { message: string; code: string } | null {
+  const body = data as { code?: string; error?: string; strategies?: string[] } | null
+  if (!body || body.code !== STRATEGY_ID_INVALID_CODE) return null
+  const strategies = (body.strategies ?? []).filter((id) => typeof id === 'string' && id.trim() !== '')
+  const fallback = `本次选择包含已下线的攻击策略${strategies.length > 0 ? `：${strategies.join('、')}` : ''}，` +
+    '这些 id 在 Plan C 下没有实现。请在「攻击策略」中改选 promptfoo 原生策略。'
   return {
     message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
     code: body.code,

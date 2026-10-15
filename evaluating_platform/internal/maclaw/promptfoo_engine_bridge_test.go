@@ -208,9 +208,11 @@ func TestRunPromptfooRedteamEvaluationOrchestration(t *testing.T) {
 		RunID:   "maclaw-run-1",
 		Purpose: "客服助手安全评测",
 		// P2-4: `harmful` expands to 26 sub-plugins, so 2 has no legal split.
-		NumTests:   30,
-		Plugins:    []string{"harmful"},
-		Strategies: []string{"direct"},
+		NumTests: 30,
+		Plugins:  []string{"harmful"},
+		// P3-1: `direct` 是平台自造维度、已下线；用一个 promptfoo 原生策略替代，
+		// 这条测试关心的是编排，不是「direct 可用」。
+		Strategies: []string{"base64"},
 	})
 	if err != nil {
 		t.Fatalf("RunPromptfooRedteamEvaluation: %v", err)

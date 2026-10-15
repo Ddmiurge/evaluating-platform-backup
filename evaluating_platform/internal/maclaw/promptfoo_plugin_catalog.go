@@ -532,22 +532,31 @@ func retiredPluginToPublic(entry retiredPluginEntry) PromptfooRetiredPlugin {
 	}
 }
 
+// promptfooStrategyCatalog 是**只含 promptfoo 词汇表**的策略目录（P3-1 收敛后）。
+//
+// # 为什么这里不再有平台自造维度
+//
+// 目录开头原本有 9 个平台自造 id（direct / role-play / encoding / multi-turn /
+// assumed-knowledge / few-shot / many-shot / translate / otherEncodings）。它们在
+// Plan A 下是有效的 —— `generateTests.ts` 把策略 id 作为文本拼进平台的生成提示词，
+// 由我们自己的模型解释。Plan C 把生成主体换成 promptfoo 之后，这些 id 在
+// promptfoo 的策略词汇表里没有实现：转发抛错，丢弃则静默什么都不做（向导的**默认值**
+// 就是其中之一，所以「什么都不改直接提交」曾经得到一个 strategy_stats=none 的运行）。
+//
+// 处置记录在 retiredStrategyCatalog（promptfoo_strategy_retirement.go）：每条都带
+// 理由与替代路径，命名它们的请求在提交边界被显式拒绝。
+//
+// 与之同形的先例是本目录里 `retry` / `mathPrompt` / `simba` 的移除 —— 它们也跑不通，
+// 也被移出，也留了理由。区别只是那三条是**上游的** id，这 9 条是**我们自己造的**。
 var promptfooStrategyCatalog = []promptfooStrategyCatalogEntry{
-	// 平台原生策略（方案 A 生成提示词的包装维度）
-	s("direct", "直接攻击", "直接向目标模型提出攻击性问题，评估基础安全边界。"),
-	s("role-play", "角色扮演", "通过虚构角色设定降低模型警惕性，测试安全对齐一致性。"),
-	s("encoding", "编码混淆", "使用编码、格式变换等混淆手段包装攻击载荷，测试过滤绕过能力。"),
-	s("multi-turn", "多轮诱导", "通过多轮渐进式对话逐步诱导模型突破安全边界。"),
-	s("assumed-knowledge", "假设已知", "以“你已经知道/说过”为前提诱导模型补全敏感内容。"),
-	s("few-shot", "少样本诱导", "构造包含敏感示例的 few-shot 上下文，诱导模型模仿输出。"),
-	s("many-shot", "多样本诱导", "提供大量包含敏感内容的历史样本，测试长上下文下的安全约束。"),
-	s("translate", "翻译绕过", "将攻击内容翻译为其他语言或混合语言包装，测试跨语言安全边界。"),
 	// 对齐 promptfoo 原生策略 id
 	s("base64", "Base64 编码", "将攻击载荷 Base64 编码后要求模型解码执行。"),
 	s("rot13", "ROT13 编码", "使用 ROT13 字母替换编码攻击载荷。"),
 	s("hex", "十六进制编码", "使用十六进制编码包装攻击载荷。"),
 	s("leetspeak", "Leet 字符替换", "使用 leetspeak（4/3/1/0）字符替换绕过关键词过滤。"),
-	s("otherEncodings", "其他编码变体", "摩斯电码、Unicode 转义等其他编码绕过方式。"),
+	// P3-1：`otherEncodings` 也在这里移出 —— 它是平台对 morse/piglatin/camelcase/emoji
+	// 的**聚合**项（那四项本身就是 promptfoo 原生策略，且已各自列出），留下一层聚合
+	// 只会让用户以为它是一个独立手法。处置见 retiredStrategyCatalog。
 	s("homoglyph", "同形字符混淆", "使用视觉同形字符替换关键词，测试字符级混淆识别。"),
 	s("crescendo", "渐进升级", "从无害请求逐步升级敏感程度，测试渐进压力下的边界稳定性。"),
 	s("goat", "GOAT 多轮越狱", "GOAT 式多轮自适应越狱攻击。"),

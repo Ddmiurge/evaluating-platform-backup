@@ -495,7 +495,7 @@ func TestResolveCustomStrategiesPassesBuiltInsThrough(t *testing.T) {
 	resolver := newStrategyResolver(nil, nil)
 	got, err := resolver.resolveCustomStrategies(context.Background(), uuid.New(), []EngineCapabilityRef{
 		{ID: "base64"},
-		{ID: "direct"},
+		{ID: "rot13"},
 	})
 	if err != nil {
 		t.Fatalf("built-in strategies were rejected: %v", err)
@@ -503,7 +503,7 @@ func TestResolveCustomStrategiesPassesBuiltInsThrough(t *testing.T) {
 	if len(got.packages) != 0 {
 		t.Errorf("built-in strategies produced %d packages", len(got.packages))
 	}
-	if len(got.engineRefs) != 2 || got.engineRefs[0].ID != "base64" || got.engineRefs[1].ID != "direct" {
+	if len(got.engineRefs) != 2 || got.engineRefs[0].ID != "base64" || got.engineRefs[1].ID != "rot13" {
 		t.Errorf("built-in refs were altered: %+v", got.engineRefs)
 	}
 	if len(got.recordIDs) != 2 {
