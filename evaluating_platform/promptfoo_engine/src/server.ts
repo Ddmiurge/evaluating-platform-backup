@@ -135,6 +135,9 @@ async function main(): Promise<void> {
       queued: manager.queuedCount,
       running: manager.runningCount,
       workdirs: workdirs.size,
+      // P2-3：生效的 worker 数。串行化是 native 路径的行为保证，而 /health 是
+      // 运维唯一无需进容器就能看到的窗口 —— 没有它就只能靠翻日志确认。
+      workers: manager.workerCount,
     });
   });
 
@@ -167,7 +170,10 @@ async function main(): Promise<void> {
   });
 
   const server = app.listen(env.port, () => {
-    console.log(`[engine] promptfoo-engine v${version} listening on :${env.port} (workers=${env.workerCount})`);
+    // 打印**生效值**而不是配置值：P2-3 在 native 路径把 worker 数钳到 1，而
+    // banner 曾打印 env.workerCount，于是验收时看到 `(workers=2)` 却要另外去翻
+    // clamp 日志才能确认串行化到底有没有生效（2026-10-14 实测记录 §2.3）。
+    console.log(`[engine] promptfoo-engine v${version} listening on :${env.port} (workers=${workerCount})`);
   });
 
   const shutdown = async (signal: string): Promise<void> => {

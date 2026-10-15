@@ -35,7 +35,11 @@ import (
 	"strings"
 )
 
-// maxEngineErrorBriefRunes bounds the stored brief.
+// engineErrorBriefEllipsis marks a truncated brief. Counted against the cap below,
+// not on top of it.
+const engineErrorBriefEllipsis = "..."
+
+// maxEngineErrorBriefRunes bounds the stored brief, ellipsis included.
 //
 // Runes, not bytes: the messages are largely Chinese, and a byte budget would
 // truncate them at roughly a third of the intended length.
@@ -155,7 +159,12 @@ func redactEngineErrorBrief(value string) string {
 
 	runes := []rune(out)
 	if len(runes) > maxEngineErrorBriefRunes {
-		return string(runes[:maxEngineErrorBriefRunes]) + "..."
+		// The bound holds for the RESULT, ellipsis included. Appending three
+		// characters past the limit produced 503-rune values for a documented
+		// 500-rune cap (2026-10-14 实测记录 §2.3) — and a bound the code does not
+		// enforce is not a bound.
+		body := maxEngineErrorBriefRunes - len([]rune(engineErrorBriefEllipsis))
+		return string(runes[:body]) + engineErrorBriefEllipsis
 	}
 	return out
 }

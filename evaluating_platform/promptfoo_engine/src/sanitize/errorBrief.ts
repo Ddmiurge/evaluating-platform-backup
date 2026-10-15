@@ -44,8 +44,11 @@
  * than none, because it would look trustworthy.
  */
 
-/** Hard cap on the stored brief. Long enough for a real cause, short enough to bound storage. */
+/** Hard cap on the stored brief, ellipsis included. */
 export const ENGINE_ERROR_BRIEF_MAX_CHARS = 500;
+
+/** Marker appended to a truncated brief. Counted against the cap, not on top of it. */
+const ELLIPSIS = '...';
 
 /** Phrases that mean "this string is carrying content, not a diagnosis". */
 const CONTENT_MARKERS = [
@@ -135,7 +138,12 @@ export function redactEngineErrorBrief(value: string | undefined | null): string
   }
 
   if (out.length > ENGINE_ERROR_BRIEF_MAX_CHARS) {
-    out = `${out.slice(0, ENGINE_ERROR_BRIEF_MAX_CHARS)}...`;
+    // The bound holds for the RESULT, ellipsis included. The first version appended
+    // three characters past the limit, so the stored value was 503 for a documented
+    // 500 — a bound that the code does not actually enforce is not a bound, and the
+    // acceptance check had to be reworded to match the implementation instead of the
+    // implementation matching the contract.
+    out = `${out.slice(0, ENGINE_ERROR_BRIEF_MAX_CHARS - ELLIPSIS.length)}${ELLIPSIS}`;
   }
   return out;
 }

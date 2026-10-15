@@ -175,6 +175,25 @@ func isSafePayloadMetadataKey(lower string) bool {
 		"payload_index",
 		"payload_count":
 		return true
+	// 平台自有的报告元数据键，**值域是固定枚举或正整数**，不含任何可泄漏内容。
+	//
+	// 为什么必须显式列在这里：下面的 isUnsafeMetadataKey 是一条**按键名子串**判断的
+	// 黑名单，`generation_path` 恰好含 "path" 而被判不安全 —— 结果是 CompileReport
+	// 清洗后 `num_tests_effective` 还在、`generation_path` 没了，
+	// ValidateReportGenerationMetadata 按设计判定「有计数无路径」并**拒绝写报告**：
+	// confirm 流因此产不出任何报告（2026-10-14 服务器实测）。
+	//
+	// 修法不能是放开 "path" 这个子串（那会同时放过真正的本地路径键），也不能让
+	// 校验先于清洗（清洗是安全边界，先校验等于让未清洗的值参与判定）。正确做法是
+	// 让黑名单**知道平台自己的词汇表**。
+	//
+	// 键名与 maclaw 包的 RedteamGenerationPathMetadataKey /
+	// RedteamNumTestsEffectiveMetadataKey 必须一致（那是契约）；这里写字面量是因为
+	// redteam 包被 maclaw 反向依赖，不能 import 回来。一致性由
+	// TestPlatformReportMetadataSurvivesSanitization 用真实写入点钉住。
+	case "generation_path",
+		"num_tests_effective":
+		return true
 	default:
 		return false
 	}

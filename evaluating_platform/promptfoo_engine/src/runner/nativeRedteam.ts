@@ -101,6 +101,7 @@ import {
 } from './agentSession.js';
 import { buildJudgeRubricMap, resolveJudgeRubric, type JudgeRubric } from './judgeRubric.js';
 import { ensurePromptfooSchema } from './promptfooDbLifecycle.js';
+import { redactEngineErrorBrief } from '../sanitize/errorBrief.js';
 import {
   applyCustomPluginRefs,
   materializeCustomPlugins,
@@ -813,6 +814,73 @@ export function configuredProbeCount(
   }, 0);
 }
 
+/**
+ * Bounded collector for promptfoo's own log lines, used ONLY to explain a failure.
+ *
+ * # Why this exists
+ *
+ * With `strict: true`, a plugin that generates 0 cases throws, and the thrown error
+ * says only that. The reason — what the generation model actually answered — is
+ * emitted through promptfoo's logger, which the engine was discarding. The
+ * 2026-10-14 acceptance run hit exactly that wall: 5 plugin ids failed at the
+ * generation stage and the engine log said only "Failed to generate tests for X /
+ * Generated 0 tests", leaving "is the model refusing these categories, or is it
+ * ignoring our template?" unanswerable without a reproduction inside the container.
+ * That is the same shape as the U7 findings that `error_brief` was built for.
+ *
+ * promptfoo exposes `logCallback` as a documented option on `redteam.run`, so this
+ * needs no internal accessor.
+ *
+ * # Why the excerpt is filtered and redacted
+ *
+ * Log lines are written for an operator reading a terminal, and a run's lines can
+ * mention test cases and responses. So the excerpt keeps only lines that look like
+ * generation diagnostics, passes them through the same redactor the brief uses, and
+ * is length-bounded. A line that trips a content marker is replaced wholesale by
+ * the redactor — losing the excerpt is an acceptable outcome; carrying a fragment of
+ * a target response into `engine_runs` is not.
+ */
+export function createDiagnosticLogCollector(options?: { limit?: number }): {
+  callback: (message: string) => void;
+  excerpt: () => string;
+} {
+  const limit = Math.max(1, options?.limit ?? 80);
+  const lines: string[] = [];
+  return {
+    callback: (message: string): void => {
+      const text = String(message ?? '').trim();
+      if (!text) return;
+      lines.push(text);
+      if (lines.length > limit) lines.shift();
+    },
+    excerpt: (): string => {
+      // Only generation-stage diagnostics: these are the lines that name the cause.
+      // `reject` is in the list because that is how a provider's content policy
+      // usually surfaces ("the request was rejected"), and it is the single most
+      // useful line when the model refuses a category — the G-3 case.
+      const interesting = lines.filter((line) =>
+        /fail|error|refus|reject|denied|0 test|no test case|insufficient|skipp|unsupported|invalid/i.test(
+          line,
+        ),
+      );
+      if (interesting.length === 0) return '';
+      const joined = interesting.slice(-3).join('｜');
+      const redacted = redactEngineErrorBrief(joined);
+      if (redacted === '' || redacted.startsWith('[redacted')) {
+        // Either nothing survived redaction or the text looked like content. Both
+        // mean "no usable excerpt", and saying so is better than an empty tail.
+        return redacted === '' ? '' : '[redacted: 底层日志含内容类文本]';
+      }
+      return redacted.length > 240 ? `${redacted.slice(0, 237)}...` : redacted;
+    },
+  };
+}
+
+/** Renders the optional diagnostic tail of a failure message. */
+function diagnosticSuffix(excerpt: string): string {
+  return excerpt.trim() === '' ? '' : `｜底层日志：${excerpt}`;
+}
+
 /** Build the config document. Exported for tests; not part of the REST contract. */
 export async function buildNativeRedteamConfig(input: {
   runId: string;
@@ -1187,6 +1255,14 @@ export async function executeNativeRedteamRun(
   emit({ run_id: request.run_id, phase: 'generating_tests', status_text: 'promptfoo 原生生成攻击用例' });
 
   let evalResult: unknown;
+  // P2-9 补批：把 promptfoo 自己的日志留一份尾巴，失败时用它说明「模型到底做了什么」。
+  const diagnostics = createDiagnosticLogCollector();
+  // 单独定型一次：options 对象整体有 `as` 转型，多余的属性检查会被绕过，所以
+  // 「选项名写错」不会编译报错。把回调绑到 promptfoo 自己声明的字段类型上，改错名字
+  // 就过不了 tsc。
+  const diagnosticLogCallback: NonNullable<
+    NonNullable<Parameters<typeof promptfoo.redteam.run>[0]>['logCallback']
+  > = diagnostics.callback;
   try {
     evalResult = await promptfoo.redteam.run({
       config: configPath,
@@ -1200,6 +1276,7 @@ export async function executeNativeRedteamRun(
       verbose: false,
       progressBar: false,
       abortSignal: record.controller.signal,
+      logCallback: diagnosticLogCallback,
       progressCallback: (completed: number, total: number) => {
         emit({
           run_id: request.run_id,
@@ -1214,7 +1291,10 @@ export async function executeNativeRedteamRun(
     if (record.controller.signal.aborted) {
       throw new EngineRunError('canceled', 'native generation canceled');
     }
-    throw new EngineRunError(NATIVE_ERR_PROMPTFOO_FAILED, `promptfoo native generation failed: ${errorMessage(err)}`);
+    throw new EngineRunError(
+      NATIVE_ERR_PROMPTFOO_FAILED,
+      `promptfoo native generation failed: ${errorMessage(err)}${diagnosticSuffix(diagnostics.excerpt())}`,
+    );
   }
 
   // promptfoo returns undefined — not an error — when generation yields nothing.
@@ -1223,7 +1303,8 @@ export async function executeNativeRedteamRun(
   if (!evalResult) {
     throw new EngineRunError(
       NATIVE_ERR_NO_TEST_CASES,
-      'promptfoo native generation produced no test cases; refusing to report a zero-coverage success',
+      'promptfoo native generation produced no test cases; refusing to report a zero-coverage success' +
+        diagnosticSuffix(diagnostics.excerpt()),
     );
   }
 

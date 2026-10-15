@@ -94,7 +94,8 @@ describe('redactEngineErrorBrief — shape and boundaries', () => {
     // Natural text on purpose: a single long token would be redacted wholesale by
     // the opaque-run rule, so it would never reach the truncation branch.
     const out = redactEngineErrorBrief('the provider rejected the request because '.repeat(40));
-    expect(out.length).toBeLessThanOrEqual(ENGINE_ERROR_BRIEF_MAX_CHARS + 3);
+    // The cap covers the ellipsis: the stored value must never exceed it.
+    expect(out.length).toBeLessThanOrEqual(ENGINE_ERROR_BRIEF_MAX_CHARS);
     expect(out.endsWith('...')).toBe(true);
   });
 

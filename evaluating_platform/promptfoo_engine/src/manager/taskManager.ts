@@ -69,11 +69,17 @@ export class TaskManager extends EventEmitter {
     }
   }
 
-  private workerCount: number;
+  /**
+   * Workers actually running. Public and read-only so `/health` can report the
+   * effective count (P2-3): the native path clamps it to 1, and without this the
+   * only way for an operator to confirm serialization is to read the logs.
+   */
+  readonly workerCount: number;
 
   get queuedCount(): number {
     return this.queue.length;
   }
+
 
   get runningCount(): number {
     let n = 0;

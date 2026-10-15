@@ -139,8 +139,8 @@ func TestRedactEngineErrorBriefShape(t *testing.T) {
 	// truncate at roughly a third of the intended length.
 	long := strings.Repeat("错", maxEngineErrorBriefRunes*2)
 	out := redactEngineErrorBrief(long)
-	if got := len([]rune(out)); got > maxEngineErrorBriefRunes+3 {
-		t.Errorf("brief is %d runes, want <= %d (+ellipsis)", got, maxEngineErrorBriefRunes)
+	if got := len([]rune(out)); got > maxEngineErrorBriefRunes {
+		t.Errorf("brief is %d runes, want <= %d (the cap covers the ellipsis)", got, maxEngineErrorBriefRunes)
 	}
 	if !strings.HasSuffix(out, "...") {
 		t.Errorf("truncated brief carries no ellipsis: %q", out)
