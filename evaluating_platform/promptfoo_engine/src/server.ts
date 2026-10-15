@@ -11,12 +11,12 @@
  *  5. graceful shutdown: stop accepting, cancel in-flight runs, wipe workdirs
  */
 import express from 'express';
-import { assertSandboxInvariants, effectiveWorkerCount, loadEnv } from './env.js';
+import { ENGINE_WORKER_COUNT, assertNoRemoteGenerationConsent, assertSandboxInvariants, loadEnv } from './env.js';
 import { bearerAuth } from './auth.js';
 import { TaskManager } from './manager/taskManager.js';
 import { WorkdirManager } from './manager/workdir.js';
 import { createRunsRouter } from './routes/runs.js';
-import { executeRedteamRun } from './runner/redteamRun.js';
+import { executeNativeRedteamRun } from './runner/nativeRedteam.js';
 import { cleanupPromptfooRunArtifacts } from './runner/promptfooStateCleanup.js';
 import {
   assertPromptfooDbLifecycleResolvable,
@@ -40,6 +40,12 @@ async function main(): Promise<void> {
   }
   await assertSandboxInvariants();
 
+  // P3-3: Plan C is the only generation path, so this guard is no longer
+  // conditional on a switch. It refuses to boot when the environment contains
+  // variables promptfoo reads as consent to use its own remote services — the
+  // engine must talk only to the platform-supplied endpoints.
+  assertNoRemoteGenerationConsent();
+
   // P2-3 · prepare promptfoo's SQLite schema before the first run can need it.
   //
   // Both steps are fail-closed, and both are only meaningful on the native path
@@ -47,10 +53,8 @@ async function main(): Promise<void> {
   // answer for either: a missing schema turns every run into
   // `no such table: eval_results`, and an unresolvable close would silently
   // restore the unlinked-inode problem — a cleanup that looks like it works.
-  if (env.nativeGeneration) {
-    assertPromptfooDbLifecycleResolvable();
-    await runPromptfooDbMigrations();
-  }
+  assertPromptfooDbLifecycleResolvable();
+  await runPromptfooDbMigrations();
 
   // P2-3 · native runs are serialized, and this is where that is enforced.
   //
@@ -67,11 +71,12 @@ async function main(): Promise<void> {
   // setting would silently corrupt runs — the failure would not look like a
   // configuration mistake, it would look like flaky data. A queued run stays
   // `queued` (visible on /health and through the BFF), so the wait is honest.
-  const workerCount = effectiveWorkerCount(env.workerCount, env.nativeGeneration);
-  if (env.nativeGeneration && env.workerCount !== 1) {
+  const workerCount = ENGINE_WORKER_COUNT;
+  if (env.workerCount !== workerCount) {
     console.log(
-      `[engine] native generation serializes runs: clamping workers ${env.workerCount} -> 1 ` +
-        '(one shared promptfoo database; concurrent runs would delete each other\'s results)',
+      `[engine] serialized by construction: PROMPTFOO_ENGINE_WORKERS=${env.workerCount} is ignored, ` +
+        `running ${workerCount} worker (one shared promptfoo database; concurrent runs would delete ` +
+        "each other's results)",
     );
   }
 
@@ -86,10 +91,7 @@ async function main(): Promise<void> {
       // (which embeds the materialized generation credential) in here, so the
       // path has to be handed to the runner.
       const workdir = await workdirs.create(run.request.run_id);
-      const { result } = await executeRedteamRun(run, emit, {
-        nativeGeneration: env.nativeGeneration,
-        workdir,
-      });
+      const { result } = await executeNativeRedteamRun(run, emit, workdir);
       run.status.result = result;
     },
     // U7 · Plan C makes promptfoo persist the run to its own SQLite database —
@@ -110,17 +112,12 @@ async function main(): Promise<void> {
     // run from a failure path without loading the library again); composing the
     // two steps at the one place both paths converge keeps that property.
     //
-    // Only wired when the native path is selected: Plan A keeps its original
-    // promise of writing nothing, and deleting a developer's `~/.promptfoo`
-    // state that this service never created would be wrong.
-    ...(env.nativeGeneration
-      ? {
-          onTerminal: async (): Promise<void> => {
-            await closePromptfooDbIfOpen();
-            await cleanupPromptfooRunArtifacts();
-          },
-        }
-      : {}),
+    // Unconditional since P3-3: the only generation path persists to promptfoo's
+    // own SQLite, so every terminal run closes the connection and clears it.
+    onTerminal: async (): Promise<void> => {
+      await closePromptfooDbIfOpen();
+      await cleanupPromptfooRunArtifacts();
+    },
   });
 
   const app = express();

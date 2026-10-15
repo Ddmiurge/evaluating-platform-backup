@@ -289,48 +289,6 @@ describe('U10 E2E — expert YAML package is executed by promptfoo', { timeout: 
       }),
     ).rejects.toThrow(/workdir/);
   });
-
-  it('Plan A refuses a package instead of silently ignoring it', async () => {
-    // Driven through `executeRedteamRun` — the production entry point — NOT
-    // through the exported predicate.
-    //
-    // This is the U8 lesson applied to my own first draft: an earlier version of
-    // this test called `assertNoCustomPluginsOnPlanA` directly and passed while
-    // the call inside `executePlanARedteamRun` was deleted (verified: removing
-    // that one line left all 225 tests green). A guard tested only at its own
-    // helper proves the helper works, not that anything calls it.
-    const { executeRedteamRun } = await import('../src/runner/redteamRun.js');
-    const request = {
-      run_id: 'u10-plan-a',
-      platform_user_id: 'u10-user',
-      purpose: 'U10 E2E',
-      num_tests: 1,
-      plugins: [{ id: MARKER_ID }],
-      strategies: [],
-      judge_mode: 'promptfoo_native' as const,
-      credentials: {
-        target: { base_url: 'http://127.0.0.1:1/v1/chat/completions', model: 'm', api_key: 'k' },
-        generation: { base_url: 'http://127.0.0.1:1/v1', model: 'm', api_key: 'k' },
-      },
-      custom_plugins: [PACKAGE],
-    };
-    const record = { request, controller: new AbortController() } as unknown as RunRecord;
-
-    let thrown: unknown;
-    try {
-      // nativeGeneration: false selects Plan A — the path that cannot execute a
-      // package, which is exactly why it must refuse.
-      await executeRedteamRun(record, () => undefined, { nativeGeneration: false, workdir: '' });
-    } catch (err) {
-      thrown = err;
-    }
-    expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as { code?: string }).code).toBe('custom_plugin_requires_native_generation');
-    // The message must name the package and the fix.
-    expect((thrown as Error).message).toContain('pf_handle_acme_injection');
-    expect((thrown as Error).message).toContain('PROMPTFOO_ENGINE_NATIVE_GENERATION');
-  });
-
   it('Plan A still runs when no package is present (no false positive)', async () => {
     // The refusal must not fire for ordinary runs. Asserted through the same
     // production entry point, with a deliberately unreachable generation

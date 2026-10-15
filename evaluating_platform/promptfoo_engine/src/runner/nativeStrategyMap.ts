@@ -36,63 +36,26 @@
  */
 import promptfoo from 'promptfoo';
 
-/** How a platform strategy id participates in the native generation path. */
-export type NativeStrategyDisposition = 'native' | 'plan_a_only';
-
+/**
+ * How a platform strategy id maps onto promptfoo's vocabulary.
+ *
+ * P3-3 removed the second disposition (`plan_a_only`). It existed for platform
+ * dimensions that only Plan A could produce; with Plan A deleted there is no
+ * "elsewhere" for an id to belong to, so an id is either mapped to a promptfoo
+ * strategy or it is an error (see `resolveNativeStrategies`).
+ */
 export interface NativeStrategyMapping {
-  /** promptfoo's own id. Absent exactly when disposition is `plan_a_only`. */
-  readonly promptfooId?: string;
-  readonly disposition: NativeStrategyDisposition;
-  /** Why this id is not natively generatable; surfaced in error messages. */
-  readonly reason?: string;
+  /** promptfoo's own id. */
+  readonly promptfooId: string;
 }
 
-/**
- * Platform-invented strategy dimensions. These describe *how the platform wraps
- * an attack prompt* (role-play framing, encoding, translation, …). They are not
- * promptfoo attack transforms, and promptfoo has no strategy that does the same
- * job: `base64`/`rot13`/`hex`/`leetspeak`/`homoglyph`/`morse`/`piglatin`/
- * `camelcase`/`emoji` are the real encoding strategies and ARE mapped below.
- * Forwarding `role-play` to promptfoo would throw; silently dropping it would
- * understate coverage. Plan A keeps producing these.
- */
-const PLAN_A_ONLY: Readonly<Record<string, string>> = {
-  direct: '直接攻击是平台自造的提示词维度，promptfoo 无对应策略',
-  'role-play': '角色扮演是平台自造的提示词维度，promptfoo 无对应策略',
-  encoding: '编码混淆是平台自造的总称维度；promptfoo 的编码策略为 base64/rot13/hex/leetspeak 等具体项',
-  'multi-turn': '多轮诱导是平台自造的提示词维度；promptfoo 的多轮策略为 crescendo/goat/jailbreak:* 等具体项',
-  'assumed-knowledge': '假设已知是平台自造的提示词维度，promptfoo 无对应策略',
-  'few-shot': '少样本诱导是平台自造的提示词维度，promptfoo 无对应策略',
-  'many-shot': '多样本诱导是平台自造的提示词维度，promptfoo 无对应策略',
-  translate: '翻译绕过是平台自造的提示词维度；promptfoo 用 language 配置而非 strategy 表达',
-  otherEncodings: '其他编码变体是平台对 morse/piglatin/camelcase/emoji 等的聚合项，无法映射为单一原生 id',
-  // Phase 3 · `simba` used to be mapped `simba → simba` below. That was wrong
-  // and is the reason this list is worth reading: promptfoo 0.123.0 keeps
-  // `simba` only as a deprecated stub whose action logs
-  // "The \"simba\" strategy has been deprecated and removed. This strategy will
-  // be skipped" and returns `[]`. Forwarding it produced a green run in which
-  // the strategy provably generated zero cases and the report still listed it as
-  // applied — the silent-0-coverage shape U6 exists to eliminate, reached
-  // through a path U6's remote-dependency table does not cover (simba needs no
-  // remote generation; it simply does nothing).
-  //
-  // Reclassified rather than deleted so the id still resolves to a decision:
-  // an expert who selected it gets Plan A synthesis plus this reason instead of
-  // a strategy that silently generates nothing.
-  simba: 'promptfoo 0.123.0 已废弃并移除该策略（实际生成 0 条用例），平台不再转发；请改用 jailbreak:hydra',
-
-  // `retry` needs `config.targetIds`, which the platform does not send (it
-  // forwards `{ id }` only), so promptfoo throws *"No target IDs found in
-  // config"* — mid-run, after the run record exists. U6's table does not gate it
-  // because it needs no remote generation; the dependency is on caller-supplied
-  // config instead, which is a different failure U6 does not model.
-  retry: '需要调用方提供 targetIds 配置，平台当前不下发，promptfoo 会在评测进行中抛错',
-
-  // `math-prompt` falls back to a local path that calls an OpenAI provider
-  // directly when remote generation is disabled, so it fails with "API key is
-  // not set" in this deployment. Measured, not inferred.
-  mathPrompt: '当前部署下需要可用的 OpenAI 凭据（远程生成已屏蔽），无法执行',
-};
+// P3-3：这里原本有一张 PLAN_A_ONLY 表，记录 9 个平台自造维度（direct / role-play /
+// encoding / multi-turn / assumed-knowledge / few-shot / many-shot / translate /
+// otherEncodings）以及「promptfoo 无对应策略」的理由。它们已从目录移出并在
+// retiredStrategyCatalog（Go 侧）与 RETIRED_ENGINE_STRATEGIES（前端）里记录处置，
+// 提交边界就会拒绝 —— 所以引擎侧不再需要一份「认识它们但知道它们无效」的表。
+//
+// 保留这条注释是因为它是这段代码为什么变短的原因，而不是一个可以静默消失的表。
 
 /**
  * Platform id → promptfoo id for strategies promptfoo owns. Every value here is
@@ -178,13 +141,11 @@ const NATIVE: Readonly<Record<string, string>> = {
 
 /** The whole table, keyed by platform strategy id. */
 const MAPPING: Readonly<Record<string, NativeStrategyMapping>> = Object.freeze(
-  Object.fromEntries([
-    ...Object.entries(NATIVE).map(([id, promptfooId]) => [id, { promptfooId, disposition: 'native' as const }]),
-    ...Object.entries(PLAN_A_ONLY).map(([id, reason]) => [id, { disposition: 'plan_a_only' as const, reason }]),
-  ]),
+  Object.fromEntries(Object.entries(NATIVE).map(([id, promptfooId]) => [id, { promptfooId }])),
 );
 
-/** Resolve one platform strategy id. Unknown ids degrade to `plan_a_only`. */
+/** Resolve one platform strategy id. Unknown ids return `undefined` — the caller
+ * decides whether that is an error (it is: `resolveNativeStrategies` throws). */
 export function nativeStrategyMapping(strategyId: string): NativeStrategyMapping | undefined {
   return MAPPING[(strategyId ?? '').trim()];
 }
@@ -192,11 +153,6 @@ export function nativeStrategyMapping(strategyId: string): NativeStrategyMapping
 /** Every platform strategy id this module knows how to classify. */
 export function knownNativeStrategyIds(): string[] {
   return Object.keys(MAPPING).sort();
-}
-
-/** Platform strategy ids with no promptfoo counterpart (Plan A only). */
-export function planAOnlyStrategyIds(): string[] {
-  return Object.keys(PLAN_A_ONLY).sort();
 }
 
 /** promptfoo strategy ids this module can produce. */
@@ -219,8 +175,7 @@ export function assertNativeStrategyMapIsCurrent(): void {
   if (missing.length > 0) {
     throw new Error(
       `[U7] native strategy map is stale: the installed promptfoo does not expose ${missing.join(', ')}. ` +
-        'A promptfoo upgrade changed its strategy vocabulary — update src/runner/nativeStrategyMap.ts before enabling ' +
-        'PROMPTFOO_ENGINE_NATIVE_GENERATION.',
+        'A promptfoo upgrade changed its strategy vocabulary — update src/runner/nativeStrategyMap.ts before deploying.',
     );
   }
 }

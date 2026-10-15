@@ -503,9 +503,10 @@ describe('U9 E2E · Agent multi-turn over the wire', () => {
     // unreachable in production, so this test is not asserting a live behaviour.
     // If someone plumbs strategy config through, THIS is the test that must be
     // revisited — it will keep passing while the situation changed.
+    // P3-3：`resolveNativeStrategies` 现在直接返回数组（不再有 planAOnly 分支）。
     const resolved = resolveNativeStrategies([{ id: 'crescendo', config: { stateful: false } }]);
-    expect(resolved.native[0]).toEqual({ id: 'crescendo' });
-    expect(resolved.native[0]).not.toHaveProperty('config');
+    expect(resolved[0]).toEqual({ id: 'crescendo' });
+    expect(resolved[0]).not.toHaveProperty('config');
   });
 
   it('v1 parity: with no conversation placeholder, the emitted config carries no session wiring', async () => {

@@ -90,7 +90,7 @@ import promptfoo from 'promptfoo';
 import { stringify } from 'yaml';
 import type { ApplicationDefinition, EngineCatalog, EngineCustomPlugin, OneShotCredentials, RunProgressEvent } from '../types.js';
 import type { RunRecord } from '../manager/taskManager.js';
-import { EngineRunError } from './generateTests.js';
+import { EngineRunError } from './engineRunError.js';
 import { buildTargetProvider, reduceEvalToSafeResult, type EvalLike, type RunnerResult } from './redteamRun.js';
 import { assertNativeStrategyMapIsCurrent, nativeStrategyMapping } from './nativeStrategyMap.js';
 import {
@@ -136,6 +136,16 @@ export const NATIVE_ERR_NO_TEST_CASES = 'native_generation_no_test_cases';
 
 /** A strategy this promptfoo build does not expose — including its custom hook. */
 export const NATIVE_ERR_STRATEGY_UNSUPPORTED = 'native_generation_strategy_unsupported';
+/**
+ * The request named a strategy id that is neither a promptfoo strategy nor a mapped
+ * platform id (P3-3).
+ *
+ * Distinct from NATIVE_ERR_STRATEGY_UNSUPPORTED, which means "we know this id and
+ * this build cannot run it". This one means "this id is not part of either
+ * vocabulary". Before P3-3 the engine dropped such ids into a `planAOnly` list and
+ * continued, so the dimension silently did nothing — an unknown id is now a refusal.
+ */
+export const NATIVE_ERR_STRATEGY_UNKNOWN = 'native_generation_strategy_unknown';
 /** A run carrying custom packages was given no per-run workdir to write them into. */
 export const NATIVE_ERR_WORKDIR_MISSING = 'native_generation_workdir_missing';
 /**
@@ -329,13 +339,10 @@ export function assertPluginIdsAreAccepted(
  * on the Plan A path. Every id we *do* forward is validated against promptfoo's
  * own strategy list first.
  */
-export function resolveNativeStrategies(
-  strategies: Array<{ id: string }>,
-): { native: Array<{ id: string }>; planAOnly: string[] } {
+export function resolveNativeStrategies(strategies: Array<{ id: string }>): Array<{ id: string }> {
   const available = new Set(promptfoo.redteam.Strategies.map((s) => s.id));
   const seen = new Set<string>();
   const native: Array<{ id: string }> = [];
-  const planAOnly: string[] = [];
 
   for (const ref of strategies ?? []) {
     const id = (ref?.id ?? '').trim();
@@ -363,9 +370,17 @@ export function resolveNativeStrategies(
       continue;
     }
     const mapping = nativeStrategyMapping(id);
-    if (!mapping || mapping.disposition !== 'native' || !mapping.promptfooId) {
-      planAOnly.push(id);
-      continue;
+    if (!mapping) {
+      // P3-3: an id in neither vocabulary is a REFUSAL, not a silent drop. The
+      // platform's own dimensions used to land here and produce a run whose
+      // strategy_stats was `none` — the user's selection did nothing and nothing
+      // said so. The BFF rejects the retired ids at submit; this is the engine-side
+      // backstop for a direct caller or a future drift.
+      throw new EngineRunError(
+        NATIVE_ERR_STRATEGY_UNKNOWN,
+        `攻击策略 ${id} 不在本引擎的策略词汇表内（既不是 promptfoo 的策略，也不是平台映射的 id）。` +
+          '这类 id 会被静默丢弃而不是执行，所以这里直接拒绝。',
+      );
     }
     if (!available.has(mapping.promptfooId)) {
       throw new EngineRunError(
@@ -379,7 +394,7 @@ export function resolveNativeStrategies(
     seen.add(mapping.promptfooId);
     native.push({ id: mapping.promptfooId });
   }
-  return { native, planAOnly };
+  return native;
 }
 
 /**
@@ -1191,16 +1206,10 @@ export async function executeNativeRedteamRun(
   // promptfoo keeps writing to the old one.
   await ensurePromptfooSchema();
 
-  const { native, planAOnly } = resolveNativeStrategies(request.strategies);
-  if (planAOnly.length > 0) {
-    // Not an error: these dimensions simply stay on the platform's own prompt
-    // path. Surfaced so the reduction can report them honestly.
-    emit({
-      run_id: request.run_id,
-      phase: 'generating_tests',
-      status_text: `原生生成（${planAOnly.length} 个平台维度不参与）`,
-    });
-  }
+  // P3-3: every strategy in the request is forwarded to promptfoo, or the run is
+  // refused. There is no "these dimensions stay on the platform's own path" branch
+  // any more — that was Plan A, and with it deleted an unknown id is an error.
+  const native = resolveNativeStrategies(request.strategies);
 
   const injectVar = (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR;
   // P2-2 (S-4): the cap is 50 in three places — this clamp, the BFF's

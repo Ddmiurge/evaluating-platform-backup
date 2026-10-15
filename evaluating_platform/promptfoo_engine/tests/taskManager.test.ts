@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskManager, type RunRecord } from '../src/manager/taskManager.js';
-import { EngineRunError } from '../src/runner/generateTests.js';
+import { EngineRunError } from '../src/runner/engineRunError.js';
 import type { RunProgressEvent, RunRequest, RunStatusResponse } from '../src/types.js';
 import { WorkdirManager } from '../src/manager/workdir.js';
 

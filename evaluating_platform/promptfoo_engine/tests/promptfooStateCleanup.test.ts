@@ -11,7 +11,7 @@ import {
 } from '../src/runner/promptfooStateCleanup.js';
 import { TaskManager } from '../src/manager/taskManager.js';
 import { WorkdirManager } from '../src/manager/workdir.js';
-import { EngineRunError } from '../src/runner/generateTests.js';
+import { EngineRunError } from '../src/runner/engineRunError.js';
 import type { RunRecord } from '../src/manager/taskManager.js';
 import type { RunRequest, RunStatusResponse } from '../src/types.js';
 

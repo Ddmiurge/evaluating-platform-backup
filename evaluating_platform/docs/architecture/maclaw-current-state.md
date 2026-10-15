@@ -225,6 +225,10 @@ MaClawSrv 当前没有稳定的原生 retry/resume/checkpoint API：
 
 ### 攻击用例生成：方案 A（evaluate 模式，2026-09-24 上线）
 
+> **状态（2026-10-15，P3-3）**：本节是**历史记录**。Plan A 已删除，引擎只走 promptfoo
+> 原生生成；保留此节是因为它解释了 Plan A 当初为什么存在（promptfoo 的 `redteam.run`
+> 在 fail-closed 开关下必然 0 用例）。当前口径见本文件末尾「词汇表收敛与 Plan A 退役」。
+
 promptfoo 的 `redteam.run` 模式必须自建用例且忽略外部 `tests`，在 fail-closed 开关下必然产生 0 条用例（三方案对比与源码证据见 `docs/architecture/promptfoo-generation-options.md`）。因此引擎链路改为**方案 A**：
 
 - 攻击用例由引擎侧 `src/runner/generateTests.ts` 直接调用平台默认 MaClaw 模型（BFF 经 `ResolveEngineGenerationCredential` 物化，同一来源 `maclaw_model_defaults`，加密存储）生成；promptfoo 只以 **evaluate 模式**消费预生成 `tests`（`promptfoo.evaluate`，不设 `writeLatestResults`/`redteam`，不触碰 promptfoo SQLite 与远程生成/远程分级路径）。
@@ -406,7 +410,7 @@ BFF       EngineRunStatus.ErrorMessage
 | `native_generation_workdir_missing` | 带自定义插件包但没有 per-run workdir |
 | `native_generation_promptfoo_failed` | promptfoo 自身抛出（脱敏后的 message 指出是哪一例） |
 
-另把 `AGENT_SESSION_ERR_*` 从「消息前缀」升级为真正的错误码：`agentSession.ts` 现在抛 `EngineRunError`，`taskManager` 能读到 `err.code`，不再一律归到 `'engine_error'`。**方括号前缀保留** —— 码给程序读，前缀给人读日志。`EngineRunError` 也移到了 `src/runner/engineRunError.ts`（`generateTests.ts` 再导出），这样「需要一个码」的模块不必依赖 Plan A 的生成路径。
+另把 `AGENT_SESSION_ERR_*` 从「消息前缀」升级为真正的错误码：`agentSession.ts` 现在抛 `EngineRunError`，`taskManager` 能读到 `err.code`，不再一律归到 `'engine_error'`。**方括号前缀保留** —— 码给程序读，前缀给人读日志。`EngineRunError` 也移到了 `src/runner/engineRunError.ts`，这样「需要一个码」的模块不必依赖生成路径。（当时它由 `generateTests.ts` 再导出；P3-3 删除 Plan A 时那个再导出随之消失，各模块直接指向 `engineRunError.ts`。）
 
 **刻意不留通用兜底码**：一个 catch-all 会把拆码解决的问题原样带回来。
 
@@ -440,3 +444,64 @@ BFF   EngineSafeResult → engineReportMetadata()
 3. **报告卡上「未记录」必须渲染**（与 `judge_track` 的「非法即不渲染」不同）：对判定链路，「不知道谁判的」是罕见且无法解释的状态；而生成路径的「未记录」是**正常状态**（P2-6 之前的历史报告天然如此）。此处若也不渲染，非法元数据与合法历史报告就无法区分。
 
 文案是跨语言契约：`internal/maclaw/redteam_generation_path.go` 与 `frontend/src/pages/enterprise/chatDisplay.ts` 必须逐字一致，由后端 `TestGenerationPathCaptionMatchesFrontendMirror` 读前端源码断言片段（同形于 `judge_track` 的契约，但那条只钉了字面量、靠注释提醒同步）。
+
+
+## 词汇表收敛与 Plan A 退役（P3-1 / P3-3，2026-10-15）
+
+### 为什么会有「平台自造维度」
+
+平台历史上有一批自造的攻击策略 id：`direct` / `role-play` / `encoding` / `multi-turn` /
+`assumed-knowledge` / `few-shot` / `many-shot` / `translate` / `otherEncodings`。
+
+它们**不是当初造错**：在 Plan A 下「策略」是**提示词级的词汇表**，归平台所有 ——
+`generateTests.ts` 把选中的 id 作为**文本**拼进平台自己的生成提示词
+（`攻击策略（strategy_id 只能从以下选择）：…`），由我们自己的生成 LLM 解释并回报，
+所以任何字符串都"能用"。设计阶段的原型表（`specs/2026-09-16-前端HTML原型.md`）里本来就
+混着 promptfoo 的 id（`base64`/`best-of-n`/`jailbreak:composite`…）与平台自己的
+（`roleplay`），因为那是按**产品概念**画的，不是按执行引擎画的。
+
+U7 把生成主体换成 promptfoo 之后，`redteam.strategies` 变成 promptfoo 拥有的**可执行变换**
+词汇表，这 9 个 id 在其中没有实现：转发抛错、丢弃则静默什么都不做。而**丢弃是静默的** ——
+不报错、不降级，只在报告里留一个 `strategy_stats=none`。向导表单的**默认值**恰好是其中一个
+（`direct`），也就是「什么都不改直接提交」会得到一个什么都没跑的运行且无人告知。
+Phase 3 任务 1 只做了「动态发现」（把 promptfoo 的 35 个原生策略加进选择器），没有做
+「收敛」（把平台自造的拿走），于是选择器一度同时挂着 36 项两套词汇表。
+
+### 处置：四类不同，不合并
+
+| 类 | id | 性质 | 处置 |
+|---|---|---|---|
+| A | `direct` | 不是策略：Plan C 下不选择任何策略就是直接攻击 | 移出 + 提交闸拒绝 + 向导默认值改为空 |
+| B | `encoding`、`otherEncodings`、`multi-turn` | **聚合项**，能力早已逐个提供（base64/hex/…；crescendo/goat/hydra/…） | 移出 + 替代引导指向具体原生策略 |
+| C | `translate` | 换了机制：promptfoo 用 `language` **配置**而非策略 | 移出 + 记待办（尚未接入该配置项） |
+| D | `role-play`、`assumed-knowledge`、`few-shot`、`many-shot` | promptfoo 无对应策略 | 移出；等价实现应作为 promptfoo **自定义策略**（`custom:<variant>` + `strategyText`）重做（待办） |
+
+机制复用插件轴那套：`retiredStrategyCatalog`（理由 + 处置种类 + 替代 id/替代说明）、
+提交边界 `ValidateEngineRunStrategyRetirement` → 409 `strategy_id_invalid`、前端
+`RETIRED_ENGINE_STRATEGIES` 镜像 + 折叠说明，两侧一致性由
+`TestFrontendRetiredStrategyGuidanceMirrorsBackend` 钉住。三种处置用**数据**表达
+（`replacement_kind = ids | none_needed | no_equivalent`），不靠 grep 文案。
+
+### Plan A 退役（P3-3）
+
+删除：`generateTests.ts` 与其测试、`redteamRun.ts` 的路径选择与 Plan A 专属拒绝、
+`env.ts` 的 `PROMPTFOO_ENGINE_NATIVE_GENERATION` 开关与 `effectiveWorkerCount`、
+`server.ts` 的条件分支（DB 生命周期、终态清理、单 worker 全部变为无条件）、
+前端与 compose 里的开关说明。
+
+- **线上零行为改变**：`PROMPTFOO_ENGINE_NATIVE_GENERATION` 默认已是 1，删掉的是一条没人
+  走的路径。
+- **`assertNoRemoteGenerationConsent` 由条件变为无条件**（原 `assertNativeGenerationInvariants`，
+  只在开关打开时生效）。它拒绝的环境变量（`OPENAI_API_KEY`、`PROMPTFOO_REMOTE_GENERATION_URL`、
+  含 `auth.json` 的 `PROMPTFOO_CONFIG_DIR`）现在无条件导致启动失败 —— 因为没有第二条路径
+  可回退。**其中 `PROMPTFOO_CONFIG_DIR` 一条由「禁止设置」收窄为「目录里不得有 Promptfoo
+  Cloud 登录」**：前者是代理指标，而把配置目录指向隔离目录正是测试与挂载卷部署隔离引擎
+  状态的正当手段（P2-3 的生命周期模块也按该变量解析库路径）。
+- **未知策略由静默丢弃变为显式拒绝**：`resolveNativeStrategies` 对既非 promptfoo 策略、
+  又非平台映射 id 的取值抛 `native_generation_strategy_unknown`。这正是 item12 的形态
+  （12 个维度被静默丢弃）。
+- **`generation_path` 保留写路径**（与 `21-阶段三实施计划.md` §4 的原计划不同，原因见该文件）；
+  新报告一律写 `plan_c`，历史报告的 `plan_a` 继续渲染。
+- `ENGINE_WORKER_COUNT = 1`：串行化从「native 时钳位」变为**构造上就是 1**；
+  `PROMPTFOO_ENGINE_WORKERS` 仍被解析并在启动日志里说明它被忽略（「设了没变化还不告诉我」
+  比「设了没用」更糟）。

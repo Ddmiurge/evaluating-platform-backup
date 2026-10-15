@@ -176,6 +176,10 @@ HubCenter compose expectations:
 
 旧执行主体已删除，不支持配置级回落旧链路。
 
+**P3-3 起额外一条**：`PROMPTFOO_ENGINE_NATIVE_GENERATION` 开关已删除，因此「把生成路径
+翻回 Plan A」这条回滚**不再存在** —— 计划生成只剩 promptfoo 原生一条。回滚手段相应变为
+只能回退镜像/commit（下面第一条）。
+
 可用回滚方式：
 
 - 回滚到上一 Git commit 或镜像版本。

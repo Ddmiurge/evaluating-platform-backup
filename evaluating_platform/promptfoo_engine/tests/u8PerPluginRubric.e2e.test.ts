@@ -1,18 +1,27 @@
 /**
- * U8 E2E — proves that BOTH generation paths judge by the plugin's own rubric,
- * against the real promptfoo library.
+ * U8 E2E — proves the run judges by the plugin's own rubric, against the real
+ * promptfoo library.
+ *
+ * # It used to test both generation paths
+ *
+ * U8 landed while Plan A and Plan C coexisted, and the point of this file was
+ * that the per-plugin rubric reached the grader on BOTH — the risk being that
+ * turning the switch on would silently regress judging to promptfoo's one-size
+ * rubric. P3-3 deleted Plan A, so the Plan A half is gone. The remaining half is
+ * the one that matters and it is unchanged: the rubric text must reach the
+ * grader on the live path. The FILE NAME is kept for one reason — the u8 report
+ * and the docs cite it — but nothing here tests two paths any more.
  *
  * Method (the U7 lesson: never assert a config field is consumed — measure it):
  *   - a fake target server records every probe it receives;
  *   - a fake generation+grading LLM records every request body, so we can see
  *     the actual grading prompt promptfoo built;
- *   - Plan A runs through `executePlanARedteamRun` (llm-rubric assertions this
- *     module builds) and Plan C through `buildNativeRedteamConfig` fed to
+ *   - the run goes through `buildNativeRedteamConfig` fed to
  *     `promptfoo.redteam.run()`;
- *   - in both cases we assert that the per-plugin rubric text reached the
- *     grader, and that two plugins in one run got two different rubrics.
+ *   - and we assert the per-plugin rubric text reached the grader, and that two
+ *     plugins in one run got two different rubrics.
  *
- * Run with: npx vitest run tests/u8BothPaths.e2e.test.ts
+ * Run with: npx vitest run tests/u8PerPluginRubric.e2e.test.ts
  */
 // MUST stay the first import: it redirects promptfoo's config dir before
 // promptfoo is imported by anything below (ESM evaluates imports in order, and
@@ -24,7 +33,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { stringify } from 'yaml';
-import { executePlanARedteamRun, reduceEvalToSafeResult } from '../src/runner/redteamRun.js';
+import { reduceEvalToSafeResult } from '../src/runner/redteamRun.js';
 import { buildNativeRedteamConfig, executeNativeRedteamRun, loadEvalResults } from '../src/runner/nativeRedteam.js';
 import type { RunRecord } from '../src/manager/taskManager.js';
 import type { EngineCatalog } from '../src/types.js';
@@ -78,112 +87,10 @@ function catalog(): EngineCatalog {
   };
 }
 
-describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 }, () => {
+describe('U8 E2E — the native path judges per plugin', { timeout: 180000 }, () => {
   // promptfoo's config dir is redirected by the `./u8PromptfooHome.js` import at
   // the very top of this file — it has to happen before promptfoo is imported,
   // and that module also removes the temp dir on process exit.
-
-  it('Plan A: each probe is graded with its own plugin rubric', async () => {
-    // Grading requests seen by the fake LLM. Plan A's rubric rides in the
-    // llm-rubric assertion, so it must appear in the grading prompt verbatim.
-    const gradingBodies: string[] = [];
-    const genPort = await listen(async (req, res) => {
-      const body = await readBody(req);
-      res.setHeader('content-type', 'application/json');
-      if (body.includes('红队专家')) {
-        res.end(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  role: 'assistant',
-                  content: JSON.stringify([
-                    { prompt: 'attack one', plugin_id: 'prompt-injection', strategy_id: 'direct' },
-                    { prompt: 'attack two', plugin_id: 'harmful:hate', strategy_id: 'direct' },
-                  ]),
-                },
-              },
-            ],
-            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-          }),
-        );
-        return;
-      }
-      gradingBodies.push(body);
-      res.end(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                role: 'assistant',
-                content: JSON.stringify({ pass: false, score: 0, reason: 'probe verdict' }),
-              },
-            },
-          ],
-          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
-        }),
-      );
-    });
-    // Target: complies with substance, so promptfoo's refusal short-circuit
-    // does not skip grading.
-    const targetPort = await listen(async (req, res) => {
-      await readBody(req);
-      res.setHeader('content-type', 'application/json');
-      res.end(
-        JSON.stringify({
-          choices: [{ message: { role: 'assistant', content: 'Sure — here is the content you asked for, step by step.' } }],
-        }),
-      );
-    });
-
-    const request = {
-      run_id: 'u8-plan-a',
-      platform_user_id: 'u8-user',
-      purpose: 'U8 E2E',
-      num_tests: 2,
-      plugins: [{ id: 'prompt-injection' }, { id: 'harmful:hate' }],
-      strategies: [{ id: 'direct' }],
-      judge_mode: 'promptfoo_native' as const,
-      credentials: {
-        target: {
-          base_url: `http://127.0.0.1:${targetPort}/v1/chat/completions`,
-          model: 'fake-target',
-          api_key: 'sk-target',
-          timeout_seconds: 10,
-        },
-        generation: {
-          base_url: `http://127.0.0.1:${genPort}/v1`,
-          model: 'fake-gen',
-          api_key: 'sk-gen',
-        },
-      },
-      catalog: catalog(),
-    };
-
-    const controller = new AbortController();
-    const record = { request, controller } as unknown as RunRecord;
-    const { result } = await executePlanARedteamRun(record, () => undefined);
-    // --- the actual proof: the rubric promptfoo used, per plugin ---
-    expect(gradingBodies.length).toBeGreaterThanOrEqual(2);
-    expect(gradingBodies.some((b) => b.includes(RUBRIC_INJECTION))).toBe(true);
-    expect(gradingBodies.some((b) => b.includes(RUBRIC_HARMFUL))).toBe(true);
-    // And they must not be collapsed into one shared string.
-    const withInjection = gradingBodies.filter((b) => b.includes(RUBRIC_INJECTION));
-    const withHarmful = gradingBodies.filter((b) => b.includes(RUBRIC_HARMFUL));
-    expect(withInjection.length).toBeGreaterThan(0);
-    expect(withHarmful.length).toBeGreaterThan(0);
-
-    // --- traceability: which rubric judged which plugin ---
-    const byPlugin = Object.fromEntries(
-      (result.plugin_stats ?? []).map((s) => [s.plugin_id, s.judge_source]),
-    );
-    expect(byPlugin['prompt-injection']).toBe('plugin:prompt-injection');
-    expect(byPlugin['harmful:hate']).toBe('category:harmful');
-    const sources = Object.fromEntries((result.judge_sources ?? []).map((s) => [s.source, s.probes]));
-    expect(sources['plugin:prompt-injection']).toBeGreaterThan(0);
-    expect(sources['category:harmful']).toBeGreaterThan(0);
-  });
-
   it('Plan C: promptfoo grades with the per-plugin rubric we injected', async () => {
     const gradingBodies: string[] = [];
     const genPort = await listen(async (req, res) => {
@@ -385,7 +292,6 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
   // first attempt. So this goes through executeNativeRedteamRun and asserts on
   // its SafeRunResult.
   it('Plan C run reports non-zero probes through executeNativeRedteamRun', { timeout: 180000 }, async () => {
-    process.env.PROMPTFOO_ENGINE_NATIVE_GENERATION = '1';
     // promptfoo's policy plugin path calls promptForEmailUnverified(), which
     // BLOCKS on interactive stdin when no email is configured. CI mode uses a
     // placeholder and proceeds. Without this the run hangs on '? Work email:'.
@@ -494,7 +400,6 @@ describe('U8 E2E — both generation paths judge per plugin', { timeout: 180000 
         'promptfoo:policy',
       ]);
     } finally {
-      delete process.env.PROMPTFOO_ENGINE_NATIVE_GENERATION;
       delete process.env.CI;
       await fs.rm(workdir, { recursive: true, force: true });
     }

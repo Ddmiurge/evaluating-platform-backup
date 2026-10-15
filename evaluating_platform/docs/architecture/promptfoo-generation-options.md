@@ -1,5 +1,10 @@
 # promptfoo 引擎「攻击用例生成」方案对比
 
+> **状态（2026-10-15，P3-3）**：本文件记录的是**方案 A / 方案 C 并存时期**的对比与决策
+> 依据，保留为历史设计记录。Plan A 已被删除，计划生成只剩 promptfoo 原生一条链路；
+> 因此文中「两条路径」「开关」相关的描述描述的是当时的状态，不是当前实现。
+> 当前口径见 `maclaw-current-state.md` 的「词汇表收敛与 Plan A 退役」一节。
+
 > 背景：promptfoo 引擎 run 在「生成攻击用例」阶段失败。根因是 promptfoo 的
 > `redteam.run` 模式**必须自己生成测试用例**，而项目通过
 > `PROMPTFOO_DISABLE_REMOTE_GENERATION=1` 禁用了它的生成能力。

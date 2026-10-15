@@ -9,26 +9,41 @@
  * set to a truthy "disabled" value, so a misconfigured container can never
  * silently exfiltrate data.
  *
- * U7 adds a fifth switch, `PROMPTFOO_ENGINE_NATIVE_GENERATION`, which is NOT a
- * security switch: it only chooses *which generation path* a run takes (Plan A
- * platform-synthesized prompts vs Plan C promptfoo's own redteam generation).
- * It is **off by default** and is deliberately independent of the four
- * fail-closed switches above — turning it on must never relax any of them.
- * See `assertNativeGenerationInvariants` for the (additive) invariants it does
- * enforce, and nativeRedteam.ts for why they are load-bearing rather than
- * decorative.
+ * P3-3 removed the `PROMPTFOO_ENGINE_NATIVE_GENERATION` switch together with Plan
+ * A, whose only purpose it served. promptfoo's own redteam generation is now the
+ * single path, so the invariants that used to apply "when native generation is
+ * on" apply always — see `assertNoRemoteGenerationConsent`, which is why it is
+ * called unconditionally rather than gated behind a switch.
  */
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 
 export interface EngineEnv {
   port: number;
   bearerToken: string;
   dataRoot: string;
+  /**
+   * The CONFIGURED worker count. It is reported (and ignored) rather than removed:
+   * the engine runs one worker by construction (see `ENGINE_WORKER_COUNT`), and an
+   * operator who set this variable deserves to be told so in the boot log instead
+   * of wondering why throughput does not change.
+   */
   workerCount: number;
   maxQueueDepth: number;
-  /** U7: run promptfoo's own redteam generation instead of Plan A. Default false. */
-  nativeGeneration: boolean;
 }
+
+/**
+ * Workers the engine runs with.
+ *
+ * One, and not as a preference: promptfoo keeps a single database file per process
+ * (`PROMPTFOO_CONFIG_DIR` is latched at import, `getDb()` memoizes the connection)
+ * and the terminal cleanup deletes it — so two concurrent runs delete each other's
+ * results and one of them loses its schema mid-run. Measured on the U7 probe: after
+ * a cleanup and a re-migrate, run 2 still read run 1's rows through the memoized
+ * handle while the path held a different database.
+ */
+export const ENGINE_WORKER_COUNT = 1;
 
 function parseBool(v: string | undefined): boolean {
   if (!v) return false;
@@ -61,7 +76,7 @@ export function assertSecuritySwitches(env: NodeJS.ProcessEnv = process.env): vo
 
 export function loadEnv(env: NodeJS.ProcessEnv = process.env): EngineEnv {
   assertSecuritySwitches(env);
-  assertNativeGenerationInvariants(env);
+  assertNoRemoteGenerationConsent(env);
 
   const bearerToken = env.PROMPTFOO_ENGINE_BEARER_TOKEN ?? '';
   if (bearerToken.length < 16) {
@@ -81,23 +96,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): EngineEnv {
     dataRoot,
     workerCount: parseIntEnv(env.PROMPTFOO_ENGINE_WORKERS, 2, 1, 8),
     maxQueueDepth: parseIntEnv(env.PROMPTFOO_ENGINE_MAX_QUEUE, 100, 1, 1000),
-    nativeGeneration: nativeGenerationEnabled(env),
   };
-}
-
-/** The U7 path-selection switch. Anything other than a truthy value means Plan A. */
-export const NATIVE_GENERATION_SWITCH = 'PROMPTFOO_ENGINE_NATIVE_GENERATION';
-
-/**
- * Whether Plan C (promptfoo's own redteam generation) is selected.
- *
- * Default-off by construction: `parseBool` maps both "unset" and every
- * unrecognized spelling to false, so a typo in a compose file degrades to the
- * known-good Plan A rather than to the new path. Rolling back U7 is therefore
- * a one-variable operation — no code revert, no data migration.
- */
-export function nativeGenerationEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return parseBool(env[NATIVE_GENERATION_SWITCH]);
 }
 
 /**
@@ -179,54 +178,27 @@ export async function assertSandboxInvariants(env: NodeJS.ProcessEnv = process.e
  *     how an operator states that intent; the variable being set at all is
  *     what we check, because a login is then the only cloud signal left.
  */
-/**
- * P2-3 · workers to actually run with, given the configured count.
- *
- * Native generation serializes to one worker, and this is where that policy
- * lives so it is a testable function rather than a line buried in `main()`.
- *
- * # Why serialization is required, not merely conservative
- *
- * promptfoo keeps ONE database file for the whole process: `PROMPTFOO_CONFIG_DIR`
- * is latched at import and `getDb()` memoizes its connection. The terminal
- * cleanup deletes that file. Two concurrent native runs therefore share a
- * database, so one run's cleanup deletes the other's results, and the other's
- * schema can disappear mid-run. Measured on the U7 probe: after a cleanup and a
- * re-migrate, run 2 still read run 1's rows through the memoized handle while the
- * path held a different database.
- *
- * # Why it clamps instead of refusing to boot
- *
- * A worker count is a throughput preference, and clamping it costs latency while
- * refusing to boot costs availability. The trade the plan records the user
- * choosing is "queueing beats occasional failure plus data loss" — so the safe
- * value wins, loudly (the caller logs the clamp), and the failure mode of a
- * forgotten setting is a slower engine rather than quietly interleaved runs.
- *
- * A queued run stays `queued` until a worker picks it up, so the wait is visible
- * on /health and through the progress card rather than showing as a run that
- * claims to be executing while it waits.
- */
-export function effectiveWorkerCount(configured: number, nativeGeneration: boolean): number {
-  if (!nativeGeneration) return configured;
-  return 1;
-}
 
-export function assertNativeGenerationInvariants(env: NodeJS.ProcessEnv = process.env): void {
-  if (!nativeGenerationEnabled(env)) return;
-
+export function assertNoRemoteGenerationConsent(env: NodeJS.ProcessEnv = process.env): void {
   const offending: string[] = [];
   if ((env.OPENAI_API_KEY ?? '').trim()) offending.push('OPENAI_API_KEY');
   if ((env.PROMPTFOO_REMOTE_GENERATION_URL ?? '').trim()) offending.push('PROMPTFOO_REMOTE_GENERATION_URL');
-  if ((env.PROMPTFOO_CONFIG_DIR ?? '').trim()) {
-    offending.push('PROMPTFOO_CONFIG_DIR (would expose a Promptfoo Cloud login to the library)');
+  // P3-3：这一条原本禁止设置 `PROMPTFOO_CONFIG_DIR`。禁止的是一个**代理指标**，而不是
+  // 危害本身：真正的危害是「库能看到一个 Promptfoo Cloud 登录」，而把配置目录指向隔离
+  // 目录恰恰是测试与挂载卷部署用来把引擎状态挡在开发者 home 之外的手段（P2-3 的
+  // 生命周期模块也正是按这个变量解析库路径的）。所以改为只拒绝**登录实际存在**的情形。
+  const configDir = (env.PROMPTFOO_CONFIG_DIR ?? '').trim();
+  if (configDir) {
+    if (existsSync(path.join(configDir, 'auth.json'))) {
+      offending.push(`PROMPTFOO_CONFIG_DIR (contains auth.json — a Promptfoo Cloud login) at ${configDir}`);
+    }
   }
   if (offending.length > 0) {
     throw new Error(
-      `[FATAL] ${NATIVE_GENERATION_SWITCH} is on but ${offending.join(', ')} ${offending.length > 1 ? 'are' : 'is'} set. ` +
-        'Native generation talks only to the platform-supplied provider endpoint; promptfoo treats those variables as ' +
-        'consent to use its remote generation service, which this engine must never do. ' +
-        `Unset ${offending.join(', ')} or turn ${NATIVE_GENERATION_SWITCH} off.`,
+      `[FATAL] the engine talks only to the platform-supplied endpoints, but ${offending.join(', ')} ` +
+        `${offending.length > 1 ? 'are' : 'is'} set. promptfoo reads those variables as consent to use its own ` +
+        'remote generation service, which this engine must never do. Refusing to start rather than booting with ' +
+        `an exfiltration channel open: unset ${offending.join(', ')}.`,
     );
   }
 }

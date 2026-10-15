@@ -19,6 +19,7 @@ import {
   NATIVE_ERR_NUM_TESTS_TOO_SMALL,
   NATIVE_ERR_PLUGIN_ID_INVALID,
   NATIVE_ERR_PROMPTFOO_FAILED,
+  NATIVE_ERR_STRATEGY_UNKNOWN,
   NATIVE_ERR_STRATEGY_UNSUPPORTED,
   NATIVE_ERR_WORKDIR_MISSING,
   resolveNativeStrategies,
@@ -33,7 +34,7 @@ import {
   nativeStrategyMapping,
   planAOnlyStrategyIds,
 } from '../src/runner/nativeStrategyMap.js';
-import { EngineRunError } from '../src/runner/generateTests.js';
+import { EngineRunError } from '../src/runner/engineRunError.js';
 import { reduceEvalToSafeResult } from '../src/runner/redteamRun.js';
 import type { EngineCatalog, OneShotCredentials } from '../src/types.js';
 import { buildJudgeRubricMap, UNMAPPED_JUDGE_CRITERIA } from '../src/runner/judgeRubric.js';
@@ -159,9 +160,9 @@ describe('assertSafeProviderUrl — no vendor endpoints, ever', () => {
   });
 });
 
-describe('resolveNativeStrategies — platform ids → promptfoo ids', () => {
+describe('resolveNativeStrategies — platform ids → promptfoo ids (P3-3)', () => {
   it('maps the renamed multi-turn strategies onto promptfoo ids', () => {
-    const { native, planAOnly } = resolveNativeStrategies([
+    const native = resolveNativeStrategies([
       { id: 'iterative' },
       { id: 'iterative:tree' },
       { id: 'hydra' },
@@ -175,40 +176,46 @@ describe('resolveNativeStrategies — platform ids → promptfoo ids', () => {
       'authoritative-markup-injection',
     ]);
     // `iterative` and `iterative:tree` share one promptfoo id and promptfoo
-    // rejects duplicates, so the collapse is intentional — asserted here because
-    // it means a selection of five yields four forwarded strategies.
-    expect(planAOnly).toEqual([]);
+    // rejects duplicates, so the collapse is intentional — a selection of five
+    // yields four forwarded strategies.
   });
 
   // promptfoo throws "Invalid strategy(s)" for ids it does not know, and two
   // platform ids collapsing to the same promptfoo id would be a duplicate.
   it('de-duplicates platform ids that collapse to one promptfoo id', () => {
-    const { native } = resolveNativeStrategies([{ id: 'iterative' }, { id: 'iterative:tree' }]);
-    expect(native).toEqual([{ id: 'jailbreak:tree' }]);
-  });
-
-  // §4.3: direct/role-play/encoding are platform-invented wrapper dimensions.
-  // Forwarding them would make promptfoo throw; dropping them silently would
-  // understate coverage. They must be reported as Plan-A-only.
-  it('keeps platform-invented dimensions out of promptfoo strategies', () => {
-    const { native, planAOnly } = resolveNativeStrategies([
-      { id: 'direct' },
-      { id: 'role-play' },
-      { id: 'encoding' },
-      { id: 'base64' },
+    expect(resolveNativeStrategies([{ id: 'iterative' }, { id: 'iterative:tree' }])).toEqual([
+      { id: 'jailbreak:tree' },
     ]);
-    expect(native).toEqual([{ id: 'base64' }]);
-    expect(planAOnly).toEqual(['direct', 'role-play', 'encoding']);
   });
 
-  it('treats an unknown platform id as Plan-A-only rather than forwarding it', () => {
-    const { native, planAOnly } = resolveNativeStrategies([{ id: 'no-such-strategy' }]);
-    expect(native).toEqual([]);
-    expect(planAOnly).toEqual(['no-such-strategy']);
+  // THIS is the behaviour P3-3 changed. An id in neither vocabulary used to be
+  // dropped into a `planAOnly` list and the run continued — so the dimension
+  // silently did nothing (item12 measured a `strategy_stats=none` run nobody was
+  // told about). It is now a refusal, with its own code.
+  it('refuses an unknown strategy id instead of dropping it', () => {
+    let thrown: unknown;
+    try {
+      resolveNativeStrategies([{ id: 'no-such-strategy' }]);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(EngineRunError);
+    expect((thrown as EngineRunError).code).toBe(NATIVE_ERR_STRATEGY_UNKNOWN);
+    expect((thrown as EngineRunError).message).toContain('no-such-strategy');
+  });
+
+  // The platform's withdrawn dimensions reach this same branch when a request
+  // bypasses the BFF gate (a direct engine call, or a stored config). They are
+  // unknown here — the engine keeps no "known but unusable" list — and that is
+  // the intended shape: one refusal path, not two.
+  it('refuses a withdrawn platform dimension the same way', () => {
+    for (const id of ['direct', 'role-play', 'encoding', 'multi-turn']) {
+      expect(() => resolveNativeStrategies([{ id }]), id).toThrow(EngineRunError);
+    }
   });
 
   it('ignores blank ids', () => {
-    expect(resolveNativeStrategies([{ id: '  ' }, { id: '' }])).toEqual({ native: [], planAOnly: [] });
+    expect(resolveNativeStrategies([{ id: '  ' }, { id: '' }])).toEqual([]);
   });
 });
 
@@ -231,37 +238,25 @@ describe('nativeStrategyMap — single source of truth, no overlap with U6', () 
     },
   );
 
-  // Phase 3 · `simba`, `retry` and `mathPrompt` join this list. None of them is a
-  // platform-invented dimension — promptfoo really has all three ids — but all
-  // three fail or do nothing when the platform forwards them, and each was
-  // previously mapped as `native`:
-  //
-  //   simba       -> deprecated stub; action logs "will be skipped", returns [].
-  //                  A green run with the strategy reported as applied.
-  //   retry       -> invariant "No target IDs found in config", thrown after
-  //                  the run record is persisted. Needs config the platform
-  //                  does not send.
-  //   math-prompt -> with remote generation fail-closed it calls an OpenAI
-  //                  provider directly and dies with "API key is not set".
-  //
-  // U6's remote-dependency table gates none of them, so none was caught before
-  // this discovery pass. Reclassifying keeps each id resolvable (Plan A
-  // synthesis plus a reason) without forwarding a strategy that cannot run.
-  it('classifies exactly the platform-invented dimensions and the unusable natives as Plan-A-only', () => {
-    expect(planAOnlyStrategyIds()).toEqual([
-      'assumed-knowledge',
-      'direct',
-      'encoding',
-      'few-shot',
-      'many-shot',
-      'mathPrompt',
-      'multi-turn',
-      'otherEncodings',
-      'retry',
-      'role-play',
-      'simba',
-      'translate',
-    ]);
+  // P3-3: the table no longer has a `plan_a_only` disposition. An id either maps
+  // onto a real promptfoo strategy or it is unknown (and the caller refuses). So
+  // what is worth asserting is that the disposition's residue is gone — including
+  // the three upstream ids that used to sit in it for a different reason
+  // (`simba` is a deprecated no-op, `retry` needs config the platform does not
+  // send, `math-prompt` needs an OpenAI key).
+  it('classifies nothing as platform-only any more', () => {
+    const previouslyClassified = [
+      'assumed-knowledge', 'direct', 'encoding', 'few-shot', 'many-shot',
+      'multi-turn', 'otherEncodings', 'role-play', 'translate',
+      'simba', 'retry', 'mathPrompt',
+    ];
+    for (const id of previouslyClassified) {
+      expect(nativeStrategyMapping(id), `${id} is still classified`).toBeUndefined();
+    }
+    // And every id that IS mapped carries a promptfoo id — no half-filled rows.
+    for (const id of knownNativeStrategyIds()) {
+      expect(nativeStrategyMapping(id)?.promptfooId, id).toBeTruthy();
+    }
   });
 
   // The `simba` reclassification is a correctness fix, so it is pinned here
@@ -274,19 +269,6 @@ describe('nativeStrategyMap — single source of truth, no overlap with U6', () 
       // Only the self-contained empty implementations are provable from source.
       if (!/return\s*\[\s*\]\s*;?\s*}/.test(body)) continue;
       expect(nativeStrategyMapping(strategy.id)?.disposition).not.toBe('native');
-    }
-  });
-
-  it('gives every Plan-A-only entry a human-readable reason', () => {
-    for (const id of planAOnlyStrategyIds()) {
-      expect(nativeStrategyMapping(id)?.reason).toBeTruthy();
-    }
-  });
-
-  it('maps every non-Plan-A-only id to a promptfoo id', () => {
-    for (const id of knownNativeStrategyIds()) {
-      const mapping = nativeStrategyMapping(id);
-      if (mapping?.disposition === 'native') expect(mapping.promptfooId).toBeTruthy();
     }
   });
 

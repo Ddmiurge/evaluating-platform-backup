@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
-import { assertNativeGenerationInvariants, assertSecuritySwitches, effectiveWorkerCount, loadEnv, nativeGenerationEnabled } from '../src/env.js';
+import { ENGINE_WORKER_COUNT, assertNoRemoteGenerationConsent, assertSecuritySwitches, loadEnv } from '../src/env.js';
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return {
@@ -97,89 +101,68 @@ describe('loadEnv', () => {
   });
 });
 
-/* ------------------------------------------------------------------ *
- * U7 · Plan A / Plan C path switch.
- *
- * The switch is NOT a security switch. It only chooses the generation
- * path, it is OFF by default, and it is fully independent of the four
- * fail-closed switches above — the tests below pin all three properties.
- * ------------------------------------------------------------------ */
-describe('nativeGenerationEnabled (U7 path switch, default OFF)', () => {
-  it('is off when the variable is absent — Plan A is the default', () => {
-    expect(nativeGenerationEnabled(env({}))).toBe(false);
-    expect(loadEnv(env({})).nativeGeneration).toBe(false);
+// P3-3 删除了 `PROMPTFOO_ENGINE_NATIVE_GENERATION` 开关与它的测试块。那个开关只
+// 用来在 Plan A / Plan C 之间选择，而 Plan A 已随本批删除。
+
+// P3-3：这个不变量不再挂在开关上。它原本只在 native 路径开启时生效 —— 现在那是唯一
+// 路径，所以它无条件生效：环境里出现 promptfoo 会当作「同意使用其远程服务」的变量时，
+// 引擎拒绝启动，而不是带着一条外泄通道跑。
+//
+// 反证：把它改回 `if (!nativeGenerationEnabled(env)) return;` → 下面第二条会红。
+describe('assertNoRemoteGenerationConsent (unconditional since P3-3)', () => {
+  it('passes when no vendor variable is set', () => {
+    expect(() => assertNoRemoteGenerationConsent(env({}))).not.toThrow();
   });
 
-  // A typo in a compose file must degrade to the known-good Plan A rather than
-  // silently enabling the new path.
-  it.each(['0', 'false', 'no', 'off', '', '  ', 'enabled', 'yes-please', '2'])(
-    'treats %j as off',
-    (value) => {
-      expect(nativeGenerationEnabled(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: value }))).toBe(false);
-    },
-  );
-
-  it.each(['1', 'true', 'yes', 'on', 'ON', ' True '])('treats %j as on', (value) => {
-    expect(nativeGenerationEnabled(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: value }))).toBe(true);
-  });
-});
-
-describe('assertNativeGenerationInvariants (additive, never relaxing)', () => {
-  it('does nothing while the switch is off', () => {
-    // Even with the dangerous variables present: Plan A never reaches
-    // promptfoo's generation path, so it must not block startup.
+  // 行为变更（P3-3）：这些变量以前在「开关关闭」时是被容忍的（Plan A 不碰 promptfoo
+  // 的生成路径）。只剩一条路径之后，它们**无条件**是启动失败条件 —— 也就是说
+  // `OPENAI_API_KEY` 的存在本身就足以让容器起不来，这正是想要的严厉程度。
+  it('refuses even with no switch set, because there is no other path left', () => {
     expect(() =>
-      assertNativeGenerationInvariants(
+      assertNoRemoteGenerationConsent(
         env({ OPENAI_API_KEY: 'sk-present', PROMPTFOO_REMOTE_GENERATION_URL: 'https://x' }),
       ),
-    ).not.toThrow();
+    ).toThrow(/OPENAI_API_KEY/);
   });
 
-  it('passes when the switch is on and no vendor variable is set', () => {
-    expect(() =>
-      assertNativeGenerationInvariants(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1' })),
-    ).not.toThrow();
-  });
-
-  // Counter-proof: with the switch ON, a stray OPENAI_API_KEY would make
-  // promptfoo's shouldGenerateRemote() return true even with both remote
-  // switches disabled — re-opening the exact channel this engine is fail-closed
-  // on. Refusing to boot is the only honest response.
+  // Counter-proof: a stray OPENAI_API_KEY would make promptfoo's
+  // shouldGenerateRemote() return true even with both remote switches disabled —
+  // re-opening the exact channel this engine is fail-closed on. Refusing to boot
+  // is the only honest response.
   it('refuses to boot with OPENAI_API_KEY set', () => {
     expect(() =>
-      assertNativeGenerationInvariants(
-        env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', OPENAI_API_KEY: 'sk-whatever' }),
-      ),
+      assertNoRemoteGenerationConsent(env({ OPENAI_API_KEY: 'sk-whatever' })),
     ).toThrow(/OPENAI_API_KEY/);
   });
 
   it('refuses to boot with PROMPTFOO_REMOTE_GENERATION_URL set', () => {
     expect(() =>
-      assertNativeGenerationInvariants(
-        env({
-          PROMPTFOO_ENGINE_NATIVE_GENERATION: '1',
-          PROMPTFOO_REMOTE_GENERATION_URL: 'https://selfhosted.example',
-        }),
+      assertNoRemoteGenerationConsent(
+        env({ PROMPTFOO_REMOTE_GENERATION_URL: 'https://selfhosted.example' }),
       ),
     ).toThrow(/PROMPTFOO_REMOTE_GENERATION_URL/);
   });
 
-  it('refuses to boot when a Promptfoo Cloud login could be visible', () => {
-    expect(() =>
-      assertNativeGenerationInvariants(
-        env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_CONFIG_DIR: '/home/.promptfoo' }),
-      ),
-    ).toThrow(/PROMPTFOO_CONFIG_DIR/);
+  // P3-3：这一条从「禁止设置 PROMPTFOO_CONFIG_DIR」收窄为「禁止目录里存在 auth.json
+  // （Promptfoo Cloud 登录）」。原因：前者是代理指标，而把配置目录指向隔离目录正是测试与
+  // 挂载卷部署隔离状态的正当手段 —— 而**登录可见**才是真正的危害。
+  it('allows an isolated config dir but refuses one holding a cloud login', () => {
+    const isolated = mkdtempSync(join(tmpdir(), 'engine-env-noauth-'));
+    try {
+      expect(() => assertNoRemoteGenerationConsent(env({ PROMPTFOO_CONFIG_DIR: isolated }))).not.toThrow();
+      writeFileSync(join(isolated, 'auth.json'), '{"token":"cloud-login"}', 'utf8');
+      expect(() => assertNoRemoteGenerationConsent(env({ PROMPTFOO_CONFIG_DIR: isolated }))).toThrow(
+        /PROMPTFOO_CONFIG_DIR/,
+      );
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   it('lists every offending variable at once', () => {
     try {
-      assertNativeGenerationInvariants(
-        env({
-          PROMPTFOO_ENGINE_NATIVE_GENERATION: '1',
-          OPENAI_API_KEY: 'sk-x',
-          PROMPTFOO_REMOTE_GENERATION_URL: 'https://x',
-        }),
+      assertNoRemoteGenerationConsent(
+        env({ OPENAI_API_KEY: 'sk-x', PROMPTFOO_REMOTE_GENERATION_URL: 'https://x' }),
       );
       expect.unreachable('should have thrown');
     } catch (err) {
@@ -189,42 +172,28 @@ describe('assertNativeGenerationInvariants (additive, never relaxing)', () => {
     }
   });
 
-  // The independence property itself: turning the new path on must never let a
-  // fail-closed switch be relaxed.
-  it('still enforces the four fail-closed switches with native generation ON', () => {
-    expect(() =>
-      assertSecuritySwitches(
-        env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_DISABLE_TELEMETRY: '0' }),
-      ),
-    ).toThrow(/telemetry/);
-    expect(() => loadEnv(env({ PROMPTFOO_ENGINE_NATIVE_GENERATION: '1', PROMPTFOO_DISABLE_SHARE: '0' }))).toThrow(
-      /share\/cloud export/,
-    );
+  // 四个 fail-closed 开关与本不变量相互独立：一个都不许被另一个放松。
+  it('enforces the four fail-closed switches alongside it', () => {
+    expect(() => assertSecuritySwitches(env({ PROMPTFOO_DISABLE_TELEMETRY: '0' }))).toThrow(/telemetry/);
+    expect(() => loadEnv(env({ PROMPTFOO_DISABLE_SHARE: '0' }))).toThrow(/share\/cloud export/);
   });
 });
 
-// P2-3 · native generation serializes runs onto one worker.
+// P3-3：原先是 `effectiveWorkerCount(configured, nativeGeneration)` 的钳位函数。只剩
+// 一条路径之后它退化成一个常量 —— 但要钉住的**理由**没变：promptfoo 全进程一个
+// SQLite 文件（`PROMPTFOO_CONFIG_DIR` 在 import 时 latch、`getDb()` memoize），而终态
+// 清理会删掉它，所以并发 run 会互删结果。U7 实测：清理 + 重迁移之后，run 2 仍通过
+// memoize 的句柄读到 run 1 的行，而路径上已经是另一个库。
 //
-// The invariant this pins: promptfoo has ONE database file per process
-// (`PROMPTFOO_CONFIG_DIR` is latched at import, `getDb()` memoizes), and the
-// terminal cleanup deletes it — so two concurrent native runs delete each
-// other's results. Measured on the U7 probe: after cleanup + re-migrate, run 2
-// still read run 1's rows through the memoized handle.
-//
-// Counter-proof: make `effectiveWorkerCount` return `configured` for the native
-// path → this goes red.
-describe('effectiveWorkerCount — native runs are serialized', () => {
-  it('clamps to one worker when native generation is on', () => {
-    for (const configured of [1, 2, 4, 8]) {
-      expect(effectiveWorkerCount(configured, true)).toBe(1);
-    }
+// 反证：把 ENGINE_WORKER_COUNT 改成 2 → 第一条红。
+describe('ENGINE_WORKER_COUNT — runs are serialized by construction', () => {
+  it('is exactly one worker', () => {
+    expect(ENGINE_WORKER_COUNT).toBe(1);
   });
 
-  it('leaves the configured count alone on the Plan A path', () => {
-    // Plan A never touches promptfoo's storage, so the shared-database hazard
-    // does not exist and there is nothing to serialize.
-    for (const configured of [1, 2, 4, 8]) {
-      expect(effectiveWorkerCount(configured, false)).toBe(configured);
-    }
+  it('still parses the configured value so the boot log can say it is ignored', () => {
+    // 配置值仍被解析，只为在启动日志里说明它被忽略 ——「设了没变化还不告诉我」比
+    // 「设了没用」更糟。
+    expect(loadEnv(env({ PROMPTFOO_ENGINE_WORKERS: '4' })).workerCount).toBe(4);
   });
 });

@@ -67,8 +67,7 @@ export interface RunRequest {
   /**
    * U7 · What the application under test actually is.
    *
-   * Plan A (platform-synthesized prompts) had no use for this; Plan C does not
-   * either, verbatim. promptfoo's library entrypoint never reads an
+   * promptfoo's library entrypoint never reads an
    * `applicationDefinition` key — that field is only honoured by the CLI
    * (`dist/src/main.js`), and `RedteamConfigSchema` does not even declare it, so
    * a config carrying it would have the key silently stripped by zod.
@@ -109,12 +108,11 @@ export interface RunRequest {
    * byte-identical to the document that was validated. The engine writes each
    * one into its per-run workdir and points promptfoo at it via `file://`.
    *
-   * **Plan C only.** Plan A synthesizes attack prompts with the platform LLM
-   * and never invokes promptfoo's plugin machinery, so a package's `generator`
-   * template would simply be ignored there — a green run with the expert's
-   * capability silently absent, which is the exact failure shape U6/U10 exist
-   * to eliminate. Plan A therefore refuses such a request outright; see
-   * `assertNoCustomPluginsOnPlanA`.
+   * (Until P3-3 this said "Plan C only": Plan A synthesised the attack prompts
+   * itself and never invoked promptfoo's plugin machinery, so a package's
+   * `generator` template would have been silently ignored — a green run with the
+   * expert's capability absent. Plan A is gone, so the qualifier is too; the
+   * mechanism is unchanged.)
    */
   custom_plugins?: EngineCustomPlugin[];
 
@@ -127,10 +125,9 @@ export interface RunRequest {
    * form promptfoo accepts without executing code (a `file://` strategy is
    * necessarily `.js`/`.ts` — `loadStrategy` enforces `isJavascriptFile`).
    *
-   * **Plan C only**, for the same reason as plugins: Plan A synthesizes attack
-   * prompts itself and never invokes promptfoo's strategy machinery, so a
-   * package's `strategyText` would be silently ignored there. See
-   * `assertNoCustomStrategiesOnPlanA`.
+   * (The "Plan C only" qualifier this comment used to carry is gone with Plan A:
+   * it synthesised attack prompts itself and never invoked promptfoo's strategy
+   * machinery, so a package's `strategyText` would have been silently ignored.)
    */
   custom_strategies?: EngineCustomStrategy[];
 }
@@ -277,6 +274,10 @@ export interface SafeRunResult {
    * P2-6 · which generation path produced this run: `plan_a` (the platform's own
    * LLM synthesised the attack prompts) or `plan_c` (promptfoo's native redteam
    * machinery did).
+   *
+   * P3-3 deleted Plan A, so every run the engine produces now reports `plan_c`.
+   * The type keeps `plan_a` for REPORTS FROM HISTORY: they still need to say so,
+   * and dropping the variant would make an old report unable to explain itself.
    *
    * The two produce reports that ARE NOT comparable — different probe counts for
    * the same input, different strategies, and for a while a different judging

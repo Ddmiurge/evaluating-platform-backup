@@ -19,8 +19,24 @@
 - `internal/detector`
 - `cmd/skillrunner`
 - `Dockerfile.skillrunner`
+- **Plan A 生成链路**（`promptfoo_engine/src/runner/generateTests.ts`，P3-3，2026-10-15）
+  以及选择它的开关 `PROMPTFOO_ENGINE_NATIVE_GENERATION`
 
 旧 `skill_runner`、`ccbos_mcp` compose service 和相关镜像不属于当前启动图。
+
+### Plan A 退役说明（P3-3）
+
+Plan A 是「平台自己的生成 LLM 合成攻击提示词 + promptfoo 只做 evaluate 执行」那条链路。
+它被删除的原因不是它坏，而是它**重复**：promptfoo 原生生成（Plan C）已经拥有生成范式
+（插件模板、实体提取、策略变换、判定器），而两条链路在相同输入下产出的探针数量不同、
+报告外观却一样 —— 用户会并列比较两份不可比的报告（U7 item14）。
+
+删除范围：`generateTests.ts` 与其测试、`redteamRun.ts` 的路径选择与 Plan A 专属拒绝、
+`env.ts` 的开关与 `effectiveWorkerCount`、`server.ts` 的条件分支、前端与文档里的开关说明。
+
+**不可配置级回滚**：开关已删除，回滚手段从「翻一个变量」变为「回退镜像版本」（见
+`production-cutover-checklist.md` 的回滚策略）。历史报告里的 `generation_path=plan_a`
+保留渲染，因为那些报告仍需要能解释自己。
 
 前端也已从挂载源码的开发容器收口为可部署镜像：主 compose 不再运行 `npm run dev`，而是构建 Vite 静态资源并由 nginx 托管。
 

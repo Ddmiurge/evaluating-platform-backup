@@ -1,19 +1,20 @@
 /**
- * Runner: red-team runs executed through promptfoo.
+ * Runner support shared by the red-team execution path.
  *
- * Two generation paths coexist behind one switch (U7):
+ * # This file no longer chooses a generation path
  *
- *   - **Plan A** (default) — `generateTests.ts` synthesizes attack prompts with
- *     the platform's generation LLM, and promptfoo only consumes them in
- *     evaluate mode. promptfoo's own attack machinery is never involved.
- *   - **Plan C** — `nativeRedteam.ts` calls `promptfoo.redteam.run()` and fills
- *     the `provider` slot with the platform generation LLM, so promptfoo owns
- *     the generation paradigm (plugin templates, entity extraction, strategy
- *     transforms, graders).
+ * It used to. Plan A (`generateTests.ts`: the platform's own generation LLM
+ * synthesised the attack prompts, promptfoo ran in evaluate mode) was deleted in
+ * P3-3, together with the `PROMPTFOO_ENGINE_NATIVE_GENERATION` switch that chose
+ * between them. The remaining path — promptfoo's native `redteam.run()` — owns
+ * generation outright (plugin templates, entity extraction, strategy transforms,
+ * graders).
  *
- * Selected by `PROMPTFOO_ENGINE_NATIVE_GENERATION`, which is off by default and
- * independent of the four fail-closed switches. Both paths reduce through the
- * same `reduceEvalToSafeResult`, so reporting and redaction are identical.
+ * What lives here is what BOTH paths used and the native path still needs: the
+ * target-provider construction, the agent-conversation placeholder handling, and
+ * the reduction from a promptfoo `Eval` into the platform-safe `SafeRunResult`.
+ * The name is kept because renaming it would touch every importer for a cosmetic
+ * gain — but nothing in this file selects a path any more.
  *
  * Library surface used (verified against dist of promptfoo v0.123.0):
  *   import promptfoo from 'promptfoo';
@@ -58,7 +59,7 @@ export interface EvalLike {
 import type { EngineCatalog, OneShotCredentials, RunProgressEvent, SafeRunResult } from '../types.js';
 import { redactReason, redactTopReasons, sanitizeSeverity } from '../sanitize/redact.js';
 import type { RunRecord } from '../manager/taskManager.js';
-import { EngineRunError, generateAttackTests } from './generateTests.js';
+import { EngineRunError } from './engineRunError.js';
 import { buildJudgeRubricMap, PLUGIN_JUDGE_SOURCE_METADATA_KEY, resolveJudgeRubric, UNMAPPED_JUDGE_SOURCE } from './judgeRubric.js';
 import {
   buildSessionParser,
@@ -294,226 +295,6 @@ function remapConversationPlaceholders(node: unknown): any {
 export interface RunnerResult {
   result: SafeRunResult;
   rawEvalId?: string;
-}
-
-/**
- * Execute one engine run, choosing the generation path.
- *
- * `workdir` is the isolated per-run directory (created and wiped by
- * WorkdirManager). Only Plan C needs it — it holds the promptfoo config
- * document, which embeds the materialized generation credential. Plan A ignores
- * it, which is exactly what makes "turn the switch off" a complete rollback.
- */
-export async function executeRedteamRun(
-  record: RunRecord,
-  emit: Emit,
-  options: { nativeGeneration: boolean; workdir: string },
-): Promise<RunnerResult> {
-  if (options.nativeGeneration) {
-    const { executeNativeRedteamRun } = await import('./nativeRedteam.js');
-    return executeNativeRedteamRun(record, emit, options.workdir);
-  }
-  return executePlanARedteamRun(record, emit);
-}
-
-/**
- * U10 · Error code for a published package requested on the Plan A path.
- *
- * Mirrored by the BFF's `engine_runner_error_code`; part of the API contract so
- * the UI can say "需要开启原生生成" instead of "运行失败".
- */
-export const PLAN_A_ERR_CUSTOM_PLUGIN = 'custom_plugin_requires_native_generation';
-
-/**
- * Refuse a published package on the Plan A path.
- *
- * The check is on `custom_plugins` (the resolved payloads) rather than on the
- * plugin ids, because ids alone cannot distinguish a package from a built-in:
- * the BFF rewrites package refs to `promptfoo-custom:` markers, and Plan A would
- * pass those markers to the generation LLM as if they were plugin families —
- * producing prompts attributed to a plugin that does not exist.
- */
-export function assertNoCustomPluginsOnPlanA(customPlugins: Array<{ handle: string }> | undefined): void {
-  if (!customPlugins || customPlugins.length === 0) return;
-  const handles = customPlugins.map((p) => p.handle).filter(Boolean);
-  throw new EngineRunError(
-    PLAN_A_ERR_CUSTOM_PLUGIN,
-    `自定义插件（${handles.join(', ')}）只能由 promptfoo 原生生成执行，当前平台生成路径不会调用插件引擎，` +
-      '照常运行会得到一份绿色报告，但专家插件的 generator 从未被执行（选中能力、零覆盖且无法察觉）。' +
-      '请开启 PROMPTFOO_ENGINE_NATIVE_GENERATION，或在本次评测中不使用自定义插件。',
-  );
-}
-
-/**
- * Phase 3 开篇 · 任务 2 · Error code for a published strategy package requested
- * on the Plan A path.
- */
-export const PLAN_A_ERR_CUSTOM_STRATEGY = 'custom_strategy_requires_native_generation';
-
-/**
- * Refuse a published strategy package on the Plan A path.
- *
- * Same reasoning as `assertNoCustomPluginsOnPlanA`, and the same reason the check
- * is on the resolved payloads rather than on ids: a `pf_strategy:` marker cannot
- * be distinguished from a built-in strategy id by string alone, and Plan A would
- * hand it to the generation LLM as a strategy family that does not exist.
- */
-export function assertNoCustomStrategiesOnPlanA(customStrategies: Array<{ handle: string }> | undefined): void {
-  if (!customStrategies || customStrategies.length === 0) return;
-  const handles = customStrategies.map((s) => s.handle).filter(Boolean);
-  throw new EngineRunError(
-    PLAN_A_ERR_CUSTOM_STRATEGY,
-    `自定义策略（${handles.join(', ')}）只能由 promptfoo 原生生成执行，当前平台生成路径不会调用策略引擎，` +
-      '照常运行会得到一份绿色报告，但专家策略的 strategyText 从未被送出（选中能力、零覆盖且无法察觉）。' +
-      '请开启 PROMPTFOO_ENGINE_NATIVE_GENERATION，或在本次评测中不使用自定义策略。',
-  );
-}
-
-/**
- * Plan A: generate attack tests with the platform generation LLM, run them
- * against the target via promptfoo evaluate, and judge each response with
- * llm-rubric. Emits safe progress events through `emit`. Throws on engine
- * failure or abort (taskManager maps to failed/canceled).
- */
-export async function executePlanARedteamRun(record: RunRecord, emit: Emit): Promise<RunnerResult> {
-  const { request } = record;
-  const { credentials } = request;
-
-  // U10: Plan A cannot execute a published package. It asks the platform LLM
-  // for attack prompts and hands plugin ids to it only as strings inside a
-  // prompt we wrote — promptfoo's plugin machinery is never involved, so a
-  // package's `generator` template would simply be ignored. Running anyway
-  // would produce a green report in which the expert's capability was never
-  // exercised: the same "selected a capability, got zero coverage, no way to
-  // tell" shape U6 exists to eliminate, reached by a different route.
-  //
-  // Refusing is the honest response. Turning on
-  // PROMPTFOO_ENGINE_NATIVE_GENERATION makes the same request work, and the
-  // message says so.
-  assertNoCustomPluginsOnPlanA(request.custom_plugins);
-  // Phase 3 · 任务 2: a strategy package has the same Plan A problem as a plugin
-  // package — `strategyText` is only read by promptfoo's custom strategy
-  // provider, which Plan A never invokes.
-  assertNoCustomStrategiesOnPlanA(request.custom_strategies);
-
-  if (!credentials.generation) {
-    // Plan A requires a generation LLM; the BFF fail-fasts on this too, so
-    // reaching here means the request bypassed validation.
-    throw new EngineRunError('generation_unavailable', 'generation LLM credentials missing');
-  }
-
-  const targetProvider = buildTargetProvider(credentials.target);
-
-  // Grading provider for llm-rubric. Must be a loadable provider-options
-  // object (id + config); apiBaseUrl includes the /v1 suffix.
-  const gradingProvider = {
-    id: `openai:chat:${credentials.generation.model}`,
-    config: {
-      apiBaseUrl: credentials.generation.base_url,
-      apiKey: credentials.generation.api_key,
-      temperature: 0,
-      // Reasoning models can burn the openai provider's default 1024-token
-      // budget on reasoning and return empty content; give the rubric verdict
-      // room to land. passthrough fields land in the request body, disabling
-      // reasoning mode on providers that support it.
-      max_tokens: 4096,
-      passthrough: {
-        thinking: { type: 'disabled' },
-        reasoning_effort: 'none',
-      },
-    },
-  };
-
-  emit({ run_id: request.run_id, phase: 'generating_tests', status_text: '生成攻击用例' });
-
-  const generated = await generateAttackTests({
-    purpose: request.purpose,
-    numTests: Math.min(Math.max(request.num_tests, 1), 50),
-    plugins: request.plugins,
-    strategies: request.strategies,
-    generation: credentials.generation,
-    signal: record.controller.signal,
-  });
-
-  // U8: every generated case is judged by ITS OWN plugin's rubric rather than
-  // one shared string. The rubric id rides along in the test metadata so the
-  // reduction can report which standard produced which verdict — with a flat
-  // test array there is otherwise no way to recover that.
-  const rubricMap = buildJudgeRubricMap(request.catalog);
-  const tests = generated.map((t) => {
-    const rubric = resolveJudgeRubric(t.plugin_id, rubricMap);
-    return {
-      vars: { prompt: t.prompt },
-      assert: [{ type: 'llm-rubric' as const, value: rubric.criteria }],
-      metadata: {
-        pluginId: t.plugin_id,
-        strategyId: t.strategy_id ?? 'none',
-        [PLUGIN_JUDGE_SOURCE_METADATA_KEY]: rubric.source,
-      },
-    };
-  });
-
-  const testSuite = {
-    description: `platform-run-${request.run_id}`,
-    prompts: ['{{prompt}}'],
-    providers: [targetProvider],
-    tests,
-    defaultTest: {
-      options: {
-        provider: gradingProvider,
-      },
-    },
-    metadata: {
-      platform_user_id: request.platform_user_id,
-    },
-    // Deliberately NO writeLatestResults and NO redteam key: evaluate mode
-    // stays off promptfoo's SQLite and its remote generation/grading paths.
-  };
-
-  emit({
-    run_id: request.run_id,
-    phase: 'executing_probes',
-    status_text: '执行探针',
-    planned_count: tests.length,
-    executed_count: 0,
-  });
-
-  const evalResult = (await promptfoo.evaluate(testSuite, {
-    cache: false,
-    maxConcurrency: Math.min(Math.max(credentials.target.concurrency ?? 5, 1), 50),
-    abortSignal: record.controller.signal,
-    progressCallback: (completed: number, total: number) => {
-      emit({
-        run_id: request.run_id,
-        phase: 'executing_probes',
-        status_text: '执行探针',
-        planned_count: total,
-        executed_count: completed,
-      });
-    },
-  } as Parameters<typeof promptfoo.evaluate>[1])) as unknown as EvalLike & { id?: string };
-
-  if (!evalResult) {
-    throw new EngineRunError('engine_error', 'empty evaluation result');
-  }
-
-  emit({ run_id: request.run_id, phase: 'engine_judging', status_text: '引擎判定' });
-
-  // P2-6: stamp the run's shape at the seam that owns the knowledge. Both fields
-  // are set here rather than inside `reduceEvalToSafeResult`, because the reducer
-  // sees only results — it cannot know which path produced them, and defaulting
-  // that would put a guess into a report header.
-  //
-  // Plan A's effective count is genuinely `tests.length`: the platform's
-  // generation LLM synthesised exactly that many cases and every one is a probe.
-  // (Plan C's is different — see `executeNativeRedteamRun`.)
-  const result = reduceEvalToSafeResult(evalResult, request.catalog);
-  result.generation_path = 'plan_a';
-  result.num_tests_effective = tests.length;
-
-  emit({ run_id: request.run_id, phase: 'compiling_report', status_text: '生成报告' });
-
-  return { result, rawEvalId: evalResult.id };
 }
 
 /**
