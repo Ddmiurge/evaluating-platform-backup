@@ -57,6 +57,19 @@ func Int64String(value int64) string {
 	return strconv.FormatInt(value, 10)
 }
 
+// BoolString renders a boolean as "true"/"false" for metadata values.
+//
+// Metadata is map[string]string, so a per-probe verdict has to travel as text.
+// Spelled out rather than 0/1 because these values are also read by people
+// looking at the stored report JSON, and "attack_success: 1" invites the reader
+// to wonder whether 1 means success or failure.
+func BoolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
 func SafeTextSnippet(value string, limit int) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -193,6 +206,16 @@ func isSafePayloadMetadataKey(lower string) bool {
 	// TestPlatformReportMetadataSurvivesSanitization 用真实写入点钉住。
 	case "generation_path",
 		"num_tests_effective":
+		return true
+	// 2026-10-16：报告改为**逐条**列攻击原文之后，逐插件/逐策略的汇总从 findings
+	// 挪到了报告元数据（findings 现在是每条探针一条，汇总放不下）。
+	//
+	// 值域是**结构化的计数与枚举 id**（plugin_id / strategy_id / probes /
+	// attack_success / success_rate / max_severity / judge_source），不含任何
+	// 载荷文本、响应正文、凭据或路径。显式列在这里而不是依赖"键名恰好不含黑名单
+	// 子串"——上一条注释记的就是这种依赖的代价。
+	case "plugin_stats_json",
+		"strategy_stats_json":
 		return true
 	default:
 		return false
@@ -389,6 +412,20 @@ func MustJSONMapStringInt64(value map[string]int64) string {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return "{}"
+	}
+	return string(data)
+}
+
+// MustJSONString marshals any value for storage in a metadata string field.
+//
+// Returns "" on failure rather than "{}" so the caller omits the key: the report
+// treats an absent key as "not recorded" and a present-but-empty one as "this
+// selection produced nothing". Those are different claims, and a marshal failure
+// is evidence for neither.
+func MustJSONString(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
 	}
 	return string(data)
 }

@@ -2,9 +2,18 @@
 -- reports (Phase 0; §9.1 of the merge plan).
 --
 -- Safety contract (mirrors the engine adapter's redact.ts boundary):
---   * No target prompts, responses, payloads, credentials, or engine-local
---     paths are ever stored here. Only safe progress metadata and the
---     redacted aggregate result (counts / severities / rates) survive.
+--   * Credentials, tokens, target secrets, generation API keys and engine-local
+--     paths are never stored here.
+--   * SINCE 2026-10-16 the per-probe result DOES carry the attack text and the
+--     target's answer, under `result.case_results`. That is a product decision,
+--     not a leak: a report whose findings say only 「插件 harmful 共执行 26 条探针」
+--     cannot answer "did it leak the system prompt?", and the payload is the
+--     deliverable. Only the terminal result carries it — not logs, not
+--     `error_brief`, not progress events.
+--     See AGENTS.md (maclaw Upgrade Boundary) and
+--     audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md.
+--     The jsonb column needs no migration; the column comment below is updated
+--     so it does not keep describing a boundary that moved.
 
 -- ═══ 1. engine_runs：引擎任务生命周期（AI 对话链路与自选评测链路统一） ═══
 CREATE TABLE IF NOT EXISTS engine_runs (
@@ -27,7 +36,7 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     duration_ms       BIGINT NOT NULL DEFAULT 0,
     stage_durations   JSONB NOT NULL DEFAULT '{}'::jsonb,
     token_usage       JSONB NOT NULL DEFAULT '{"generation":0,"judging":0,"target":0}'::jsonb,
-    result            JSONB NOT NULL DEFAULT '{}'::jsonb,  -- SafeRunResult（脱敏汇总）
+    result            JSONB NOT NULL DEFAULT '{}'::jsonb,  -- SafeRunResult（含逐条原文 case_results，2026-10-16 起）
     error_code        TEXT NOT NULL DEFAULT '',            -- 脱敏错误码
     error_brief       TEXT NOT NULL DEFAULT '',            -- 脱敏错误摘要
     started_at        TIMESTAMPTZ,

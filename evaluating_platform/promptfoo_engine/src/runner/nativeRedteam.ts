@@ -102,6 +102,7 @@ import {
 import { buildJudgeRubricMap, resolveJudgeRubric, type JudgeRubric } from './judgeRubric.js';
 import { ensurePromptfooSchema } from './promptfooDbLifecycle.js';
 import { redactEngineErrorBrief } from '../sanitize/errorBrief.js';
+import { assertResultFieldsAreKnown } from '../sanitize/redact.js';
 import {
   applyCustomPluginRefs,
   materializeCustomPlugins,
@@ -1336,6 +1337,10 @@ export async function executeNativeRedteamRun(
   const result = reduceEvalToSafeResult(remapped, request.catalog as EngineCatalog | undefined, {
     judgeSourceOverrides: nativeJudgeSourceOverrides(request.plugins),
     judgeSourceByPlugin: customPluginJudgeSources(materialized),
+    // The reducer lifts each probe's prompt out of the injection variable, so it
+    // has to be told which one that is for THIS run — a custom `inject_var`
+    // would otherwise silently yield the wrapper instead of the payload.
+    injectVar,
   });
   // P2-6: Plan C's effective count comes from the document that ran (P2-4), not
   // from the user's raw input — the two differ whenever the selection expands into
@@ -1344,6 +1349,11 @@ export async function executeNativeRedteamRun(
   // `numTests`) is reported rather than hidden by a second correct calculation.
   result.generation_path = 'plan_c';
   result.num_tests_effective = configuredProbeCount(config.redteam.plugins, catalogFanout(request.catalog));
+  // Every field the engine attaches has to be declared in the result whitelist
+  // (`sanitize/redact.ts`), which is also the one place that records why each is
+  // safe to leave the engine. Asserted here, on the finished object, so a field
+  // added anywhere upstream is caught rather than silently dropped at the BFF.
+  assertResultFieldsAreKnown(result);
   // Second fail-closed gate: rows existed but none survived reduction. Reporting
   // that as a 0-coverage success is the same green-run-zero-coverage shape U7
   // closed for `undefined`, one layer later.

@@ -42,6 +42,9 @@ var platformReportMetadataKeys = []string{
 	// P2-6 生成路径与 P2-4 实际探针数
 	RedteamGenerationPathMetadataKey,
 	RedteamNumTestsEffectiveMetadataKey,
+	// 2026-10-16 逐条 findings 之后，逐插件/逐策略汇总挪进元数据
+	RedteamPluginStatsMetadataKey,
+	RedteamStrategyStatsMetadataKey,
 	// 报告模板与统计
 	"schema_version",
 	"report_template",
@@ -86,6 +89,14 @@ func TestPlatformReportMetadataSurvivesSanitization(t *testing.T) {
 		}, &EngineSafeResult{
 			GenerationPath:    GenerationPathPlanC,
 			NumTestsEffective: 12,
+			// 逐插件/逐策略汇总（2026-10-16）走的是同一条清洗路径，所以要在
+			// fixture 里给出非空值，否则这个键根本不会被写入，断言也就覆盖不到它。
+			PluginStats: []EnginePluginStat{
+				{PluginID: "harmful", Label: "有害内容", Probes: 12, AttackSuccess: 2, SuccessRate: 0.17, MaxSeverity: "high"},
+			},
+			StrategyStats: []EngineStrategyStat{
+				{ID: "base64", Label: "base64", Probes: 12, AttackSuccess: 2, SuccessRate: 0.17, MaxSeverity: "high"},
+			},
 		})
 		if len(metadata) == 0 {
 			t.Fatal("engineReportMetadata 返回空 map，断言没有意义")

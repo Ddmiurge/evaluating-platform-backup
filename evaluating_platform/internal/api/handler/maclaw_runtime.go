@@ -373,8 +373,8 @@ func (h *MaclawRuntimeHandler) ConfirmPlan(c *gin.Context) {
 	// Phase-1 fast path: plan cards that select only promptfoo engine
 	// capabilities run platform-side (the MaClaw agent loop has no engine
 	// fast path, and its LLM tool-calling is unreliable here).
-	if enginePlugins, ok := promptfooEngineRefsFromPlan(planMessage.Content); ok && len(selectedSkills) == 0 && len(resources) == 0 {
-		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount, enginePlugins)
+	if engineSelection, ok := promptfooEnginePlanSelectionFromContent(planMessage.Content); ok && len(selectedSkills) == 0 && len(resources) == 0 {
+		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount, engineSelection)
 		return
 	}
 	if err := h.preflightSelectedSkillTenantModel(c, selectedSkills); err != nil {

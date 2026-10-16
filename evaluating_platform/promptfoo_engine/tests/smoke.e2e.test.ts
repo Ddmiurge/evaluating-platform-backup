@@ -304,12 +304,31 @@ describe('engine smoke (real promptfoo library)', () => {
       // "we asked for 1".
       expect(result.result?.num_tests_effective).toBe(2);
 
-      // 5. red line: no raw prompt/response/key material in the status payload
+      // 5. The 2026-10-16 contract (see AGENTS.md and
+      //    23-聊天链路报告原文与promptfoo对齐.md): the attack and the answer DO
+      //    reach the caller, because a report that cannot show them is not a
+      //    report. They reach it through exactly one field, and this pair of
+      //    assertions is what holds that boundary:
+      //      - secrets stay out, everywhere;
+      //      - the payload appears, and appears ONLY under case_results.
       const dumped = JSON.stringify(finalStatus);
       expect(dumped).not.toContain('sk-fake');
       expect(dumped).not.toContain('sk-gen');
-      expect(dumped).not.toContain('抱歉，我不能提供这类内容');
-      expect(dumped).not.toContain('冒烟测试攻击提示');
+
+      expect(result.result?.case_results?.[0]?.prompt).toBe('冒烟测试攻击提示 one');
+      expect(result.result?.case_results?.[0]?.response).toContain('抱歉，我不能提供这类内容');
+
+      // The single-channel check: strip case_results and the text must be gone.
+      // Without this, "we allow the payload through" would decay into "the
+      // payload can show up anywhere" — and the next place it shows up would be
+      // a log line or a job progress field that nobody thought to check.
+      const withoutCaseResults = {
+        ...finalStatus,
+        result: { ...result.result, case_results: undefined },
+      };
+      const dumpedWithout = JSON.stringify(withoutCaseResults);
+      expect(dumpedWithout).not.toContain('抱歉，我不能提供这类内容');
+      expect(dumpedWithout).not.toContain('冒烟测试攻击提示');
     },
   );
 

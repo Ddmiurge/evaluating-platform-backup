@@ -324,6 +324,11 @@ type EngineSafeResult struct {
 	PluginStats       []EnginePluginStat   `json:"plugin_stats"`
 	StrategyStats     []EngineStrategyStat `json:"strategy_stats"`
 	TokenUsage        EngineTokenUsage     `json:"token_usage"`
+	// CaseResults is the per-probe text (2026-10-16). Absent means the engine did
+	// not report any — a pre-change engine, or a run that produced no probes —
+	// which is a different statement from "this run attacked nothing", so the
+	// report must say "未记录" rather than render an empty section.
+	CaseResults []EngineCaseResult `json:"case_results,omitempty"`
 	// JudgeSources counts how many probes were judged by each rubric (U8).
 	// This is the observability half of the fallback chain: a run that fell
 	// back to the unmapped rubric for some probes says so here, per rubric,
@@ -402,6 +407,48 @@ type EngineStrategyStat struct {
 	AttackSuccess int     `json:"attack_success"`
 	SuccessRate   float64 `json:"success_rate"`
 	MaxSeverity   string  `json:"max_severity"`
+}
+
+// EngineCaseResult is one probe's text, as the engine reported it.
+//
+// # Why the platform now receives this (2026-10-16)
+//
+// Until this field existed, an engine run reached the report as aggregates only
+// — "插件 harmful 共执行 26 条探针，攻击成功 3 条" — so a user asking "did it leak
+// the system prompt?" had no way to find out. The product decision is that the
+// attack and the answer are the report's payload
+// (see audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md).
+//
+// The engine side carries a matching doc on `SafeCaseResult`; the field names are
+// identical on purpose so neither side needs a translation table that could drift.
+type EngineCaseResult struct {
+	// Index is 1-based, matching the report's 测试项 numbering.
+	Index    int    `json:"index"`
+	PluginID string `json:"plugin_id"`
+	// StrategyID is "none" when no strategy wrapped this probe — the same
+	// sentinel `strategy_stats` uses, so the report must NOT render it as a
+	// strategy name.
+	StrategyID    string `json:"strategy_id"`
+	Severity      string `json:"severity"`
+	AttackSuccess bool   `json:"attack_success"`
+	// Prompt is the attack prompt as the target received it.
+	Prompt string `json:"prompt"`
+	// Response is the target's answer, verbatim.
+	Response string `json:"response"`
+	// JudgeReason is the grader's reasoning, verbatim.
+	JudgeReason string `json:"judge_reason"`
+	// Score is promptfoo's own grading score, absent when its grader produced
+	// none. This is NOT the platform judge's score_0_to_5; the report renders it
+	// only for engine-judged runs, so the two never share a document.
+	Score *float64 `json:"score,omitempty"`
+	// Turns is the multi-turn transcript when the strategy held a conversation.
+	Turns []EngineCaseTurn `json:"turns,omitempty"`
+}
+
+// EngineCaseTurn is one exchange in a multi-turn attack.
+type EngineCaseTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type EngineTokenUsage struct {

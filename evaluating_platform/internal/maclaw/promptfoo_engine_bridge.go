@@ -636,13 +636,138 @@ func EngineSafeResultCounts(result *EngineSafeResult) map[string]int {
 	return counts
 }
 
-// EngineSafeResultFindings converts per-plugin engine statistics into report
-// findings. One finding per plugin: title carries the plugin id, severity is
-// the plugin's max severity, metadata carries engine dimension.
+// EngineSafeResultFindings converts the engine's result into report findings.
+//
+// # It now emits one finding per PROBE, not per plugin (2026-10-16)
+//
+// The old shape was one finding per plugin, whose whole content was
+// 「插件 harmful 共执行 26 条探针，攻击成功 3 条」. A user asking "did it leak the
+// system prompt?" had no way to find out from their own report — the payloads
+// were described but never shown, which is what made the report unusable as a
+// deliverable (see audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md §1).
+//
+// The per-plugin rollup is still produced — it is the useful shape for a
+// 50-probe run — but it now lives in the report's metrics section, not in the
+// place where the reader expects to see the attacks. Two different questions,
+// two different sections.
+//
+// # Fallback
+//
+// An engine that predates `case_results` reports none. Falling back to the
+// per-plugin rollup is the honest thing there: it is what we actually know. It
+// is deliberately NOT an empty findings list, which would read as "no
+// vulnerabilities found" — a claim we would have no basis for.
 func EngineSafeResultFindings(result *EngineSafeResult) []EvaluationReportFinding {
 	if result == nil {
 		return nil
 	}
+	if len(result.CaseResults) > 0 {
+		return engineCaseFindings(result)
+	}
+	return enginePluginRollupFindings(result)
+}
+
+// engineCaseFindings renders the engine's per-probe detail as report findings.
+//
+// The field mapping deliberately matches the batch path
+// (`execute_redteam_evaluation_batch`, redteam_bridge.go), which has carried raw
+// text for longer: Title = the attack, Description = the target's answer,
+// Suggestion = the verdict's reasoning. Keeping the two paths on the same fields
+// means one finding renderer (and one PDF card) serves both, instead of the
+// report having to know which engine produced it.
+func engineCaseFindings(result *EngineSafeResult) []EvaluationReportFinding {
+	judgeSourceByPlugin := make(map[string]string, len(result.PluginStats))
+	probesByPlugin := make(map[string]int, len(result.PluginStats))
+	for _, stat := range result.PluginStats {
+		judgeSourceByPlugin[stat.PluginID] = stat.JudgeSource
+		probesByPlugin[stat.PluginID] = stat.Probes
+	}
+
+	findings := make([]EvaluationReportFinding, 0, len(result.CaseResults))
+	for _, item := range result.CaseResults {
+		index := item.Index
+		if index <= 0 {
+			index = len(findings) + 1
+		}
+		severity := strings.TrimSpace(item.Severity)
+		if severity == "" || severity == "none" {
+			// An attack that worked but carries no grader severity still needs a
+			// display value; "none" next to 攻击成功 true would read as contradictory.
+			if item.AttackSuccess {
+				severity = "medium"
+			} else {
+				severity = "low"
+			}
+		}
+		pluginID := strings.TrimSpace(item.PluginID)
+		if pluginID == "" {
+			pluginID = "engine_plugin"
+		}
+		metadata := map[string]string{
+			"engine":         "promptfoo",
+			"case_index":     redteam.IntString(index),
+			"plugin_id":      pluginID,
+			"strategy_id":    engineStrategyMetadataValue(item.StrategyID),
+			"attack_success": redteam.BoolString(item.AttackSuccess),
+		}
+		if source := strings.TrimSpace(judgeSourceByPlugin[pluginID]); source != "" {
+			metadata[RedteamJudgeSourceMetadataKey] = source
+		}
+		if probes := probesByPlugin[pluginID]; probes > 0 {
+			metadata["plugin_probes"] = redteam.IntString(probes)
+		}
+		if item.Score != nil {
+			// promptfoo's own grading score. Rendered only for engine-judged
+			// runs — see EngineCaseResult.Score.
+			metadata["grading_score"] = fmt.Sprintf("%.4g", *item.Score)
+		}
+		findings = append(findings, EvaluationReportFinding{
+			ID:          "case-" + redteam.IntString(index),
+			Title:       strings.TrimSpace(item.Prompt),
+			Severity:    severity,
+			Category:    pluginID,
+			Description: strings.TrimSpace(item.Response),
+			Suggestion:  strings.TrimSpace(item.JudgeReason),
+			Metadata:    metadata,
+			Turns:       engineCaseTurns(item.Turns),
+		})
+	}
+	return findings
+}
+
+// engineStrategyMetadataValue normalizes the "no strategy" sentinel.
+//
+// The engine reports `none` for a probe no strategy wrapped — the same sentinel
+// `strategy_stats` uses. It is carried into metadata as-is (so a reader can
+// filter on it), but every renderer must translate it: a report that prints
+// 「攻击策略：none」 invents a technique called none, and one that prints
+// 「攻击策略：自定义策略」 for it would claim a wrapper that never ran.
+func engineStrategyMetadataValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || strings.EqualFold(trimmed, "none") {
+		return "none"
+	}
+	return trimmed
+}
+
+func engineCaseTurns(turns []EngineCaseTurn) []EvaluationReportFindingTurn {
+	if len(turns) == 0 {
+		return nil
+	}
+	out := make([]EvaluationReportFindingTurn, 0, len(turns))
+	for _, turn := range turns {
+		out = append(out, EvaluationReportFindingTurn{
+			Role:    strings.TrimSpace(turn.Role),
+			Content: turn.Content,
+		})
+	}
+	return out
+}
+
+// enginePluginRollupFindings is the pre-2026-10 aggregate shape: one finding per
+// plugin. Used as the fallback when the engine reported no per-probe detail, and
+// as the source of the report's metrics section.
+func enginePluginRollupFindings(result *EngineSafeResult) []EvaluationReportFinding {
 	findings := make([]EvaluationReportFinding, 0, len(result.PluginStats))
 	for _, stat := range result.PluginStats {
 		severity := strings.TrimSpace(stat.MaxSeverity)
@@ -734,7 +859,102 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 			metadata[RedteamNumTestsEffectiveMetadataKey] = effective
 		}
 	}
+	// 2026-10-16：findings 现在是**逐条探针**一条，所以「某插件跑了 N 条、成功 M 条」
+	// 这种汇总在原处放不下了。它不能被丢掉——一份 50 条探针的报告，读者既需要逐条
+	// 原文，也需要按插件/策略的稠密汇总才能判断该先修哪里。
+	//
+	// 存成 JSON 字符串而不是加数据库列：`stage_durations_json` 已是同一形状的先例，
+	// 且这两个键已在 redteam 包的白名单里显式登记（否则会被 SanitizeMetadata 按
+	// 子串黑名单丢掉——那正是 generation_path 的 P0 教训）。
+	if result != nil {
+		// Omitted when empty, not written as "[]". Go cannot tell an absent
+		// `plugin_stats` from an empty one after decoding, and a run with plugins
+		// always has stats — so an empty list means the engine did not tell us.
+		// Recording "[]" would render as a metrics table asserting that no plugin
+		// ran, which is a claim we have no basis for; the renderer says
+		// 「未记录」 for an absent key instead.
+		if lines := enginePluginStatsMetadata(result.PluginStats); len(lines) > 0 {
+			metadata[RedteamPluginStatsMetadataKey] = redteam.MustJSONString(lines)
+		}
+		if lines := engineStrategyStatsMetadata(result.StrategyStats); len(lines) > 0 {
+			metadata[RedteamStrategyStatsMetadataKey] = redteam.MustJSONString(lines)
+		}
+	}
 	return metadata
+}
+
+// Report-metadata keys carrying the per-plugin and per-strategy rollups.
+//
+// They moved into metadata on 2026-10-16, when findings became one entry per
+// probe: a rollup line cannot live inside a per-probe finding without appearing
+// once per probe.
+//
+// **Both names must stay in the redteam package's safe-key list**
+// (`isSafePayloadMetadataKey`). `SanitizeMetadata` drops any key whose name
+// contains `prompt` / `response` / `path` / `content` / … by substring, and the
+// report is compiled from sanitized metadata — the P2-6 P0 was exactly a
+// platform key (`generation_path`) being eaten that way. Here the names happen to
+// be free of those substrings, which is precisely why they are listed
+// explicitly: "it happens to be safe today" is the assumption that failed once.
+const (
+	RedteamPluginStatsMetadataKey   = "plugin_stats_json"
+	RedteamStrategyStatsMetadataKey = "strategy_stats_json"
+)
+
+// EnginePluginStatLine / EngineStrategyStatLine are the shapes persisted under
+// RedteamPluginStatsMetadataKey / RedteamStrategyStatsMetadataKey.
+//
+// A struct rather than map[string]any so the writer and the reader (the report's
+// metrics section) cannot disagree about field names — the two live in different
+// files and a typo would show up as a blank column, not a compile error.
+type EnginePluginStatLine struct {
+	PluginID      string  `json:"plugin_id"`
+	Label         string  `json:"label"`
+	Probes        int     `json:"probes"`
+	AttackSuccess int     `json:"attack_success"`
+	SuccessRate   float64 `json:"success_rate"`
+	MaxSeverity   string  `json:"max_severity"`
+	JudgeSource   string  `json:"judge_source,omitempty"`
+}
+
+type EngineStrategyStatLine struct {
+	ID            string  `json:"id"`
+	Label         string  `json:"label"`
+	Probes        int     `json:"probes"`
+	AttackSuccess int     `json:"attack_success"`
+	SuccessRate   float64 `json:"success_rate"`
+	MaxSeverity   string  `json:"max_severity"`
+}
+
+func enginePluginStatsMetadata(stats []EnginePluginStat) []EnginePluginStatLine {
+	out := make([]EnginePluginStatLine, 0, len(stats))
+	for _, stat := range stats {
+		out = append(out, EnginePluginStatLine{
+			PluginID:      stat.PluginID,
+			Label:         stat.Label,
+			Probes:        stat.Probes,
+			AttackSuccess: stat.AttackSuccess,
+			SuccessRate:   stat.SuccessRate,
+			MaxSeverity:   stat.MaxSeverity,
+			JudgeSource:   stat.JudgeSource,
+		})
+	}
+	return out
+}
+
+func engineStrategyStatsMetadata(stats []EngineStrategyStat) []EngineStrategyStatLine {
+	out := make([]EngineStrategyStatLine, 0, len(stats))
+	for _, stat := range stats {
+		out = append(out, EngineStrategyStatLine{
+			ID:            stat.ID,
+			Label:         stat.Label,
+			Probes:        stat.Probes,
+			AttackSuccess: stat.AttackSuccess,
+			SuccessRate:   stat.SuccessRate,
+			MaxSeverity:   stat.MaxSeverity,
+		})
+	}
+	return out
 }
 
 // redteamJudgeSourceFallbackMetadataKey 标记本次运行存在落兜底档的探测。

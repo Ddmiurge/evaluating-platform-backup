@@ -343,8 +343,13 @@ function ReportCard({
     riskScore,
   })
 
-  // 攻击成功摘要：按需拉取报告详情，仅展示后端已脱敏的成功项摘要。
-  // 完整攻击样例与目标回答仍在 PDF 报告内，这里只做安全摘要层。
+  // 攻击成功摘要：按需拉取报告详情。
+  //
+  // 2026-10-16 契约变更（见 audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md）：
+  // 这里显示的就是**原文** —— `title` 是攻击载荷、`description` 是目标回答，
+  // 不再有任何脱敏层。所以文案里不能再写「脱敏」，那是在说假话；
+  // 此前它写着「以上为脱敏摘要」而显示的正是原始目标回答。
+  // 完整样例（含多轮记录与判定理由）仍在 PDF 报告内。
   const toggleFindings = async () => {
     const next = !findingsOpen
     setFindingsOpen(next)
@@ -466,7 +471,7 @@ function ReportCard({
         {reportId && (
           <div style={{ marginTop: 12 }}>
             <Button type="link" size="small" style={{ padding: 0, color: 'var(--color-primary)' }} onClick={() => { void toggleFindings() }}>
-              {findingsOpen ? '收起攻击成功摘要' : '展开攻击成功摘要（脱敏）'}
+              {findingsOpen ? '收起攻击成功摘要' : '展开攻击成功摘要'}
             </Button>
             {findingsOpen && (
               <div style={{ marginTop: 8 }}>
@@ -481,8 +486,17 @@ function ReportCard({
                           {finding.category && <span style={{ fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border-color)', borderRadius: 4, padding: '0 6px' }}>{finding.category}</span>}
                           {finding.severity && <span style={{ fontSize: 11, color: '#b45309', border: '1px solid #f59e0b66', borderRadius: 4, padding: '0 6px' }}>{finding.severity}</span>}
                         </div>
+                        {finding.title && (
+                          <div style={{ color: 'var(--text-primary)', fontSize: 12, lineHeight: 1.6, marginBottom: 4 }}>
+                            <span style={{ color: 'var(--text-muted)' }}>攻击载荷：</span>
+                            <span style={{ whiteSpace: 'pre-wrap' }}>{finding.title}</span>
+                          </div>
+                        )}
                         {finding.description && (
-                          <div style={{ color: 'var(--text-secondary, #475569)', fontSize: 12, lineHeight: 1.6 }}>{finding.description}</div>
+                          <div style={{ color: 'var(--text-secondary, #475569)', fontSize: 12, lineHeight: 1.6 }}>
+                            <span style={{ color: 'var(--text-muted)' }}>目标回答：</span>
+                            <span style={{ whiteSpace: 'pre-wrap' }}>{finding.description}</span>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -490,7 +504,7 @@ function ReportCard({
                 ) : (
                   <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>未发现攻击成功（与报告“最高安全”一致）</div>
                 )}
-                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>以上为脱敏摘要，完整攻击样例与目标回答见 PDF 报告。</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>完整攻击样例（含多轮记录与判定理由）见 PDF 报告。</div>
               </div>
             )}
           </div>

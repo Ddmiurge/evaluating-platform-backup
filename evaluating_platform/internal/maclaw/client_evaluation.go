@@ -298,6 +298,28 @@ type EvaluationReportFinding struct {
 	Evidence    string            `json:"evidence,omitempty"`
 	Suggestion  string            `json:"suggestion,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Turns is the multi-turn transcript, for probes whose strategy held a
+	// conversation (crescendo / goat / hydra / the iterative family).
+	//
+	// # Why it is a real field and not a metadata string (2026-10-16)
+	//
+	// `Metadata` is map[string]string, so a transcript would have had to travel
+	// as serialized JSON inside it — and `redteam.SanitizeMetadata` is free to
+	// drop a key it does not recognise, which would have made the transcript
+	// vanish on the way to the report with nothing to show for it. A typed field
+	// either survives or fails the compile.
+	//
+	// Empty means the probe was single-turn, which is also the engine's own
+	// fallback shape: it emits `turns` only when the history holds more than one
+	// exchange, because for one exchange the flat Title/Description pair already
+	// says everything.
+	Turns []EvaluationReportFindingTurn `json:"turns,omitempty"`
+}
+
+// EvaluationReportFindingTurn is one user/assistant exchange of a multi-turn attack.
+type EvaluationReportFindingTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type EvaluationReport struct {

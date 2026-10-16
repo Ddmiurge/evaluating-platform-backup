@@ -369,6 +369,86 @@ export interface SafeRunResult {
     judging: number;
     target: number;
   };
+  /**
+   * Per-probe detail: the attack prompt, the target's answer, and the verdict.
+   *
+   * # This field reverses a contract on purpose (2026-10-16)
+   *
+   * Everything above is an aggregate, and the module header of `redteamRun.ts`
+   * used to promise that "raw prompts/responses never leave this module". That
+   * promise is why a report could show `插件 harmful 共执行 26 条探针，攻击成功 3 条`
+   * and nothing else — a user asking "did it leak the system prompt?" had no way
+   * to find out. The product decision (see `23-聊天链路报告原文与promptfoo对齐.md`)
+   * is that a red-team report without the actual attack and the actual answer is
+   * not a report; the payload IS the deliverable.
+   *
+   * So the promise is narrowed rather than dropped: raw text leaves **only** on
+   * the terminal result, **only** through this field, and never through logs,
+   * `error_brief`, or progress events.
+   *
+   * # Why it has to be collected here
+   *
+   * promptfoo writes every prompt and response to its own SQLite database
+   * (`eval_results`) and the generated attack prompts to `<workdir>/redteam.yaml`.
+   * The engine deletes both on every terminal path (P2-3), so there is no
+   * "read it back afterwards" — the text must be lifted out at reduction time,
+   * from the Eval objects still in memory.
+   *
+   * # Still forbidden here
+   *
+   * Credentials, tokens, target secrets, filesystem paths, and the platform
+   * judge's raw values (`score_0_to_5` / `refusal_detected`) stay out. The only
+   * "score" below is promptfoo's own `gradingResult.score`, which is what decided
+   * this probe — see the field doc.
+   */
+  case_results?: SafeCaseResult[];
+}
+
+/**
+ * One probe, with its text.
+ *
+ * Field names follow the aggregate vocabulary already in this file
+ * (`attack_success`, `plugin_id`, `strategy_id`) so the report layer does not
+ * have to translate a second dialect — and so `attack_success` keeps its one
+ * meaning project-wide: promptfoo's `pass === false`, i.e. the target failed to
+ * defend.
+ */
+export interface SafeCaseResult {
+  /** 1-based position in the run, matching the report's 测试项 numbering. */
+  index: number;
+  plugin_id: string;
+  /** `none` when no strategy wrapped this probe — same sentinel as `strategy_stats`. */
+  strategy_id: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'none';
+  /** Whether the attack succeeded. Same polarity as `totals.attack_success`. */
+  attack_success: boolean;
+  /** The attack prompt as the target received it. */
+  prompt: string;
+  /** The target's answer, verbatim. */
+  response: string;
+  /** The grader's reasoning, verbatim (the aggregate keeps a 200-char redacted copy). */
+  judge_reason: string;
+  /**
+   * promptfoo's own grading score (0..1), when its grader produced one.
+   *
+   * This is NOT the platform judge's `score_0_to_5` — different producer,
+   * different scale, different meaning. The report renders this one only for
+   * engine-judged runs (`judge_track=engine`), so the two can never appear in
+   * the same document and a reader never has to work out which they are looking
+   * at.
+   */
+  score?: number;
+  /**
+   * Multi-turn transcript, when the strategy held a conversation (`crescendo`,
+   * `goat`, `hydra`, the iterative family). Absent for single-turn probes, which
+   * is also promptfoo's own fallback shape — it reads
+   * `metadata.redteamHistory ?? metadata.redteamTreeHistory` and renders one
+   * exchange when neither exists.
+   *
+   * Without this, a multi-turn attack report shows only its last turn, which is
+   * the turn least likely to look like an attack.
+   */
+  turns?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export interface RunStatusResponse {

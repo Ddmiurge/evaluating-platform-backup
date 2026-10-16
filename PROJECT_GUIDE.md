@@ -143,6 +143,12 @@ Skill 分发是 Hub-first：
 - 原问题全文和回答全文只允许在服务端判定调用期间使用，不能进入日志、数据库、前端 DTO、报告正文或 evidence/report 表；判定模型不可用时使用规则 fallback。
 - `compile_redteam_report` 使用固定中文 PDF 模板 `redteam_report_zh_v1`。
 - 报告 PDF 渲染模板为 `redteam_report_pdf_layout_v2`，包含封面、页眉页脚、蓝色章节线、指标区、发现项卡片、风险色和状态标签；正文按 10.5-11pt 与较宽行距渲染，避免 Markdown 原样堆叠。第三部分评估发现可在测试问题后展示安全的原样本问题摘要；第四部分攻击成功样例只展示少量代表项，完整条目仍在评估发现中。
+
+**报告原文（2026-10-16 契约变更）**：聊天链路的两条执行路径都把**逐条原文**写进报告 —— 批量链路用 `finding.Title` 承载攻击载荷、`finding.Description` 承载目标回答；引擎链路把 promptfoo 的逐条结果随终态 `SafeRunResult.case_results` 带出（归约时取，因为终态会删掉 promptfoo 的库与工作目录），由 `EngineSafeResultFindings` 转成**每条探针一条** finding。第三部分「评估发现」逐条渲染 `攻击载荷：` / `目标回答：`，可选带 `原样本问题 / 多轮攻击记录 / 判定理由 / 严重程度 / 类型 / 攻击策略`，形状对齐 promptfoo 自己的逐条卡片（`Prompt:` / `Response:` + 分类徽章）；逐插件与逐策略的汇总从 findings 挪到第五部分「评估指标」（`plugin_stats_json` / `strategy_stats_json` 元数据键），所以「逐条明细」和「稠密汇总」两件事都在，**丢掉汇总是回归不是简化**。
+
+这是产品决定，理由与边界见 `audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md`：看不到原文的报告对原型没有意义。**仍然不进报告的是**：凭据 / token / 目标密钥 / 生成模型 API key（`sanitizeRedteamArtifactText` 清除凭据**值**，注意它不再按 `secret` 这个词匹配 —— 那会把「模型有没有泄露 secret」这类报告的核心证据洗掉）、本部署自己的路径、判定数值 `score_0_to_5` / `refusal_detected`、进度元数据。**证据表 `maclaw_redteam_evidence` 不受影响**，仍只存摘要（两侧清洗是两个函数：`sanitizeRedteamArtifactText` 报告 / `sanitizeRedteamEvidenceText` 证据）。
+
+报告里显示的分数**跟随 `judge_track`**：`engine`（promptfoo 判的）显示 promptfoo 的通过/不通过 + `gradingResult.score` + 理由，与 promptfoo 报告逐字段一致；`platform` 只显示通过/不通过 + 理由，**不显示任何数字**。这样两套分数永远不会出现在同一份报告里。
 - 当 `success_count=0` 时，报告安全分为 `100`、风险等级为 `最高安全`；修复建议只针对攻击成功样例，没有成功攻击时只给出持续覆盖和回归验证建议。
 - 报告包含：报告基本信息、评估摘要、风险等级与安全评分、评估发现、攻击成功样例、评估指标、修复建议。
 - 报告不包含：评测范围、数据与能力来源、判定方法、证据索引、附录、完整 payload、完整目标响应。

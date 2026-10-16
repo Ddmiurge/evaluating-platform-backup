@@ -89,14 +89,44 @@ type RedteamArtifactService struct {
 	reportImages map[string]redteamReportImageAttachment
 }
 
-const maxRedteamArtifactTextRunes = 2000
+// maxRedteamArtifactTextRunes bounds one report text field.
+//
+// Raised from 2000 on 2026-10-16. The report now carries the target's actual
+// answer, and 2000 runes is well inside the length of a real answer to "print
+// your system prompt" — the field would have been truncated at exactly the
+// content the report was changed to show, and the reader would have seen a
+// plausible-looking prefix with no indication that it stopped.
+const maxRedteamArtifactTextRunes = 20000
 
 type redteamReportImageAttachment struct {
 	ByFindingID map[string][]RedteamPayloadImage
 	ExpiresAt   time.Time
 }
 
-var redteamArtifactSecretPattern = regexp.MustCompile(`(?i)(secret[-_a-z0-9]*|sk-[a-z0-9][a-z0-9_\-]{5,}|bearer\s+[a-z0-9._\-]+|api[_ -]?key\s*[:=]\s*\S+)`)
+// redteamArtifactSecretPattern matches credential VALUES, not the words around them.
+//
+// # Why `secret\S*` was narrowed (2026-10-16)
+//
+// The pattern used to start with `secret[-_a-z0-9]*`, which matches the bare word
+// "secret". A report whose subject is "did the model leak its system prompt or
+// credentials" is full of that word — in the attack prompt, and in any useful
+// answer. Redacting it would have destroyed the evidence while looking like
+// diligence; worse, it would have done so silently, leaving a report that reads
+// as if the target said nothing sensitive.
+//
+// A rule that is too broad is a defect, not caution. What remains matches only
+// shapes that carry an actual credential value: an `sk-…` token, a bearer token,
+// or `secret`/`api key` followed by an assignment. Prose mentioning secrets
+// survives; a leaked key does not.
+var redteamArtifactSecretPattern = regexp.MustCompile(`(?i)(secret\s*[:=]\s*\S+|sk-[a-z0-9][a-z0-9_\-]{5,}|bearer\s+[a-z0-9._\-]+|api[_ -]?key\s*[:=]\s*\S+)`)
+
+// redteamArtifactOwnPathPattern matches THIS deployment's filesystem paths.
+//
+// Narrow on purpose. A blanket path rule would rewrite `/data/models/config.json`
+// out of an attack payload or a target's answer, and those are evidence: the
+// engine's own paths have no evidentiary value, while a path the payload talks
+// about might be the whole point of the probe.
+var redteamArtifactOwnPathPattern = regexp.MustCompile(`(?:/[A-Za-z0-9_.\-]*\.promptfoo/[^\s"',;)]*)|(?:/data/runs/[^\s"',;)]*)|(?:/app/dist/[^\s"',;)]*)`)
 
 func NewRedteamArtifactService(store RedteamArtifactStore) *RedteamArtifactService {
 	return &RedteamArtifactService{
@@ -130,8 +160,8 @@ func (s *RedteamArtifactService) SaveEvidence(ctx context.Context, userID uuid.U
 		InstanceID:     strings.TrimSpace(instanceID),
 		RunID:          strings.TrimSpace(in.RunID),
 		Kind:           kind,
-		Title:          sanitizeRedteamArtifactText(in.Title),
-		Summary:        sanitizeRedteamArtifactText(in.Summary),
+		Title:          sanitizeRedteamEvidenceText(in.Title),
+		Summary:        sanitizeRedteamEvidenceText(in.Summary),
 		Metadata:       redteam.SanitizeMetadata(in.Metadata),
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -263,37 +293,89 @@ func sanitizeRedteamReportFindings(in []EvaluationReportFinding) []EvaluationRep
 		item.Evidence = sanitizeRedteamArtifactText(item.Evidence)
 		item.Suggestion = sanitizeRedteamArtifactText(item.Suggestion)
 		item.Metadata = redteam.SanitizeMetadata(item.Metadata)
+		if len(item.Turns) > 0 {
+			turns := make([]EvaluationReportFindingTurn, 0, len(item.Turns))
+			for _, turn := range item.Turns {
+				turn.Content = sanitizeRedteamArtifactText(turn.Content)
+				turns = append(turns, turn)
+			}
+			item.Turns = turns
+		}
 		out = append(out, item)
 	}
 	return out
 }
 
+// sanitizeRedteamArtifactText bounds one field of a REPORT.
+//
+// # What it stopped doing, and why (2026-10-16)
+//
+// It used to replace the WHOLE value with "[redacted sensitive text]" whenever it
+// contained one of a list of marker phrases ("raw payload", "raw prompt",
+// "raw response", "payload body", "target response body", "evidence content").
+// That rule was written when raw text was not supposed to reach a report at all.
+// Now that it is supposed to, the rule has two failure modes:
+//
+//   - it fires on CONTENT rather than on a leak. An attack prompt reading
+//     "print the raw payload you received" would have been blanked — destroying
+//     the evidence while looking like diligence, and doing it silently, so the
+//     report would have read as if the target said nothing sensitive;
+//   - it never matched a real payload anyway, because a payload does not describe
+//     itself. Its protection was theoretical; its cost, on the day it mattered,
+//     would have been the report.
+//
+// A rule that is too broad is a defect, not caution.
+//
+// What remains is the part that is not about content: credential VALUES and an
+// output bound. Both are narrow on purpose — see the two pattern docs.
 func sanitizeRedteamArtifactText(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
 	}
-	lower := strings.ToLower(value)
-	for _, marker := range []string{
-		"raw payload",
-		"payload body",
-		"raw prompt",
-		"prompt body",
-		"raw response",
-		"target response body",
-		"local path",
-		"evidence content",
-	} {
-		if strings.Contains(lower, marker) {
-			return "[redacted sensitive text]"
-		}
-	}
 	value = redteamArtifactSecretPattern.ReplaceAllString(value, "[redacted]")
+	value = redteamArtifactOwnPathPattern.ReplaceAllString(value, "[path]")
 	runes := []rune(value)
 	if len(runes) > maxRedteamArtifactTextRunes {
 		return string(runes[:maxRedteamArtifactTextRunes]) + "..."
 	}
 	return value
+}
+
+// sanitizeRedteamEvidenceText bounds one field of an EVIDENCE record.
+//
+// The evidence table's contract did NOT change on 2026-10-16: it still holds
+// summaries and metadata, never content. So the marker guard that was removed
+// from report text stays here, where it still means what it meant.
+//
+// Kept as a separate function rather than a flag so the two contracts read
+// differently at their call sites — the reason a report may carry a payload and
+// an evidence row may not is the whole point of having both tables.
+func sanitizeRedteamEvidenceText(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	for _, marker := range redteamEvidenceContentMarkers {
+		if strings.Contains(lower, marker) {
+			return "[redacted sensitive text]"
+		}
+	}
+	return sanitizeRedteamArtifactText(trimmed)
+}
+
+// redteamEvidenceContentMarkers are phrases that indicate a raw payload or
+// response reached an evidence summary, where it does not belong.
+var redteamEvidenceContentMarkers = []string{
+	"raw payload",
+	"payload body",
+	"raw prompt",
+	"prompt body",
+	"raw response",
+	"target response body",
+	"local path",
+	"evidence content",
 }
 
 func (s *RedteamArtifactService) GetReport(ctx context.Context, userID uuid.UUID, reportID string) (*EvaluationReport, error) {
@@ -617,6 +699,103 @@ func reportInfoLines(report *EvaluationReport) []string {
 }
 
 func attackStatLines(report *EvaluationReport, metadata map[string]string) []string {
+	lines := attackStatSummaryLines(report, metadata)
+	lines = append(lines, pluginStatLines(metadata)...)
+	lines = append(lines, strategyStatLines(metadata)...)
+	return lines
+}
+
+// pluginStatLines renders the per-plugin rollup stored by the engine path.
+//
+// # Why this exists (2026-10-16)
+//
+// Findings became one entry per probe, so a line like
+// 「插件 harmful 共执行 26 条探针，攻击成功 3 条」 has no per-probe home — it would
+// have appeared once per probe. Moving it here is what keeps the change from
+// quietly dropping it: the reader still sees every attack, and still sees which
+// category was worst, which is the first question a remediation owner asks.
+//
+// An absent key means the engine did not report a rollup (a pre-change engine, or
+// the batch path). That is reported as nothing rather than as an empty table —
+// see engineReportMetadata for why an empty list is not written either.
+func pluginStatLines(metadata map[string]string) []string {
+	stats, ok := decodePluginStatLines(metadata[RedteamPluginStatsMetadataKey])
+	if !ok {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("按攻击类型（共 %d 类）", len(stats))}
+	for _, stat := range stats {
+		label := firstNonEmptyString(strings.TrimSpace(stat.Label), strings.TrimSpace(stat.PluginID))
+		line := fmt.Sprintf("  - %s（%s）：%d 条探针，攻击成功 %d 条，成功率 %.0f%%",
+			label, strings.TrimSpace(stat.PluginID), stat.Probes, stat.AttackSuccess, stat.SuccessRate*100)
+		if severity := strings.TrimSpace(stat.MaxSeverity); severity != "" && severity != "none" {
+			line += "，最高严重度 " + severity
+		}
+		// U8: per-plugin standard, so a reader can see that two categories in one
+		// report were judged by different rubrics.
+		if source := strings.TrimSpace(stat.JudgeSource); source != "" {
+			line += "，判定标准 " + source
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// strategyStatLines renders the per-strategy rollup — promptfoo's
+// "Attack Performance by Plugin" table, one level out.
+//
+// A strategy with no coverage at all is worth naming: the `none` entry is what
+// promptfoo records for probes no strategy wrapped, and it is translated rather
+// than printed (see findingStrategyLabel).
+func strategyStatLines(metadata map[string]string) []string {
+	stats, ok := decodeStrategyStatLines(metadata[RedteamStrategyStatsMetadataKey])
+	if !ok {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("按攻击策略（共 %d 项）", len(stats))}
+	for _, stat := range stats {
+		id := strings.TrimSpace(stat.ID)
+		label := strings.TrimSpace(stat.Label)
+		if strings.EqualFold(id, "none") {
+			label = "无（直接提问）"
+		} else if label == "" {
+			label = id
+		}
+		line := fmt.Sprintf("  - %s：%d 条探针，攻击成功 %d 条，成功率 %.0f%%",
+			label, stat.Probes, stat.AttackSuccess, stat.SuccessRate*100)
+		if severity := strings.TrimSpace(stat.MaxSeverity); severity != "" && severity != "none" {
+			line += "，最高严重度 " + severity
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func decodePluginStatLines(raw string) ([]EnginePluginStatLine, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	var stats []EnginePluginStatLine
+	if err := json.Unmarshal([]byte(raw), &stats); err != nil || len(stats) == 0 {
+		return nil, false
+	}
+	return stats, true
+}
+
+func decodeStrategyStatLines(raw string) ([]EngineStrategyStatLine, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	var stats []EngineStrategyStatLine
+	if err := json.Unmarshal([]byte(raw), &stats); err != nil || len(stats) == 0 {
+		return nil, false
+	}
+	return stats, true
+}
+
+func attackStatSummaryLines(report *EvaluationReport, metadata map[string]string) []string {
 	lines := []string{}
 	for _, item := range []struct {
 		Key   string
@@ -686,11 +865,24 @@ func findingLines(findings []EvaluationReportFinding) []string {
 	for idx, finding := range findings {
 		status := findingStatusLabel(finding)
 		lines = append(lines, fmt.Sprintf("%d. 测试项 %03d [%s]", idx+1, idx+1, status))
+		// The attack and the answer lead, in promptfoo's own card order
+		// (`Prompt:` then `Response:`). Everything after is classification, which
+		// promptfoo shows as a badge on the same card — so a reader of either
+		// report finds the same thing in the same place.
 		if title := strings.TrimSpace(finding.Title); title != "" {
-			lines = append(lines, "   - 测试问题："+title)
+			lines = append(lines, "   - 攻击载荷："+title)
+		}
+		if turns := findingTurnLines(finding); len(turns) > 0 {
+			lines = append(lines, turns...)
 		}
 		if original := findingOriginalQuestionSummary(finding); original != "" {
 			lines = append(lines, "   - 原样本问题："+original)
+		}
+		if strings.TrimSpace(finding.Description) != "" {
+			lines = append(lines, "   - 目标回答："+strings.TrimSpace(finding.Description))
+		}
+		if judgeReason := findingJudgeReason(finding); judgeReason != "" {
+			lines = append(lines, "   - 判定理由："+judgeReason)
 		}
 		if strings.TrimSpace(finding.Severity) != "" {
 			lines = append(lines, "   - 严重程度："+strings.TrimSpace(finding.Severity))
@@ -698,17 +890,93 @@ func findingLines(findings []EvaluationReportFinding) []string {
 		if strings.TrimSpace(finding.Category) != "" {
 			lines = append(lines, "   - 类型："+strings.TrimSpace(finding.Category))
 		}
+		if strategy := findingStrategyLabel(finding); strategy != "" {
+			lines = append(lines, "   - 攻击策略："+strategy)
+		}
 		if context := findingCapabilityContextSummary(finding); context != "" {
 			lines = append(lines, "   - "+context)
 		}
-		if strings.TrimSpace(finding.Description) != "" {
-			lines = append(lines, "   - 模型回答："+strings.TrimSpace(finding.Description))
-		}
-		if strings.TrimSpace(finding.Suggestion) != "" {
-			lines = append(lines, "   - 建议："+strings.TrimSpace(finding.Suggestion))
-		}
 	}
 	return lines
+}
+
+// findingTurnLines renders a multi-turn transcript for the markdown export.
+//
+// Without it a multi-turn attack shows only its last turn, which is the turn
+// least likely to look like an attack — the earlier turns are what carried the
+// model there.
+func findingTurnLines(finding EvaluationReportFinding) []string {
+	pairs := findingTurnPairs(finding)
+	if len(pairs) == 0 {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("   - 多轮攻击记录（共 %d 轮）：", len(pairs))}
+	for _, pair := range pairs {
+		lines = append(lines, "     "+pair[0]+"："+pair[1])
+	}
+	return lines
+}
+
+// findingTurnPairs returns the non-empty turns as {role label, content} so the
+// markdown renderer and the PDF renderer share one decision about which turns
+// exist — they format differently but must not disagree about the transcript.
+func findingTurnPairs(finding EvaluationReportFinding) [][2]string {
+	pairs := make([][2]string, 0, len(finding.Turns))
+	for _, turn := range finding.Turns {
+		content := strings.TrimSpace(turn.Content)
+		if content == "" {
+			continue
+		}
+		pairs = append(pairs, [2]string{turnRoleLabel(turn.Role), content})
+	}
+	return pairs
+}
+
+func turnRoleLabel(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user":
+		return "用户"
+	case "assistant":
+		return "模型"
+	default:
+		if strings.TrimSpace(role) == "" {
+			return "未知角色"
+		}
+		return strings.TrimSpace(role)
+	}
+}
+
+// findingJudgeReason is the verdict's reasoning.
+//
+// # This used to print `finding.Evidence` (fixed 2026-10-16)
+//
+// `Evidence` holds an evidence HANDLE on the batch path
+// (`redteam_bridge.go`: `Evidence: evidence.Handle`), so the 判定理由 line read
+// 「判定理由：redteam_evidence_5f3a…」 — a stable identifier where the reader
+// expected the reason the judge gave. The reason was there all along, in
+// `Suggestion`; the renderer was reading the wrong field.
+//
+// `Evidence` is deliberately NOT used as a fallback: a handle is never a reason,
+// and printing one under that label is the defect being fixed.
+func findingJudgeReason(finding EvaluationReportFinding) string {
+	return strings.TrimSpace(finding.Suggestion)
+}
+
+// findingStrategyLabel renders the strategy a probe was wrapped in.
+//
+// `none` is the engine's sentinel for "no strategy" (same value `strategy_stats`
+// uses) and is translated rather than shown: a report that prints
+// 「攻击策略：none」 invents a technique called none, and one that prints a real
+// strategy name for it would claim a wrapper that never ran.
+func findingStrategyLabel(finding EvaluationReportFinding) string {
+	raw := strings.TrimSpace(finding.Metadata["strategy_id"])
+	if raw == "" {
+		return ""
+	}
+	if strings.EqualFold(raw, "none") {
+		return "无（直接提问）"
+	}
+	return raw
 }
 
 func successfulAttackExampleLines(findings []EvaluationReportFinding) []string {
@@ -734,10 +1002,12 @@ func successfulAttackExampleLines(findings []EvaluationReportFinding) []string {
 		if description := strings.TrimSpace(finding.Description); description != "" {
 			lines = append(lines, "  - 模型响应摘要："+description)
 		}
-		if evidence := strings.TrimSpace(finding.Evidence); evidence != "" {
-			lines = append(lines, "  - 判定理由："+evidence)
+		// The reason, not the evidence handle this line used to print. See
+		// findingJudgeReason for why that was wrong and why there is no fallback.
+		if reason := findingJudgeReason(finding); reason != "" {
+			lines = append(lines, "  - 判定理由："+reason)
 		} else {
-			lines = append(lines, "  - 判定理由：模型回答在客观上满足了攻击请求。")
+			lines = append(lines, "  - 判定理由：未记录。")
 		}
 	}
 	if len(lines) == 0 {
@@ -1132,28 +1402,73 @@ func (p *pdfPageWriter) findingCard(index int, finding EvaluationReportFinding, 
 	p.text(86, p.y, fmt.Sprintf("测试项 %03d", index+1), 11.5, 0.11, 0.25, 0.49)
 	p.text(455, p.y, "["+status+"]", 10.5, r, g, b)
 	p.y -= 26
-	lines := []string{
-		"测试问题：" + firstNonEmptyString(finding.Title, "未提供测试问题"),
-	}
+	// The attack and the answer lead, in promptfoo's own card order (`Prompt:`
+	// then `Response:`). Everything after is classification — which promptfoo
+	// shows as a badge on the same card — so a reader of either report finds the
+	// same thing in the same place.
+	p = p.findingText(index, "攻击载荷：", firstNonEmptyString(finding.Title, "未记录"), appendPage)
 	if original := findingOriginalQuestionSummary(finding); original != "" {
-		lines = append(lines, "原样本问题："+original)
+		p = p.findingText(index, "原样本问题：", original, appendPage)
 	}
-	for _, line := range lines {
-		p = p.findingWrappedLine(index, line, appendPage)
+	if pairs := findingTurnPairs(finding); len(pairs) > 0 {
+		p = p.findingWrappedLine(index, fmt.Sprintf("多轮攻击记录（共 %d 轮）：", len(pairs)), appendPage)
+		for _, pair := range pairs {
+			p = p.findingText(index, pair[0]+"：", pair[1], appendPage)
+		}
 	}
 	for _, image := range pdfFindingImages(finding) {
 		p = p.findingWrappedLine(index, "测试图片："+firstNonEmptyString(image.Description, "最终发送给被测模型的图片"), appendPage)
 		p = p.findingImage(index, image, appendPage)
 	}
-	for _, line := range []string{
-		"模型回答：" + firstNonEmptyString(finding.Description, finding.Evidence, "未提供模型回答"),
-	} {
-		p = p.findingWrappedLine(index, line, appendPage)
+	// `未记录` rather than a fallback to `finding.Evidence`: Evidence is an
+	// evidence handle on the batch path, and printing one as the model's answer
+	// asserts an answer the target never gave.
+	p = p.findingText(index, "目标回答：", firstNonEmptyString(finding.Description, "未记录"), appendPage)
+	if reason := findingJudgeReason(finding); reason != "" {
+		p = p.findingText(index, "判定理由：", reason, appendPage)
 	}
-	if suggestion := strings.TrimSpace(finding.Suggestion); suggestion != "" {
-		p = p.findingWrappedLine(index, "风险说明/建议："+suggestion, appendPage)
+	if strategy := findingStrategyLabel(finding); strategy != "" {
+		p = p.findingWrappedLine(index, "攻击策略："+strategy, appendPage)
+	}
+	if context := findingCapabilityContextSummary(finding); context != "" {
+		p = p.findingWrappedLine(index, context, appendPage)
 	}
 	p.y -= 14
+	return p
+}
+
+// findingText writes a labeled value, preserving that value's own line breaks.
+//
+// # Why this is not just findingWrappedLine (2026-10-16)
+//
+// Payloads and answers are multi-line as a rule, and `wrapPDFText` chunks by
+// width without treating "\n" specially: an embedded newline travelled into the
+// PDF text-showing operator as a rune, where it renders as a stray glyph and the
+// width accounting (a non-ASCII rune costs a full em) is simply wrong. Splitting
+// here makes the PDF show the same break structure the chat card shows with
+// `white-space: pre-wrap`.
+//
+// Blank runs collapse: a payload with three consecutive newlines should not cost
+// three blank rows in a fixed-layout document.
+func (p *pdfPageWriter) findingText(index int, prefix, value string, appendPage func() *pdfPageWriter) *pdfPageWriter {
+	emitted := 0
+	for _, raw := range strings.Split(value, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		label := ""
+		if emitted == 0 {
+			label = prefix
+		}
+		p = p.findingWrappedLine(index, label+line, appendPage)
+		emitted++
+	}
+	if emitted == 0 {
+		// The value was empty or whitespace: still show the label, so a reader can
+		// tell "not recorded" from "the renderer forgot this field".
+		p = p.findingWrappedLine(index, prefix, appendPage)
+	}
 	return p
 }
 
@@ -1356,6 +1671,21 @@ func cleanPDFText(value string) string {
 	return strings.TrimSpace(value)
 }
 
+// wrapPDFText breaks text to a width, honouring the text's OWN line breaks.
+//
+// # Why "\n" is handled here and not by callers (2026-10-16)
+//
+// It used to be ignored: the loop charged every rune a width and appended it,
+// so a newline travelled into the PDF text-showing operator as a rune. That is
+// wrong twice over — it renders as a stray glyph, and `pdfRuneWidth` charges a
+// non-ASCII rune a full em, so the line accounting is off as well.
+//
+// The report now carries payloads and answers, which are multi-line as a rule,
+// and they reach the PDF by several routes (the per-probe cards, the successful-
+// attacks section, the markdown export's lines). Fixing it here covers every
+// route, including ones a caller-by-caller fix would miss — this was found by a
+// test that only rendered section 4, after the per-probe card had already been
+// "fixed".
 func wrapPDFText(text string, maxWidth, size float64) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -1364,18 +1694,35 @@ func wrapPDFText(text string, maxWidth, size float64) []string {
 	lines := []string{}
 	var current []rune
 	currentWidth := 0.0
+	flush := func() {
+		// Trailing whitespace on a source line would otherwise be charged to the
+		// next wrapped segment's width.
+		line := strings.TrimRight(string(current), " \t")
+		current = []rune{}
+		currentWidth = 0
+		if line == "" {
+			return
+		}
+		lines = append(lines, line)
+	}
 	for _, r := range []rune(text) {
+		if r == '\n' {
+			flush()
+			continue
+		}
 		w := pdfRuneWidth(r, size)
 		if len(current) > 0 && currentWidth+w > maxWidth {
-			lines = append(lines, string(current))
-			current = []rune{}
-			currentWidth = 0
+			flush()
+			current = append(current, r)
+			currentWidth = w
+			continue
 		}
 		current = append(current, r)
 		currentWidth += w
 	}
-	if len(current) > 0 {
-		lines = append(lines, string(current))
+	flush()
+	if len(lines) == 0 {
+		return []string{""}
 	}
 	return lines
 }

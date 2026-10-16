@@ -25,8 +25,11 @@
  *   - Plan C takes a *path to a YAML config document*; its options object has no
  *     plugins/provider/purpose fields (see nativeRedteam.ts for the details).
  *
- * The Eval results are reduced into a SafeRunResult (counts/severity/reasons
- * only). Raw prompts/responses never leave this module.
+ * The Eval results are reduced into a SafeRunResult. Raw prompts and responses
+ * leave this module **only** through `SafeRunResult.case_results`, and only for
+ * a run that reached a terminal state — see that field's doc for why the old
+ * "never leaves this module" promise was narrowed rather than kept. They still
+ * never reach a log line, an `error_brief`, or a progress event.
  */
 import promptfoo from 'promptfoo';
 /**
@@ -36,12 +39,43 @@ import promptfoo from 'promptfoo';
  *
  * Exported because Plan C's `loadEvalResults` has to name it: that function
  * takes an `Eval` whose `results` may be empty and rehydrates it (U8).
+ *
+ * # Why this type grew (2026-10-16)
+ *
+ * It was deliberately narrow: it declared `response.output` but never read it,
+ * and had no `prompt` or `vars` at all, so the reducer structurally *could not*
+ * carry per-probe text. Every field added below is one the report needs, and
+ * each is read from the in-memory result — the only moment the text exists,
+ * since the terminal cleanup deletes promptfoo's database and workdir.
+ *
+ * promptfoo's own report reads the same paths; where it has a fallback chain,
+ * the chain is mirrored here rather than simplified, so the same probe shows the
+ * same prompt in both reports.
  */
 export interface EvalLike {
   id?: string;
   results?: Array<{
-    gradingResult?: { pass?: boolean; severity?: unknown; reason?: unknown };
-    testCase?: { metadata?: Record<string, unknown> };
+    gradingResult?: {
+      pass?: boolean;
+      severity?: unknown;
+      reason?: unknown;
+      score?: unknown;
+    };
+    testCase?: {
+      metadata?: Record<string, unknown>;
+      /** Injection variables. promptfoo's report prefers these over `prompt.raw`. */
+      vars?: Record<string, unknown>;
+    };
+    /** Result-level vars. Which of the two promptfoo populates depends on the path. */
+    vars?: Record<string, unknown>;
+    /** The prompt document; `raw` is the rendered text. */
+    prompt?: { raw?: unknown };
+    /**
+     * Result-level metadata. Carries `pluginId`/`strategyId` (promptfoo's report
+     * reads these here rather than on the test case) and the multi-turn
+     * transcripts (`redteamHistory` / `redteamTreeHistory`).
+     */
+    metadata?: Record<string, unknown>;
     /**
      * U9 · The provider's response. `raw` is the parsed JSON body the http
      * provider received — the only place tool-call markers can be observed
@@ -56,7 +90,13 @@ export interface EvalLike {
     response?: { raw?: unknown; output?: unknown };
   }>;
 }
-import type { EngineCatalog, OneShotCredentials, RunProgressEvent, SafeRunResult } from '../types.js';
+import type {
+  EngineCatalog,
+  OneShotCredentials,
+  RunProgressEvent,
+  SafeCaseResult,
+  SafeRunResult,
+} from '../types.js';
 import { redactReason, redactTopReasons, sanitizeSeverity } from '../sanitize/redact.js';
 import type { RunRecord } from '../manager/taskManager.js';
 import { EngineRunError } from './engineRunError.js';
@@ -342,6 +382,17 @@ export function reduceEvalToSafeResult(
      * Plan-A style explicit stamp still wins.
      */
     judgeSourceByPlugin?: Map<string, string>;
+    /**
+     * The variable promptfoo injected the attack prompt into
+     * (`config.redteam.injectVar`, default `prompt`).
+     *
+     * Needed because the attack text is not one field: promptfoo's own report
+     * looks for `vars[injectVar]`, then `vars.query`, then `prompt.raw`, and
+     * which one holds the payload depends on that setting. Guessing `prompt`
+     * would silently show the wrapper instead of the payload on any run with a
+     * custom inject var — a wrong answer that still looks like an answer.
+     */
+    injectVar?: string;
   },
 ): SafeRunResult {
   const catalogMap = buildCatalogMap(catalog);
@@ -379,6 +430,12 @@ export function reduceEvalToSafeResult(
 
   let probes = 0;
   let attackSuccess = 0;
+
+  // Per-probe text for the report. Collected in the same pass as the aggregates
+  // so there is exactly one place that decides what a probe's prompt/response
+  // are — two passes would eventually disagree.
+  const injectVar = (options?.injectVar ?? '').trim() || 'prompt';
+  const caseResults: SafeCaseResult[] = [];
 
   const results = evalResult.results ?? [];
   for (const r of results) {
@@ -424,6 +481,24 @@ export function reduceEvalToSafeResult(
       sev = classification.severity;
     }
     if (success && sev !== 'none') severityCounts[sev]++;
+
+    // Per-probe detail for the report. Deliberately NOT passed through
+    // `redactReason`: that function exists to bound a *summary* line (200 chars,
+    // pattern-scrubbed), and applying it here would truncate exactly the text
+    // the report was changed to carry. Credentials and paths are still stripped
+    // — by the report layer, which knows what a report field is.
+    caseResults.push({
+      index: probes,
+      plugin_id: pluginId,
+      strategy_id: strategyId,
+      severity: sev,
+      attack_success: success,
+      prompt: casePromptText(r, injectVar),
+      response: caseResponseText(r),
+      judge_reason: typeof r.gradingResult?.reason === 'string' ? r.gradingResult.reason : '',
+      ...(typeof r.gradingResult?.score === 'number' ? { score: r.gradingResult.score } : {}),
+      ...caseTurns(r),
+    });
 
     const plugin = pluginAgg.get(pluginId) ?? {
       label: pluginLabel,
@@ -542,6 +617,11 @@ export function reduceEvalToSafeResult(
     ...(probes > 0
       ? { tool_call_signals: { probes_with_tool_calls: probesWithToolCalls, total_tool_call_markers: totalToolCallMarkers } }
       : {}),
+    // Emitted whenever there is at least one probe, same rule as
+    // `tool_call_signals`: absent would be read as "this engine cannot report
+    // per-probe detail" (a pre-2026-10 engine), which is a different statement
+    // from "this run produced none".
+    ...(caseResults.length > 0 ? { case_results: caseResults } : {}),
     token_usage: {
       generation: 0,
       judging: 0,
@@ -558,4 +638,80 @@ export function reduceEvalToSafeResult(
  */
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** One row of `EvalLike['results']`. */
+type EvalResultLike = NonNullable<EvalLike['results']>[number];
+
+/**
+ * The attack prompt as the target received it.
+ *
+ * Mirrors promptfoo's own fallback chain instead of picking one field. Its
+ * report walks `vars[injectVar]` → `vars.query` → `prompt.raw`; collapsing that
+ * to a single lookup would make the same probe show a different prompt here than
+ * in promptfoo's report, and the difference would be invisible — both candidates
+ * look like plausible payloads.
+ *
+ * `vars.prompt` sits between `vars.query` and `prompt.raw` because promptfoo's
+ * *pass* branch reads it there. Including it can only substitute a more specific
+ * value for `prompt.raw`, never the reverse — `vars[injectVar]`, the field that
+ * actually holds the payload for the configured inject var, still wins.
+ */
+function casePromptText(result: EvalResultLike, injectVar: string): string {
+  const vars = (result.vars ?? result.testCase?.vars) as Record<string, unknown> | undefined;
+  return firstText(vars?.[injectVar], vars?.query, vars?.prompt, result.prompt?.raw);
+}
+
+/**
+ * The target's answer, verbatim.
+ *
+ * A string in every provider shape this engine configures — the
+ * OpenAI-compatible chat target and the custom-HTTP agent endpoint both extract
+ * text before it gets here. Anything else is serialized rather than dropped: an
+ * unexpected shape is worth seeing, and silently emptying the field would read
+ * as "the target said nothing", which is a claim about the target we would have
+ * no basis for.
+ */
+function caseResponseText(result: EvalResultLike): string {
+  const output = result.response?.output;
+  if (typeof output === 'string') return output;
+  if (output === undefined || output === null) return '';
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The multi-turn transcript, when the strategy held a conversation.
+ *
+ * Same source as promptfoo's (`metadata.redteamHistory`, falling back to
+ * `redteamTreeHistory` for the tree-search family), and the same shape: each
+ * history entry contributes a user turn and an assistant turn.
+ *
+ * Omitted for a single exchange, because then it would only repeat `prompt` and
+ * `response` — the field exists to show what the flat pair cannot, which is the
+ * earlier turns that set the attack up.
+ */
+function caseTurns(result: EvalResultLike): { turns?: SafeCaseResult['turns'] } {
+  const history = (result.metadata as Record<string, unknown> | undefined)?.redteamHistory ??
+    (result.metadata as Record<string, unknown> | undefined)?.redteamTreeHistory;
+  if (!Array.isArray(history) || history.length < 2) return {};
+  const turns: NonNullable<SafeCaseResult['turns']> = [];
+  for (const entry of history) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.prompt === 'string' && rec.prompt !== '') turns.push({ role: 'user', content: rec.prompt });
+    if (typeof rec.output === 'string' && rec.output !== '') turns.push({ role: 'assistant', content: rec.output });
+  }
+  return turns.length > 0 ? { turns } : {};
+}
+
+/** First argument that is a non-empty string (after trimming). */
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return '';
 }

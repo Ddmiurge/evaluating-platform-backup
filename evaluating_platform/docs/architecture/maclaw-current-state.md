@@ -512,3 +512,54 @@ Phase 3 任务 1 只做了「动态发现」（把 promptfoo 的 35 个原生策
 - `ENGINE_WORKER_COUNT = 1`：串行化从「native 时钳位」变为**构造上就是 1**；
   `PROMPTFOO_ENGINE_WORKERS` 仍被解析并在启动日志里说明它被忽略（「设了没变化还不告诉我」
   比「设了没用」更糟）。
+
+## 报告原文：两条链路都带逐条攻击内容（2026-10-16）
+
+### 缺陷
+
+引擎链路的报告只有汇总 —— `EngineSafeResultFindings` 逐插件产出一条
+「插件 harmful 共执行 26 条探针，攻击成功 3 条」。一个问「它到底有没有把我的系统提示词
+挖出来」的用户，在自己的报告里找不到答案。**看不到原文的报告对原型没有意义**，
+这是产品决定（`23-聊天链路报告原文与promptfoo对齐.md` §1）。
+
+批量链路（`execute_redteam_evaluation_batch`）其实一直带着原文（`Title` = 载荷、
+`Description` = 目标回答），所以缺口只在引擎这一侧。
+
+### 现链路
+
+| 层 | 变化 |
+|---|---|
+| 引擎 | `SafeRunResult.case_results` —— 每条探针的载荷 / 回答 / 判定理由 / 分数 / 策略 id / 多轮转录。**在归约时取**，因为 promptfoo 自己会把载荷写进 `~/.promptfoo/promptfoo.db` 与 `<workdir>/redteam.yaml`，而终态清理会删掉它们，事后回读没有机会 |
+| 引擎 | `EvalLike` 从「故意收窄」扩开：原先声明了 `response.output` 却从不读，也没有 `prompt` / `vars`，结构上带不出原文 |
+| 引擎 | `isAllowedResultField` 从装饰变真闸：接上调用点，补上缺失的 `generation_path` / `num_tests_effective` / `judge_sources`（缺了就接会把 P2-6 与 U8 洗掉），并显式声明唯一一个承载文本的字段 |
+| BFF | `EngineSafeResult.CaseResults` 镜像；`EngineSafeResultFindings` 改为**每条探针一条** finding |
+| BFF | 逐插件 / 逐策略汇总挪进报告元数据（`plugin_stats_json` / `strategy_stats_json`），在「评估指标」段渲染 —— findings 变成逐条之后它没有原处可放，**丢掉它是回归** |
+| BFF | 清洗拆分：`sanitizeRedteamArtifactText`（报告，不再按内容整体替换）与 `sanitizeRedteamEvidenceText`（证据，保留标记短语规则）。长度上限 2000 → 20000 字 |
+| 前端 | 报告卡去掉「（脱敏）」与「以上为脱敏摘要」两处**与事实相反的文案**，展开区同时显示攻击载荷与目标回答 |
+
+### 三处刻意的设计
+
+- **报告与证据用两个清洗函数，不是一个带开关的函数**：一张表能带原文、另一张不能，
+  这个区别应该在调用点上看得见。
+- **凭据规则不能按词匹配**：原正则第一条 `secret[-_a-z0-9]*` 会匹配单独的单词 "secret" ——
+  而一份主题是「有没有泄露凭据」的报告里满篇都是这个词，规则会把最有价值的证据洗成
+  `[redacted]` 且不报错。现在只匹配带值的形状（`secret: xxx` / `sk-xxx` / `bearer xxx`）。
+  路径同理：只清本部署自己的路径，不动载荷里提到的路径。
+- **分数口径跟随 `judge_track`**：`engine` 显示 promptfoo 自己的 `gradingResult.score`，
+  `platform` 不显示任何数字。两套分数因此永远不会出现在同一份报告里 ——
+  `AGENTS.md` 对平台判定数值的禁令不再需要读者自己分辨。
+
+### 与 promptfoo 报告的对齐（及其边界）
+
+对齐只在**词汇与字段**层面：promptfoo 的 redteam 报告是**服务端渲染的 SPA**，
+不产出文件，也没有服务端 PDF（它的「PDF」就是 `window.print()`）。所以逐条卡片的形状
+（`Prompt:` / `Response:` + 分类徽章）被镜像成 `攻击载荷：` / `目标回答：`，
+章节映射见 `23-聊天链路报告原文与promptfoo对齐.md` §7.2；`Filters` 与
+`Framework Compliance` 两段**不对齐**（静态 PDF 没有交互，且新增章节撞报告模板禁令）。
+
+### 可见范围
+
+`maclaw_redteam_reports.findings` 现在持有明文载荷与目标回答，**并随 PDF 离开平台**；
+一份已发出的 PDF 无法撤回。这是 2026-10-15 明确采纳的取舍。
+仍然不进报告：凭据 / token / 目标密钥 / 生成模型 key / 本部署路径 /
+判定数值 / 进度元数据。`maclaw_redteam_evidence` 不受影响。
