@@ -270,12 +270,25 @@ export function EngineEvalPage() {
   const watchedPluginsRaw = Form.useWatch<string[]>('plugins', form)
   const watchedPlugins = useMemo(() => watchedPluginsRaw ?? [], [watchedPluginsRaw])
   const watchedNumTests = Form.useWatch<number>('num_tests', form) ?? 0
+  const watchedStrategiesRaw = Form.useWatch<string[]>('strategies', form)
   const expandedPlugins = useMemo(() => totalPluginFanout(watchedPlugins), [watchedPlugins])
   // P2-4：`num_tests` 是**总探针数上限**，不再是「每插件份数」。引擎按子插件展开分配
   // 每插件的 numTests，所以真实探针数 ≈ min(输入, 可分配到的最大值)，且**不少于**
   // 展开后的子插件数。客户端据此提前拦截「总数 < 子插件数」这种必然被拒的输入。
   const numTestsBelowFanout = expandedPlugins > 0 && watchedNumTests > 0 && watchedNumTests < expandedPlugins
-  const plannedProbes = numTestsBelowFanout ? 0 : watchedNumTests
+  // 2026-10-16：promptfoo 对每个策略各跑一遍插件用例（`applyStrategies` 对每个策略
+  // 产出一份包装后的用例）。引擎已在选中策略时关掉 `basic` 对照组（否则同一批用例
+  // 还会**额外**跑一遍不施加任何策略的），所以剩下的乘数是**策略个数**：
+  //   S 个策略 → S × num_tests 条探针
+  // 不显示这个乘数，用户填 10 选 2 个策略会以为跑 10 条，实际 20 条。
+  //
+  // `basic` 不参与计数：它是承载「不施加策略」的那个对照组，不是用户选的攻击手法
+  // （目录里它是 no_op，选不到）。
+  const strategyMultiplier = useMemo(() => {
+    const productive = (watchedStrategiesRaw ?? []).filter((id) => id && id !== 'basic')
+    return Math.max(productive.length, 1)
+  }, [watchedStrategiesRaw])
+  const plannedProbes = numTestsBelowFanout ? 0 : watchedNumTests * strategyMultiplier
   // 缺配置的插件（当前仅 `policy`）：能选，但本次会生成 0 条用例。与置灰的
   // 远程依赖分开提示——两者的处置完全不同（补配置 vs 换选项）。
   const configGatedSelected = useMemo(
@@ -440,7 +453,9 @@ export function EngineEvalPage() {
                 extra={numTestsBelowFanout
                   ? `用例数量少于选中插件展开后的子插件数（${expandedPlugins}）：每个子插件至少要产生 1 条用例，提交会被拒绝。请提高用例数量，或改选具体的子插件（例如用 harmful:cybercrime 代替 harmful）。`
                   : plannedProbes > 0
-                    ? `用例数量是本次评测的探针总数上限：预计执行约 ${plannedProbes} 条探针（选中插件展开后共 ${expandedPlugins} 个子插件，每个至少 1 条）。`
+                    ? strategyMultiplier > 1
+                      ? `预计执行约 ${plannedProbes} 条探针：${watchedNumTests} 条 × ${strategyMultiplier} 个攻击策略（每个策略各跑一遍插件用例；展开后共 ${expandedPlugins} 个子插件，每个至少 1 条）。`
+                      : `用例数量是本次评测的探针总数上限：预计执行约 ${plannedProbes} 条探针（选中插件展开后共 ${expandedPlugins} 个子插件，每个至少 1 条）。`
                     : '用例数量是本次评测的探针总数上限，由引擎按子插件展开分配。'}
               >
                 <InputNumber min={1} max={50} style={{ width: '100%' }} />

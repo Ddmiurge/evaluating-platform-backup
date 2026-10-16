@@ -40,7 +40,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { stringify } from 'yaml';
-import { buildNativeRedteamConfig, resolveNativeStrategies } from '../src/runner/nativeRedteam.js';
+import {
+  buildNativeRedteamConfig,
+  productiveStrategyCount,
+  resolveNativeStrategies,
+} from '../src/runner/nativeRedteam.js';
 import type { OneShotCredentials } from '../src/types.js';
 
 const servers: http.Server[] = [];
@@ -526,8 +530,16 @@ describe('U9 E2E · Agent multi-turn over the wire', () => {
     expect('sessionParser' in target).toBe(false);
     expect(JSON.stringify(target)).not.toContain('sessionId');
     expect(JSON.stringify(target)).not.toContain('conversation_id');
-    // And the strategies came out exactly as they went in.
-    expect(config.redteam.strategies).toEqual([{ id: 'crescendo' }]);
+    // And the strategies came out with nothing session-shaped added to them.
+    //
+    // Not `toEqual([{id:'crescendo'}])` any more: since 2026-10-16 the builder
+    // also emits the `basic` control entry with `enabled:false`, so that a
+    // selected strategy does not ALSO run the unwrapped probes. That entry is
+    // the one addition allowed — what this assertion really guards is that the
+    // multi-turn wiring did not append a strategy of its own.
+    expect(productiveStrategyCount(config.redteam.strategies)).toBe(1);
+    expect(config.redteam.strategies.filter((s) => s.id !== 'basic')).toEqual([{ id: 'crescendo' }]);
+    expect(JSON.stringify(config.redteam.strategies)).not.toContain('session');
   });
 
   it('conversation target: the built document carries BOTH halves of the wiring', async () => {
@@ -546,6 +558,10 @@ describe('U9 E2E · Agent multi-turn over the wire', () => {
     const target = config.targets[0]!.config as Record<string, unknown>;
     expect(target.sessionParser).toBe("data.body.conversation_id ?? ''");
     expect((target.body as Record<string, unknown>).conversation_id).toBe('{{sessionId}}');
-    expect(config.redteam.strategies).toEqual([{ id: 'crescendo', config: { stateful: true } }]);
+    expect(config.redteam.strategies.filter((s) => s.id !== 'basic')).toEqual([
+      { id: 'crescendo', config: { stateful: true } },
+    ]);
+    // The control entry rides along, and is the only extra: see the parity test.
+    expect(productiveStrategyCount(config.redteam.strategies)).toBe(1);
   });
 });

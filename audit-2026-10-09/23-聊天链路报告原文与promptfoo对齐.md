@@ -532,12 +532,41 @@ promptfoo 的抽屉每个 tab 只渲染 5 条，而它同时提供完整 CSV / J
 | 11 | 引擎不泄露到日志通道 | `error_brief` 无正文 | ✅ 失败 run 的 `error_brief` 为纯诊断文本（插件 0/6 计数 + 通用排障提示） |
 | 12 | **报告里有策略信息**（含 §12.2 的 P1） | 策略被真的执行，且报告能看出 | ✅ **P1 确认修复**：计划卡带 `base64` → run `strategies=[{"id":"base64"}]` → `strategy_stats` 双条（`none` 6 + `base64` 6）→ 12/12 探针；逐条块带「攻击策略：」字段，与 `engine_runs.result.strategy_stats` 一致 |
 
+### 9.0 实测带出的一处**必须修**的行为：带策略的 run 多跑了一遍「无策略」（2026-10-16 已修）
+
+Run A 的 `strategy_stats` 是 `none` 6 + `base64` 6 —— 用户要 6 条，实际 12 条，
+**其中一半没有施加任何攻击手法**。用户裁定：「我不要再跑一遍没策略的」。
+
+**根因（对 promptfoo 0.123.0 dist 的勘察结论）**：策略应用是**叠加**而非替换，
+`dist/src/index.js:17097`：
+
+```js
+const finalTestCases = [...includeBasicTests ? pluginTestCases : [], ...strategyTestCases];
+```
+
+**唯一的开关**：`basic` 策略的 `enabled` 标志
+（`dist/src/index.js:16653-16655`，`includeBasicTests = basicStrategy?.config?.enabled ?? true`）。
+没有 `baseline` / `control` / `noStrategy` 这类选项；在别的策略上设 `enabled:false` 无效
+（两处读 `config.enabled` 都按 `strategy.id === 'basic'` 门控）。
+
+**处置**：引擎在选中策略时追加 `{ id: 'basic', config: { enabled: false } }`
+（`withBasicCasesDisabled`，接在 builder 里 —— 与 U8 的教训一致：接在调用点可被删掉而测试仍绿）。
+未选策略时不追加（否则用例集为空，直接 `no_test_cases` 失败）。
+
+**仍然存在的乘数**：S 个策略仍是 `S × num_tests` 条探针（每个策略各跑一遍插件用例）。
+**没有除回去**，因为下限会变成 `Σfanout × S` —— `harmful`（fanout 26）配两个策略会超过
+`EngineMaxNumTests=50` 而**无法提交**。所以口径定为：**一旦选了策略，`num_tests` 是「每个策略的上限」**，
+并让前端把乘积显示出来（`EngineEvalPage` 的 `strategyMultiplier`）。`num_tests_effective`
+按**productive** 策略数（排除 `basic`）相乘，所以报告里报的探针数与实际跑的一致。
+
 ### 9.1 实测带出的一条速度事实（用户侧预期管理）
 
-12 探针（含 `base64`）confirm 全程 ≈ **11 分钟**；`iterative:tree` 4 探针 ≈ **30 分钟**。
-耗时与「轮次 × 策略乘数」成正比 —— 带策略的 run 会让同一批用例**各跑一遍有策略和没策略**
-（Run A 的 `strategy_stats` 是 `none` 6 + `base64` 6，探针数因此翻倍）。
-建议在轮次选择器旁提示这一点，否则用户会把「翻倍」读成系统变慢了。
+Run A（修复前）12 探针（含 `base64`）confirm 全程 ≈ **11 分钟**；`iterative:tree` 4 探针 ≈ **30 分钟**。
+耗时与「轮次 × 策略乘数」成正比。
+
+**§9.0 修好之后这个数字要重算**：那 12 条里有 6 条是「无策略」的对照组，现在已经不跑了。
+同一场景（6 条用例 + 1 个策略）应当是 6 条探针、约一半的时间。
+剩下的乘数只有「策略个数」，且前端会把乘积显示出来 —— 用户不会再把它读成系统变慢。
 
 ### 9.2 三处证据缺口怎么补（不需要本批做）
 

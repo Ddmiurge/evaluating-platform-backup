@@ -315,6 +315,20 @@ U7 阶段一实测暴露：U6 的护栏只回答「这个插件要不要远程�
 
 ### 成本语义：fanout 与「用例数量 = 探针总数上限」（P2-4 已落地）
 
+> **2026-10-16 补充**：一旦**选了攻击策略**，这个「总数上限」的口径要加一条 ——
+> promptfoo 的 `applyStrategies` 对**每个策略**各跑一遍插件用例，所以 S 个策略配置
+> `S × num_tests` 条探针。这个乘数**没有除回去**：下限会变成 `Σfanout × S`，
+> 而 `harmful`（fanout 26）配两个策略会超过 `EngineMaxNumTests=50` 而无法提交。
+> 口径因此定为「**选了策略时，`num_tests` 是每个策略的上限**」，前端把乘积显示出来
+> （`strategyMultiplier`），`num_tests_effective` 按 productive 策略数相乘。
+>
+> 同时引擎在选中策略时会追加 `{ id: 'basic', config: { enabled: false } }`：
+> promptfoo 的策略应用是**叠加**的（`dist/src/index.js:17097`），不加这一条，
+> 同一批用例**还会额外跑一遍不施加任何策略的**。ai02 实测：用户要 6 条，
+> `strategy_stats` 出现 `none` 6 + `base64` 6 —— 用户裁定「我不要再跑一遍没策略的」。
+> `basic` 是唯一开关（没有 `baseline`/`control`/`noStrategy`；在别的策略上设
+> `enabled:false` 无效）。
+
 promptfoo 把 `numTests` 应用到**每个展开后的子插件**，所以「每插件份数」语义下实际探针数 = `num_tests × Σfanout`（`harmful`=26、`bias`=6、`pii`=4，其余 1）—— 填 50 会跑 1300 条，而用户无从预见。
 
 P2-4 把这个语义改成用户以为的那个：`num_tests` 是**总探针数上限**。引擎的 `allocateNumTests` 用 `floor(N / Σfanout)` 给每个插件一个基础份数，再把剩余预算按「fanout 大者优先、同 fanout 取当前份数少者」补足，因此：

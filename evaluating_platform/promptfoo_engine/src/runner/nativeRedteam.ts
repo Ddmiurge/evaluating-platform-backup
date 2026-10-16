@@ -831,6 +831,70 @@ export function configuredProbeCount(
 }
 
 /**
+ * Turn OFF promptfoo's unwrapped base cases when a strategy is selected.
+ *
+ * # Why (2026-10-16, user decision)
+ *
+ * promptfoo's strategy application is ADDITIVE — `dist/src/index.js:17097`:
+ *
+ *     const finalTestCases = [...includeBasicTests ? pluginTestCases : [], ...strategyTestCases];
+ *
+ * Selecting `base64` on a `numTests=6` run therefore produced 6 unwrapped probes
+ * AND 6 base64-wrapped ones. The user asked for 6 and got 12, and half of them
+ * exercised no attack technique at all: the report's `strategy_stats` read
+ * `none: 6` beside `base64: 6`. Their words: 「我不要再跑一遍没策略的」.
+ *
+ * # The switch
+ *
+ * There is exactly one: the `basic` strategy's `enabled` flag
+ * (`dist/src/index.js:16653-16655`: `includeBasicTests = basicStrategy?.config?.enabled ?? true`).
+ * There is no `baseline` / `control` / `noStrategy` option, and `enabled: false`
+ * on any OTHER strategy does nothing — both reads of `config.enabled` are gated
+ * on `strategy.id === 'basic'`.
+ *
+ * # The two cases this must not break
+ *
+ * - **No strategy selected**: the base cases ARE the run. Disabling them would
+ *   produce an empty test set and a `no_test_cases` failure, so the entry is not
+ *   added at all.
+ * - **`basic` already named**: a caller that asked for it explicitly has said what
+ *   it wants; adding a second entry for the same id would leave promptfoo to
+ *   reconcile two.
+ *
+ * # What this does NOT change
+ *
+ * Multiplication ACROSS strategies: two strategies still yield two wrapped probes
+ * per base case. That is the user's deliberate choice of techniques rather than
+ * an unasked-for control group — and `num_tests_effective` reports the real
+ * number, so the cost is visible (see `productiveStrategyCount`).
+ */
+export function withBasicCasesDisabled(strategies: NativeStrategyRef[]): NativeStrategyRef[] {
+  if (strategies.length === 0) {
+    return strategies;
+  }
+  if (strategies.some((strategy) => (strategy.id ?? '').trim() === 'basic')) {
+    return strategies;
+  }
+  return [...strategies, { id: 'basic', config: { enabled: false } }];
+}
+
+/**
+ * How many strategies in the built document actually produce probes.
+ *
+ * `basic` names the UNWRAPPED cases — the control group — and
+ * `withBasicCasesDisabled` pins it off whenever a real strategy is present. It
+ * must not be counted: doing so would report double the probes for exactly the
+ * run where the doubling was removed.
+ *
+ * A document with no productive strategy is the no-strategy run, where `basic`
+ * IS the test set: one pass over the plugin cases, hence the floor of 1.
+ */
+export function productiveStrategyCount(strategies: Array<{ id?: string }>): number {
+  const productive = (strategies ?? []).filter((strategy) => (strategy?.id ?? '').trim() !== 'basic');
+  return Math.max(productive.length, 1);
+}
+
+/**
  * Bounded collector for promptfoo's own log lines, used ONLY to explain a failure.
  *
  * # Why this exists
@@ -1006,7 +1070,11 @@ export async function buildNativeRedteamConfig(input: {
   // the request's strategies before packages are inlined, so a package is not
   // silently marked `stateful`. CustomProvider takes `stateful` from the
   // package's own validated config, which is the expert's explicit choice.
-  const resolvedStrategies = applyCustomStrategyRefs(strategies, resolveCustomStrategies(input.customStrategies));
+  const requestedStrategies = applyCustomStrategyRefs(strategies, resolveCustomStrategies(input.customStrategies));
+  // The `basic` entry carries the control group. Turning it off is what keeps a
+  // strategy selection from ALSO running the unwrapped probes — see
+  // withBasicCasesDisabled for the user decision and the single switch involved.
+  const resolvedStrategies = withBasicCasesDisabled(requestedStrategies);
 
   // P2-4: translate the platform's TOTAL into per-plugin counts. Done inside the
   // builder because the builder is the single seam that produces a config
@@ -1348,7 +1416,9 @@ export async function executeNativeRedteamRun(
   // built config also means a wiring mistake in the builder (a dropped
   // `numTests`) is reported rather than hidden by a second correct calculation.
   result.generation_path = 'plan_c';
-  result.num_tests_effective = configuredProbeCount(config.redteam.plugins, catalogFanout(request.catalog));
+  result.num_tests_effective =
+    configuredProbeCount(config.redteam.plugins, catalogFanout(request.catalog)) *
+    productiveStrategyCount(config.redteam.strategies);
   // Every field the engine attaches has to be declared in the result whitelist
   // (`sanitize/redact.ts`), which is also the one place that records why each is
   // safe to leave the engine. Asserted here, on the finished object, so a field
