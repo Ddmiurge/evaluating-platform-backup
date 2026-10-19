@@ -703,6 +703,7 @@ func engineCaseFindings(result *EngineSafeResult) []EvaluationReportFinding {
 		if pluginID == "" {
 			pluginID = "engine_plugin"
 		}
+		title, promptRedacted := engineCaseTitle(item)
 		metadata := map[string]string{
 			"engine":         "promptfoo",
 			"case_index":     redteam.IntString(index),
@@ -716,6 +717,11 @@ func engineCaseFindings(result *EngineSafeResult) []EvaluationReportFinding {
 		if probes := probesByPlugin[pluginID]; probes > 0 {
 			metadata["plugin_probes"] = redteam.IntString(probes)
 		}
+		if promptRedacted {
+			// The renderer turns this into an explicit note: the title above is the
+			// payload BEFORE the strategy encoded it, not the bytes that were sent.
+			metadata["prompt_redacted_by_engine"] = "true"
+		}
 		if item.Score != nil {
 			// promptfoo's own grading score. Rendered only for engine-judged
 			// runs — see EngineCaseResult.Score.
@@ -723,7 +729,7 @@ func engineCaseFindings(result *EngineSafeResult) []EvaluationReportFinding {
 		}
 		findings = append(findings, EvaluationReportFinding{
 			ID:          "case-" + redteam.IntString(index),
-			Title:       strings.TrimSpace(item.Prompt),
+			Title:       title,
 			Severity:    severity,
 			Category:    pluginID,
 			Description: strings.TrimSpace(item.Response),
@@ -1045,4 +1051,33 @@ func EffectiveNumTestsMetadata(result *EngineSafeResult) string {
 		return ""
 	}
 	return redteam.IntString(result.NumTestsEffective)
+}
+
+// engineRedactedPromptMarker is what promptfoo writes where its secret heuristic
+// rejected a value. Spelled out here rather than imported: it is promptfoo's
+// output format, observed at the DB boundary, and the only place this platform
+// needs to recognise it.
+const engineRedactedPromptMarker = "[REDACTED]"
+
+// engineCaseTitle picks the attack text to render for one probe.
+//
+// It prefers the prompt that was actually sent. When promptfoo redacted that
+// prompt on the way into its database — which it does for every base64-shaped
+// payload, i.e. every probe of the base64 strategy — the pre-strategy original is
+// used instead and the caller marks the finding.
+//
+// The second return value is "this title is a fallback", which is what the
+// report's note line is keyed on. Returning the original WITHOUT that flag would
+// present encoded-then-redacted as if it were the sent payload.
+func engineCaseTitle(item EngineCaseResult) (string, bool) {
+	prompt := strings.TrimSpace(item.Prompt)
+	if prompt != "" && prompt != engineRedactedPromptMarker {
+		return prompt, false
+	}
+	if original := strings.TrimSpace(item.OriginalPrompt); original != "" {
+		return original, true
+	}
+	// Nothing to fall back to: render what the engine gave us, even if that is the
+	// redaction marker. An empty title would look like a missing probe.
+	return prompt, false
 }

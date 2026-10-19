@@ -424,6 +424,27 @@ export interface SafeCaseResult {
   attack_success: boolean;
   /** The attack prompt as the target received it. */
   prompt: string;
+  /**
+   * The payload BEFORE the strategy transformed it, when promptfoo recorded one.
+   *
+   * # Why this is carried (2026-10-19)
+   *
+   * promptfoo redacts what it writes to its database: `looksLikeSecret()` treats
+   * any value matching `^[a-zA-Z0-9+/=_-]{64,}$` as a credential, and
+   * `sanitizeForDbWithSecrets(testCase)` runs that over the test case on the write
+   * path. Our reducer reads results back FROM that database (the in-memory eval
+   * has no rows), so a base64-encoded payload — the whole point of the base64
+   * strategy — arrives as `[REDACTED]`.
+   *
+   * Strategy actions stamp `metadata.originalText` with the pre-transform payload,
+   * which is prose and therefore survives the same sanitizer. That is what this
+   * field carries, and it is a FALLBACK, not the sent bytes: the report must say
+   * so rather than present it as what the target received.
+   *
+   * Absent when the strategy left no original, or when the original was itself
+   * redacted (a long ASCII payload matches the same rule).
+   */
+  original_prompt?: string;
   /** The target's answer, verbatim. */
   response: string;
   /** The grader's reasoning, verbatim (the aggregate keeps a 200-char redacted copy). */

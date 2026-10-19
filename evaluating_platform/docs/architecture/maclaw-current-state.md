@@ -665,3 +665,23 @@ ToUnicode，`/F2` 是 Helvetica。
 路由到 Helvetica（WinAnsi 编码齐全），后者修正了测试解码器。
 
 **它抓不到版式**（行距、重叠、分页）—— 那仍然需要人打开 PDF 看一眼。
+
+
+## 载荷被上游脱敏：`[REDACTED]` 与 `originalText` 兜底（2026-10-19）
+
+现场反馈：一份 `prompt-extraction` + `base64` 的报告里，**攻击载荷清一色是 `[REDACTED]`**。
+
+**根因（读 promptfoo dist 定位，非推测）**：
+
+1. promptfoo 的 `looksLikeSecret()` 有一条 `^[a-zA-Z0-9+/=_-]{64,}$` —— **整串是 base64 形状且 ≥64 字符即判为密钥**；
+2. 它在**写自己的数据库之前**对 test case 跑 `sanitizeForDbWithSecrets`（`sanitizeObject(maxDepth: Infinity)`），命中就替换成 `[REDACTED]`；
+3. 我们的引擎**从那个库里把结果读回来**（内存里的 eval 没有 results），于是拿到的就是 `[REDACTED]`。
+
+没有开关可关。base64 编码后的载荷必然命中，所以是"清一色"。
+
+**处置**：策略动作会在 `testCase.metadata.originalText` 里留一份**变换前**的载荷，那是散文、不被该规则命中。
+引擎把它作为 `case_results[].original_prompt` 带出，BFF 在「实际载荷为空或等于 `[REDACTED]`」时用它兜底，
+并置 `prompt_redacted_by_engine=true`；渲染层据此加一句说明：**以上是编码前的原始载荷，不是实际发送的字节**。
+
+**边界**：兜底是尽力而为 —— 原始载荷本身若也是长 ASCII 串，同样会被那条规则清空，此时只能原样显示标记。
+渲染兜底值而**不加那句说明**是不可接受的：读者会把它当成实际发送的内容。

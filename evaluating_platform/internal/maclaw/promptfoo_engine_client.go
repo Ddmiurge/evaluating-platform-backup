@@ -431,8 +431,20 @@ type EngineCaseResult struct {
 	StrategyID    string `json:"strategy_id"`
 	Severity      string `json:"severity"`
 	AttackSuccess bool   `json:"attack_success"`
-	// Prompt is the attack prompt as the target received it.
+	// Prompt is the attack prompt as the target received it — EXCEPT when
+	// promptfoo redacted it on the way into its database (see OriginalPrompt).
 	Prompt string `json:"prompt"`
+	// OriginalPrompt is the pre-strategy payload promptfoo recorded in
+	// `metadata.originalText`.
+	//
+	// It exists because promptfoo's secret heuristic (`^[a-zA-Z0-9+/=_-]{64,}$`)
+	// classifies a base64-encoded payload as a credential and replaces it with
+	// `[REDACTED]` before the row is written — and the engine reads results back
+	// from that row. The pre-transform text is prose and survives, so it is the
+	// only remaining evidence of what the probe was about.
+	//
+	// It is a FALLBACK, not the sent bytes: the report labels it as such.
+	OriginalPrompt string `json:"original_prompt,omitempty"`
 	// Response is the target's answer, verbatim.
 	Response string `json:"response"`
 	// JudgeReason is the grader's reasoning, verbatim.

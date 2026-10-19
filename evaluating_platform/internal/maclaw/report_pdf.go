@@ -281,6 +281,9 @@ func findingLines(findings []EvaluationReportFinding) []string {
 		if title := strings.TrimSpace(finding.Title); title != "" {
 			lines = append(lines, "   - 攻击载荷："+title)
 		}
+		if note := findingPromptRedactionNote(finding); note != "" {
+			lines = append(lines, "   - "+note)
+		}
 		if turns := findingTurnLines(finding); len(turns) > 0 {
 			lines = append(lines, turns...)
 		}
@@ -835,6 +838,9 @@ func (p *pdfPageWriter) findingCard(index int, finding EvaluationReportFinding, 
 	// shows as a badge on the same card — so a reader of either report finds the
 	// same thing in the same place.
 	p = p.findingText(index, "攻击载荷：", firstNonEmptyString(finding.Title, "未记录"), appendPage)
+	if note := findingPromptRedactionNote(finding); note != "" {
+		p = p.findingText(index, "", note, appendPage)
+	}
 	if original := findingOriginalQuestionSummary(finding); original != "" {
 		p = p.findingText(index, "原样本问题：", original, appendPage)
 	}
@@ -1417,4 +1423,29 @@ func mustMarshalJSON(value any) []byte {
 		return []byte(`{}`)
 	}
 	return data
+}
+
+// findingPromptRedactionNote explains when the rendered 攻击载荷 is the payload
+// from BEFORE the strategy, not the bytes the target received.
+//
+// # The defect it answers (2026-10-19)
+//
+// promptfoo's secret heuristic treats any value matching `^[a-zA-Z0-9+/=_-]{64,}$`
+// as a credential and writes `[REDACTED]` in its place before the row is
+// persisted — and the engine reads results back from that row. Every probe of an
+// encoding strategy therefore arrived as `[REDACTED]`, which is a report that
+// shows nothing.
+//
+// The pre-strategy original is carried as a fallback. Presenting it WITHOUT this
+// line would claim the target received text it never saw, which is worse than the
+// marker: a reader would trust it.
+func findingPromptRedactionNote(finding EvaluationReportFinding) string {
+	if !strings.EqualFold(strings.TrimSpace(finding.Metadata["prompt_redacted_by_engine"]), "true") {
+		return ""
+	}
+	note := "说明：引擎入库前把这条载荷当作密钥清空了（编码类策略会命中该规则），以上为编码前的原始载荷"
+	if strategy := findingStrategyLabel(finding); strategy != "" && strategy != "无（直接提问）" {
+		note += "，本次以「" + strategy + "」编码后发送"
+	}
+	return note + "，不是实际发送的字节。"
 }

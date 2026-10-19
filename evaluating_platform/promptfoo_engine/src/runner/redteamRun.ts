@@ -496,6 +496,7 @@ export function reduceEvalToSafeResult(
       prompt: casePromptText(r, injectVar),
       response: caseResponseText(r),
       judge_reason: typeof r.gradingResult?.reason === 'string' ? r.gradingResult.reason : '',
+      ...(originalPromptOf(metadata) ? { original_prompt: originalPromptOf(metadata) } : {}),
       ...(typeof r.gradingResult?.score === 'number' ? { score: r.gradingResult.score } : {}),
       ...caseTurns(r),
     });
@@ -714,4 +715,19 @@ function firstText(...values: unknown[]): string {
     if (typeof value === 'string' && value.trim() !== '') return value;
   }
   return '';
+}
+
+/**
+ * The pre-strategy payload promptfoo recorded, when there is one to record.
+ *
+ * `metadata.originalText` is stamped by the strategy actions (`addBase64Encoding`
+ * and friends) before the transform. It is returned only when it genuinely says
+ * something more than the prompt does — a same-or-empty value would add a field
+ * to every probe and make the report's fallback path look exercised when it is
+ * not.
+ */
+function originalPromptOf(metadata: Record<string, unknown> | undefined): string {
+  if (!metadata) return '';
+  const value = metadata.originalText;
+  return typeof value === 'string' ? value.trim() : '';
 }

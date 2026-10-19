@@ -1017,3 +1017,33 @@ ASCII 仍走 Helvetica（内嵌的是**纯 CJK 回退字体，没有拉丁字形
   `engine-report:<id>` = 平台合成，`msg_…` = maclaw 自己写的。
   本轮观测到的是 `msg_…`，所以**平台合成的路径本轮并未被验到**。
 - 「移除全部插件」在 refs 为空的卡上不再是 202，而是 409。
+
+
+---
+
+## 17. 载荷被上游脱敏：`[REDACTED]` 与 `originalText` 兜底（2026-10-19）
+
+现场反馈：一份 `prompt-extraction` + `base64` 的报告，**攻击载荷清一色是 `[REDACTED]`**。
+
+**根因**（读 promptfoo dist 定位）：
+
+1. `looksLikeSecret()` 有一条 `^[a-zA-Z0-9+/=_-]{64,}$` —— 整串是 base64 形状且 ≥64 字符即判为密钥；
+2. 它在**写自己的数据库之前**对 test case 跑 `sanitizeForDbWithSecrets`（`sanitizeObject(maxDepth: Infinity)`），命中就换成 `[REDACTED]`；
+3. 我们的引擎**从那个库里读结果**（内存里的 eval 没有 results），于是拿到的是洗过的值。
+
+没有开关。base64 编码后的载荷必然命中，所以是"清一色"。
+
+**处置（方案 A）**：
+
+- 引擎：策略动作在 `testCase.metadata.originalText` 里留了**变换前**的载荷（散文，不被该规则命中），
+  归约时带进 `case_results[].original_prompt`；
+- BFF：`engineCaseTitle` 在「实际载荷为空或等于 `[REDACTED]`」时用它兜底，并置
+  `prompt_redacted_by_engine=true`；
+- 渲染：据该标记加一句说明 —— **以上是编码前的原始载荷，不是实际发送的字节**（并点出所用策略）。
+
+**边界**：兜底是尽力而为。原始载荷本身若也是长 ASCII 串，同样会被那条规则清空，此时原样显示标记。
+**渲染兜底值而不加说明是不可接受的** —— 读者会把它当成实际发送的内容，那比显示 `[REDACTED]` 更糟。
+
+**未解**：部分探针的「目标回答」显示 `{}`。回答走的是另一条清洗路径（只清 HTTP 头，不清正文），
+所以原因不在这里；更可能是靶子返回了空 body 或响应路径未命中。需要目标配置的 `agent_response_path`
+与那几条探针的判定理由才能定位。

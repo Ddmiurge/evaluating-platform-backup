@@ -215,3 +215,78 @@ func TestEngineReportMetadataOmitsRollupsWhenEngineReportedNone(t *testing.T) {
 		t.Error("plugin rollup present with no plugins; the metrics section cannot tell that from an empty run")
 	}
 }
+
+// TestEngineCaseTitleFallsBackToTheOriginalPrompt is the 2026-10-19 fix for
+// payloads that reached the report as `[REDACTED]`.
+//
+// promptfoo's secret heuristic treats any value matching `^[a-zA-Z0-9+/=_-]{64,}$`
+// as a credential and writes `[REDACTED]` instead — before the row is persisted,
+// and the engine reads results back from that row. Every base64-strategy probe
+// therefore arrived with no payload at all.
+//
+// The pre-strategy original is the fallback, and the second return value is what
+// makes the report say so. Returning the original WITHOUT the flag would present
+// it as the bytes that were sent.
+func TestEngineCaseTitleFallsBackToTheOriginalPrompt(t *testing.T) {
+	cases := []struct {
+		name        string
+		item        EngineCaseResult
+		wantTitle   string
+		wantRedactd bool
+	}{
+		{
+			name:      "a normal prompt is used as-is",
+			item:      EngineCaseResult{Prompt: "普通载荷"},
+			wantTitle: "普通载荷",
+		},
+		{
+			name:        "a redacted prompt falls back to the original, flagged",
+			item:        EngineCaseResult{Prompt: "[REDACTED]", OriginalPrompt: "原始载荷"},
+			wantTitle:   "原始载荷",
+			wantRedactd: true,
+		},
+		{
+			name:      "a redacted prompt with no original stays as the marker",
+			item:      EngineCaseResult{Prompt: "[REDACTED]"},
+			wantTitle: "[REDACTED]",
+		},
+		{
+			name:        "an empty prompt with an original is treated the same way",
+			item:        EngineCaseResult{Prompt: "", OriginalPrompt: "原始载荷"},
+			wantTitle:   "原始载荷",
+			wantRedactd: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			title, redacted := engineCaseTitle(tc.item)
+			if title != tc.wantTitle {
+				t.Errorf("title = %q, want %q", title, tc.wantTitle)
+			}
+			if redacted != tc.wantRedactd {
+				t.Errorf("redacted = %v, want %v", redacted, tc.wantRedactd)
+			}
+		})
+	}
+}
+
+// TestFindingRendersTheRedactionNote pins that a fallback payload is never
+// presented as the sent bytes.
+func TestFindingRendersTheRedactionNote(t *testing.T) {
+	flagged := EvaluationReportFinding{
+		Title:    "原始载荷",
+		Metadata: map[string]string{"strategy_id": "base64", "prompt_redacted_by_engine": "true"},
+	}
+	note := strings.Join(findingLines([]EvaluationReportFinding{flagged}), "\n")
+	if !strings.Contains(note, "以上为编码前的原始载荷") {
+		t.Fatalf("redaction note missing:\n%s", note)
+	}
+	if !strings.Contains(note, "base64") {
+		t.Errorf("note should name the strategy that encoded it:\n%s", note)
+	}
+
+	plain := EvaluationReportFinding{Title: "普通载荷", Metadata: map[string]string{"strategy_id": "base64"}}
+	if strings.Contains(strings.Join(findingLines([]EvaluationReportFinding{plain}), "\n"), "编码前的原始载荷") {
+		t.Fatal("a normal payload must not carry the redaction note")
+	}
+}
