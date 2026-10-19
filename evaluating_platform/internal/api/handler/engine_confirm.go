@@ -158,6 +158,66 @@ func promptfooEnginePlanSelectionFromContent(content string) (promptfooEnginePla
 	return selection, true
 }
 
+// withoutRemovedRefs drops the refs the user took off the plan card before
+// confirming.
+//
+// # Only subtraction, ever
+//
+// The plan card is the authorisation for what this run may use — the execution
+// grant is bound to it. Accepting a selection from the browser would let a
+// crafted request run a capability the plan never offered, so the request can
+// only name things to REMOVE, and a removal that names something the plan did not
+// select is simply not found. Removals naming skills or expert samples are
+// ignored here on purpose: those axes drive a different execution path and are
+// out of scope for this change.
+//
+// `DeclaredStrategies` is decremented alongside, because it is the fail-closed
+// signal "the plan named a strategy but none survived". Removing the only
+// strategy is a deliberate choice, not an unresolved ref, and must not be refused
+// as one.
+func (s promptfooEnginePlanSelection) withoutRemovedRefs(removed map[string]bool) promptfooEnginePlanSelection {
+	if len(removed) == 0 {
+		return s
+	}
+	out := s
+	out.Plugins = nil
+	out.Strategies = nil
+	pluginPrefix := maclaw.CapabilitySourcePromptfooPlugin + ":"
+	strategyPrefix := maclaw.CapabilitySourcePromptfooStrategy + ":"
+	for _, id := range s.Plugins {
+		if removed[pluginPrefix+id] {
+			continue
+		}
+		out.Plugins = append(out.Plugins, id)
+	}
+	for _, id := range s.Strategies {
+		if removed[strategyPrefix+id] {
+			continue
+		}
+		out.Strategies = append(out.Strategies, id)
+	}
+	if out.DeclaredStrategies > len(out.Strategies) {
+		out.DeclaredStrategies = len(out.Strategies)
+	}
+	return out
+}
+
+// normalizedRefSet trims a removal list into a lookup set. Empty entries are
+// dropped: a blank ref names nothing, and treating it as "remove everything"
+// would be the opposite of what an empty entry means.
+func normalizedRefSet(refs []string) map[string]bool {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if trimmed := strings.TrimSpace(ref); trimmed != "" {
+			out[trimmed] = true
+		}
+	}
+	return out
+}
+
 // sortedIDSet renders a deduplicating id set as a sorted slice, so a plan's
 // selection reaches the engine in a stable order (and the run record reads the
 // same on every confirm).

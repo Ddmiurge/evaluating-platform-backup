@@ -222,3 +222,78 @@ func TestPromptfooEnginePlanRefusal(t *testing.T) {
 		})
 	}
 }
+
+func TestPromptfooEnginePlanSelectionWithoutRemovedRefs(t *testing.T) {
+	base := promptfooEnginePlanSelection{
+		Plugins:            []string{"harmful", "pii"},
+		Strategies:         []string{"base64", "rot13"},
+		DeclaredStrategies: 2,
+	}
+
+	t.Run("removes the named plugin", func(t *testing.T) {
+		out := base.withoutRemovedRefs(normalizedRefSet([]string{"promptfoo_plugin:pii"}))
+		if !sameIDs(out.Plugins, []string{"harmful"}) {
+			t.Errorf("plugins = %v, want [harmful]", out.Plugins)
+		}
+		if !sameIDs(out.Strategies, []string{"base64", "rot13"}) {
+			t.Errorf("strategies = %v, want both", out.Strategies)
+		}
+	})
+
+	t.Run("removes the named strategy and keeps the fail-closed count honest", func(t *testing.T) {
+		out := base.withoutRemovedRefs(normalizedRefSet([]string{"promptfoo_strategy:rot13"}))
+		if !sameIDs(out.Strategies, []string{"base64"}) {
+			t.Errorf("strategies = %v, want [base64]", out.Strategies)
+		}
+		// DeclaredStrategies is the "plan named a strategy but none survived"
+		// signal. A deliberate removal must not trip it — otherwise the user takes
+		// the last strategy off and the confirm is refused as an unresolved ref.
+		if out.DeclaredStrategies != 1 {
+			t.Errorf("declared strategies = %d, want 1", out.DeclaredStrategies)
+		}
+		if _, _, refused := promptfooEnginePlanRefusal(out); refused {
+			t.Error("removing one strategy must not be refused")
+		}
+	})
+
+	t.Run("removing every strategy leaves nothing to refuse on", func(t *testing.T) {
+		out := base.withoutRemovedRefs(normalizedRefSet([]string{
+			"promptfoo_strategy:base64", "promptfoo_strategy:rot13",
+		}))
+		if len(out.Strategies) != 0 || out.DeclaredStrategies != 0 {
+			t.Errorf("out = %+v, want no strategies declared", out)
+		}
+		if _, _, refused := promptfooEnginePlanRefusal(out); refused {
+			t.Error("a plan with strategies removed deliberately must run without them")
+		}
+	})
+
+	t.Run("removing the only plugin is refused, not silently run empty", func(t *testing.T) {
+		out := base.withoutRemovedRefs(normalizedRefSet([]string{
+			"promptfoo_plugin:harmful", "promptfoo_plugin:pii",
+		}))
+		code, _, refused := promptfooEnginePlanRefusal(out)
+		if !refused || code != EnginePlanErrNoPlugins {
+			t.Fatalf("refused = %v code = %q, want %q", refused, code, EnginePlanErrNoPlugins)
+		}
+	})
+
+	t.Run("a removal the plan never offered changes nothing", func(t *testing.T) {
+		// REMOVAL ONLY: this is the trust boundary. A request may not add a
+		// capability the plan did not select, and naming one that is absent is a
+		// no-op rather than an insertion.
+		out := base.withoutRemovedRefs(normalizedRefSet([]string{
+			"promptfoo_plugin:cyberseceval", "skillhub:some-skill",
+		}))
+		if !sameIDs(out.Plugins, base.Plugins) || !sameIDs(out.Strategies, base.Strategies) {
+			t.Fatalf("out = %+v, want the plan's selection unchanged", out)
+		}
+	})
+
+	t.Run("blank refs are ignored", func(t *testing.T) {
+		out := base.withoutRemovedRefs(normalizedRefSet([]string{"", "   "}))
+		if !sameIDs(out.Plugins, base.Plugins) {
+			t.Fatalf("plugins = %v, want unchanged", out.Plugins)
+		}
+	})
+}

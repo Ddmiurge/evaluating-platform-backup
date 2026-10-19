@@ -43,6 +43,11 @@ type maclawRuntimeConfirmInput struct {
 	TestCount     int    `json:"test_count,omitempty"`
 	PlanMessageID string `json:"plan_message_id,omitempty"`
 	Content       string `json:"content,omitempty"`
+	// RemovedCapabilityRefs names plan capabilities the user took off the card
+	// before confirming (2026-10-16). REMOVAL ONLY: the plan is the authorisation,
+	// so a ref it did not offer is ignored rather than added — see
+	// promptfooEnginePlanSelection.withoutRemovedRefs.
+	RemovedCapabilityRefs []string `json:"removed_capability_refs,omitempty"`
 }
 
 func NewMaclawRuntimeHandler(gateway maclaw.RuntimeGateway, instanceID string) *MaclawRuntimeHandler {
@@ -385,7 +390,8 @@ func (h *MaclawRuntimeHandler) ConfirmPlan(c *gin.Context) {
 	// capabilities run platform-side (the MaClaw agent loop has no engine
 	// fast path, and its LLM tool-calling is unreliable here).
 	if engineSelection, ok := promptfooEnginePlanSelectionFromContent(planMessage.Content); ok && len(selectedSkills) == 0 && len(resources) == 0 {
-		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount, engineSelection)
+		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount,
+			engineSelection.withoutRemovedRefs(normalizedRefSet(in.RemovedCapabilityRefs)))
 		return
 	}
 	if err := h.preflightSelectedSkillTenantModel(c, selectedSkills); err != nil {

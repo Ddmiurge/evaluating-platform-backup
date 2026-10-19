@@ -535,10 +535,19 @@ export const maclawRuntimeChatService = {
     }
   },
 
-  async confirmPlan(sessionId: string, testCount?: number, planMessageId?: string): Promise<RuntimeSendResult> {
+  async confirmPlan(
+    sessionId: string,
+    testCount?: number,
+    planMessageId?: string,
+    removedRefs?: string[],
+  ): Promise<RuntimeSendResult> {
     const body: Record<string, unknown> = {}
     if (testCount) body.test_count = testCount
     if (planMessageId) body.plan_message_id = planMessageId
+    // Refs the user took off the plan card before confirming. The server only
+    // ever REMOVES what the plan offered — a request that names something the
+    // plan did not select is ignored, never added (see ConfirmPlan).
+    if (removedRefs && removedRefs.length > 0) body.removed_capability_refs = removedRefs
     const res = await api.post<EvaluationJob>(`/maclaw/evaluation/sessions/${sessionId}/confirm`, body, { timeout: 600000 })
     const job = res.data
     const hasRun = Boolean(job.progress?.run_id || job.result?.run?.id || job.status === 'running' || job.status === 'succeeded')

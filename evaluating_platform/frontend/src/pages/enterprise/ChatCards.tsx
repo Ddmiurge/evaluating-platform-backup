@@ -4,6 +4,7 @@ import { ApiOutlined, BugOutlined, CheckCircleOutlined, DownloadOutlined, Export
 
 import type { ChatMessage, PlanInfo, WelcomeCapability } from '../../services/chat'
 import { reportService, triggerBrowserDownload } from '../../services/report'
+import { ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS } from '../../services/engineEval'
 import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportGenerationPathCaption, reportJudgeSourceCaption, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
 import { parseChatMarkdown, type ChatMarkdownInline } from './chatMarkdown'
 
@@ -141,6 +142,72 @@ function capabilityVisual(item: WelcomeCapability) {
   }
 }
 
+/** promptfoo capability ref prefixes — same values as `maclaw.CapabilitySource*`. */
+const PROMPTFOO_PLUGIN_REF_PREFIX = 'promptfoo_plugin:'
+const PROMPTFOO_STRATEGY_REF_PREFIX = 'promptfoo_strategy:'
+
+const ENGINE_PLUGIN_LABELS = new Map(ENGINE_PLUGIN_OPTIONS.map((option) => [option.id, option.name]))
+const ENGINE_STRATEGY_LABELS = new Map(ENGINE_STRATEGY_OPTIONS.map((option) => [option.id, option.name]))
+
+export interface PlanRefChip {
+  /** The ref exactly as the plan wrote it — what a removal has to name. */
+  ref: string
+  label: string
+}
+
+export interface PlanRefGroups {
+  plugins: PlanRefChip[]
+  strategies: PlanRefChip[]
+  others: PlanRefChip[]
+}
+
+/**
+ * Split a plan's capability refs by axis and translate each into a readable name.
+ *
+ * # Why (user request, 2026-10-15)
+ *
+ * The card used to run every ref through `displayCapabilityName`, which has no
+ * branch for `promptfoo_plugin:` / `promptfoo_strategy:` — so the chips read
+ * literally `promptfoo_plugin:prompt-extraction` and
+ * `promptfoo_strategy:base64`, with the two axes mixed into one undefined row.
+ * Technically "shown"; useless to read.
+ *
+ * An id the catalog does not know falls back to the raw id rather than being
+ * dropped: a ref we cannot name is still something the user selected, and hiding
+ * it would make the card claim a smaller selection than the run will use.
+ */
+export function planRefGroups(plan: PlanInfo): PlanRefGroups {
+  const groups: PlanRefGroups = { plugins: [], strategies: [], others: [] }
+  const seen = new Set<string>()
+  const push = (target: PlanRefChip[], chip: PlanRefChip) => {
+    if (!chip.ref || seen.has(chip.ref)) return
+    seen.add(chip.ref)
+    target.push(chip)
+  }
+  for (const raw of [...(plan.selected_capability_refs || []), ...(plan.resource_handles || [])]) {
+    const ref = String(raw || '').trim()
+    if (!ref) continue
+    const lower = ref.toLowerCase()
+    if (lower.startsWith(PROMPTFOO_PLUGIN_REF_PREFIX)) {
+      const id = ref.slice(PROMPTFOO_PLUGIN_REF_PREFIX.length).trim()
+      push(groups.plugins, { ref, label: ENGINE_PLUGIN_LABELS.get(id) || id })
+      continue
+    }
+    if (lower.startsWith(PROMPTFOO_STRATEGY_REF_PREFIX)) {
+      const id = ref.slice(PROMPTFOO_STRATEGY_REF_PREFIX.length).trim()
+      push(groups.strategies, { ref, label: ENGINE_STRATEGY_LABELS.get(id) || id })
+      continue
+    }
+    const label = displayCapabilityName(ref)
+    if (label) push(groups.others, { ref, label })
+  }
+  for (const raw of plan.selected_skills || []) {
+    const label = displayCapabilityName(String(raw || '').trim())
+    if (label) push(groups.others, { ref: String(raw || '').trim(), label })
+  }
+  return groups
+}
+
 function displayCapabilityName(ref: string) {
   const text = String(ref || '').trim()
   if (!text) return ''
@@ -160,7 +227,7 @@ function PlanConfirmCard({
   confirmedTestCount,
 }: {
   plan: PlanInfo
-  onConfirm: (count: number) => void
+  onConfirm: (count: number, removedRefs: string[]) => void
   confirmed: boolean
   confirmedTestCount?: number
 }) {
@@ -185,12 +252,73 @@ function PlanConfirmCard({
   if (normalizedPlan.target_url) rows.push(['目标地址', normalizedPlan.target_url])
   if (normalizedPlan.target_model) rows.push(['模型', normalizedPlan.target_model])
   rows.push(['资源模式', RESOURCE_MODE_LABELS[normalizedPlan.resource_mode_preference || ''] || '自动选择'])
-  if (normalizedPlan.selection_strategy) rows.push(['选择策略', SELECTION_STRATEGY_LABELS[normalizedPlan.selection_strategy] || normalizedPlan.selection_strategy])
-  const selectedCapabilities = [...new Set([
-    ...(normalizedPlan.selected_skills || []),
-    ...(normalizedPlan.selected_capability_refs || []),
-    ...(normalizedPlan.resource_handles || []),
-  ].map(displayCapabilityName).filter(Boolean))]
+  // Renamed from 「选择策略」: that label belongs to the RESOURCE-selection strategy
+  // (auto / skill_generated), and the card now shows real attack strategies below
+  // — two rows both called 策略 would be read as the same thing.
+  if (normalizedPlan.selection_strategy) rows.push(['资源选取方式', SELECTION_STRATEGY_LABELS[normalizedPlan.selection_strategy] || normalizedPlan.selection_strategy])
+  const refGroups = planRefGroups(normalizedPlan)
+
+  // Refs the user took off this plan before confirming.
+  //
+  // Only the promptfoo axes are removable: skills and expert samples drive a
+  // different execution path (manage_skill → register payload → batch tool) and
+  // are explicitly out of scope for this change.
+  //
+  // After a reload this component state is gone, so a confirmed card shows the
+  // plan's original selection again — the run record is the source of truth for
+  // what actually ran. Persisting the removals onto the plan card would be the
+  // fix, and is deliberately not part of this change.
+  const [removedRefs, setRemovedRefs] = useState<string[]>([])
+  const removed = new Set(removedRefs)
+  const toggleRef = (ref: string) => {
+    if (confirmed) return
+    setRemovedRefs((previous) => (
+      previous.includes(ref) ? previous.filter((item) => item !== ref) : [...previous, ref]
+    ))
+  }
+  const renderChips = (label: string, chips: PlanRefChip[], removable: boolean) => {
+    if (chips.length === 0) return null
+    return (
+      <div style={{ display: 'flex', gap: 8, fontSize: 13, alignItems: 'flex-start' }}>
+        <span style={{ color: 'var(--text-muted)', minWidth: 70 }}>{label}</span>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {chips.map((chip) => {
+            const isRemoved = removed.has(chip.ref)
+            return (
+              <span
+                key={chip.ref}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  background: isRemoved ? 'transparent' : 'rgba(22, 163, 74, 0.10)',
+                  border: isRemoved ? '1px dashed var(--border-color)' : 'none',
+                  color: isRemoved ? 'var(--text-muted)' : 'var(--color-low)',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  fontSize: 12,
+                  textDecoration: isRemoved ? 'line-through' : 'none',
+                }}
+              >
+                {chip.label}
+                {removable && !confirmed && (
+                  <button
+                    type="button"
+                    aria-label={isRemoved ? `恢复 ${chip.label}` : `移除 ${chip.label}`}
+                    title={isRemoved ? '恢复' : '本次不要这一项'}
+                    onClick={() => toggleRef(chip.ref)}
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, color: 'inherit', fontSize: 12, lineHeight: 1 }}
+                  >
+                    {isRemoved ? '↺' : '×'}
+                  </button>
+                )}
+              </span>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--color-primary-border)', borderRadius: 12, padding: '16px 20px', maxWidth: 500, marginTop: 8 }}>
@@ -212,18 +340,9 @@ function PlanConfirmCard({
             ))}
           </div>
         </div>
-        {selectedCapabilities.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, fontSize: 13, alignItems: 'flex-start' }}>
-            <span style={{ color: 'var(--text-muted)', minWidth: 70 }}>使用能力</span>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {selectedCapabilities.map(item => (
-                <span key={item} style={{ background: 'rgba(22, 163, 74, 0.10)', color: 'var(--color-low)', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
-                  {item}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        {renderChips('攻击插件', refGroups.plugins, true)}
+        {renderChips('攻击策略', refGroups.strategies, true)}
+        {renderChips('使用能力', refGroups.others, false)}
         {(normalizedPlan.selection_reasons || []).length > 0 && (
           <div style={{ display: 'flex', gap: 8, fontSize: 13, alignItems: 'flex-start' }}>
             <span style={{ color: 'var(--text-muted)', minWidth: 70 }}>选择理由</span>
@@ -243,7 +362,7 @@ function PlanConfirmCard({
           <CheckCircleOutlined /> 已确认，正在按 {testCount} 条测试问题启动评估...
         </div>
       ) : (
-        <Button type="primary" size="small" onClick={() => onConfirm(testCount)}>
+        <Button type="primary" size="small" onClick={() => onConfirm(testCount, removedRefs)}>
           确认执行
         </Button>
       )}
@@ -722,7 +841,7 @@ export function MessageBubble({
   retryingJobIds,
 }: {
   msg: ChatMessage
-  onPlanConfirm: (count: number, planMessageId: string) => void
+  onPlanConfirm: (count: number, planMessageId: string, removedRefs?: string[]) => void
   onQuickReply?: (text: string) => void
   confirmedMsgs: Set<string>
   confirmedTestCounts: Record<string, number>
@@ -759,7 +878,7 @@ export function MessageBubble({
         {cardType === 'plan_confirm' && !isUser && msg.metadata?.plan && (
           <PlanConfirmCard
             plan={msg.metadata.plan as PlanInfo}
-            onConfirm={(count) => onPlanConfirm(count, msg.id)}
+            onConfirm={(count, removedRefs) => onPlanConfirm(count, msg.id, removedRefs)}
             confirmed={confirmedMsgs.has(msg.id) || isStalePlan}
             confirmedTestCount={confirmedTestCounts[msg.id]}
           />
