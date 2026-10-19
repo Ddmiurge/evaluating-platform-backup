@@ -241,6 +241,38 @@ try:
 except Exception: pass" 2>/dev/null)
     check "下载开关（downloadable / format）" "true pdf" "$dl"
 
+    # 判据 5：被上游脱敏的载荷必须带「编码前原文」的标注。
+    #
+    # promptfoo 在写库前把 base64 形状的载荷当成密钥替换成 [REDACTED]，我们用它留在
+    # metadata.originalText 里的变换前原文兜底。**兜底值不是实际发送的字节** ——
+    # 渲染它而不加说明，读者会当成发送内容，比显示 [REDACTED] 更糟。
+    #
+    # 这条判据按数据驱动：报告里只要有 finding 标了 prompt_redacted_by_engine，
+    # markdown 里就必须出现那句说明。没有标记者说明本轮没选编码类策略，只告警。
+    report_json=$(curl -sS "${auth[@]}" "$BFF/api/v1/maclaw/evaluation/reports/$report_id/export?format=json" 2>/dev/null)
+    flagged=$(printf '%s' "$report_json" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    n=0
+    for f in d.get('findings') or []:
+        if str((f.get('metadata') or {}).get('prompt_redacted_by_engine','')).lower()=='true':
+            n+=1
+    print(n)
+except Exception: print(-1)" 2>/dev/null)
+    if [ "${flagged:-0}" -gt 0 ] 2>/dev/null; then
+      md_body=$(curl -sS "${auth[@]}" "$BFF/api/v1/maclaw/evaluation/reports/$report_id/export?format=md" 2>/dev/null)
+      if printf '%s' "$md_body" | grep -q "编码前的原始载荷"; then
+        ok "判据5 $flagged 条脱敏兜底项都带了「非实际发送字节」的标注"
+      else
+        bad "判据5 有 $flagged 条脱敏兜底项，但报告里没有那句标注 —— 读者会把兜底原文当成发送内容"
+      fi
+    elif [ "${flagged:-0}" -eq 0 ]; then
+      warn "判据5 本报告没有脱敏兜底项（未选编码类策略则正常）"
+    else
+      warn "判据5 读不到报告 JSON，跳过"
+    fi
+
     # 真正的判据：这个 id 导出的字节是不是一个 PDF
     tmp=$(mktemp)
     curl -sS "${auth[@]}" -o "$tmp" "$BFF/api/v1/maclaw/evaluation/reports/$report_id/export?format=pdf" 2>/dev/null
