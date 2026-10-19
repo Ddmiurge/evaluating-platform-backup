@@ -639,3 +639,29 @@ ASCII/非 ASCII 的分段渲染保留了（旧的 F1/F2 结构），只是 F1 �
 
 **验证**：用 pypdf 解析真实生成的 PDF，中英文双向抽取全部命中，`/F1` 是 Type0 + FontFile2 +
 ToUnicode，`/F2` 是 Helvetica。
+
+
+## 报告渲染层的拆分与结构快照（2026-10-19）
+
+`redteam_artifact_service.go` 曾经是 **1955 行、84 个函数**，同时装存储、渲染、清洗三种职责，
+而渲染那 41 个函数**只有字符串 `Contains` 断言** —— 它只保护「有人想起来写断言的字符串」。
+
+这轮拆成四个文件（**纯搬运，零行为变化**）：
+
+| 文件 | 职责 |
+|---|---|
+| `redteam_artifact_service.go` | 服务与持久化（480 行） |
+| `report_pdf.go` | 章节构建 + 手写 PDF（1420 行） |
+| `report_sanitize.go` | 报告/证据两套清洗（149 行） |
+| `pdf_report_font.go` | 字体内嵌（518 行） |
+
+配套新增**结构快照**：`TestReportPDFStructureMatchesGolden` 渲染一份覆盖全部特性的 fixture，
+用结构读取器把 PDF 读回来（页数、每页字体、每段文字、图片数），与
+`testdata/report_pdf_structure.golden.txt` 逐字比较。它是这次搬运能被称为「零行为变化」的**依据**，
+不是注释里的承诺。
+
+**它当场就抓到两个真缺陷**：内嵌字体没有 `—` / `·` / `…` / 弯引号等西文标点的字形（gid=0，渲染成空白，
+出现在我们自己的页脚文案里），以及结构读取器自己把 WinAnsi 字节当 UTF-8 解码。前者改为把这些码位
+路由到 Helvetica（WinAnsi 编码齐全），后者修正了测试解码器。
+
+**它抓不到版式**（行距、重叠、分页）—— 那仍然需要人打开 PDF 看一眼。
