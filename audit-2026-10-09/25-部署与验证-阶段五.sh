@@ -11,6 +11,9 @@
 #   DEPLOY_DIR=...
 #   EXPECT_COMMIT=abbe9f3   # 你推送并部署的 commit（留空则只打印不判）
 #   SKIP_DEPLOY=1           # 只跑验证
+#   BUILD_SERVICES="backend"  # 重建哪些镜像，默认只重建 backend
+#                             # （重建 promptfoo-engine 需要联网跑 npm install ——
+#                             #   本部署因临时网络窗口没开失败过两次；引擎未改时不必重建）
 #
 # 这批验的是三个**行为变化**，本地单测只能证明代码自洽：
 #   1. 选了策略不再额外跑一遍「无策略」（§1–§3，全自动）
@@ -71,13 +74,22 @@ else
   else
     warn "未提供 EXPECT_COMMIT，只打印当前版本：$head_commit"
   fi
-  echo "→ 重建镜像（引擎改了 config builder；backend 改了会话快照与 confirm；前端改了计划卡）…"
-  docker compose build promptfoo-engine backend frontend 2>&1 | tail -5 || bad "镜像构建失败"
+  build_services=${BUILD_SERVICES:-backend}
+  echo "→ 重建镜像：$build_services"
+  # 只重建变了的服务。后端这轮改了 PDF 字体与 confirm 拒绝逻辑；引擎与前端自
+  # 4e02072 起未改，且引擎构建需要联网拉 npm 依赖。
+  docker compose build $build_services 2>&1 | tail -5 || bad "镜像构建失败"
   docker compose up -d 2>&1 | tail -5 || bad "compose up 失败"
 fi
 
 docker compose ps 2>&1 | sed -n '1,10p'
 sleep 15
+# 字体内嵌到二进制里，容器不需要装字体。这里只确认镜像里不是空壳：
+if docker compose exec -T backend sh -c 'test -x /app/server' 2>/dev/null; then
+  ok "后端二进制存在（字体经 go:embed 编入，无需容器内字体）"
+else
+  warn "未能在容器内确认 /app/server（路径或容器名不同？）"
+fi
 docker compose logs --tail=80 promptfoo-engine 2>&1 | grep -E "\[engine\]" | tail -4
 
 # ─────────────────────────────────────────────────────────────────────────────
