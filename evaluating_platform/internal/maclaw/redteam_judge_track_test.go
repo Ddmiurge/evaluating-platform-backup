@@ -211,7 +211,7 @@ func TestRedteamReportRendersLegacyReportWithoutJudgeTrack(t *testing.T) {
 	if md := string(renderReportMarkdown(&report)); !strings.Contains(md, "历史报告") {
 		t.Fatalf("旧报告 markdown 渲染异常：%q", md)
 	}
-	if pdf := string(renderReportPDF(&report)); !strings.Contains(pdf, pdfUTF16Hex("历史报告")) {
+	if pdf := string(renderReportPDF(&report)); !pdfContainsRenderedText(pdf, "历史报告") {
 		t.Fatalf("旧报告 PDF 渲染异常")
 	}
 }
@@ -275,18 +275,27 @@ func TestRedteamReportJudgeTrackPersistsThroughCompileAndReload(t *testing.T) {
 	}
 }
 
-// pdfContainsAllCJKSegments 判断 PDF 是否包含给定文案里**每一个纯中文片段**。
+// pdfContainsRenderedText reports whether the PDF carries this string as one
+// rendered run.
 //
-// 为什么不能直接 pdfUTF16Hex(整句)：pdfPageWriter.text 会按 ASCII/非 ASCII
-// 把一行拆成多个片段，各片段用不同字体（F1 UTF-16 / F2 ASCII-hex）分别渲染，
-// 所以整句的连续 hex 永远不存在。用整句做断言会得到「明明渲染了却报失败」
-// 的假阴性 —— 这个坑在 U4 首次实现时真实踩到过一次。
-func pdfContainsAllCJKSegments(pdf string, text string) bool {
+// # Why the old helper is gone (2026-10-19)
+//
+// `pdfContainsAllCJKSegments` existed because text used to be split at every
+// ASCII boundary and drawn with two different fonts and two different encodings
+// (Helvetica/Latin-1 for ASCII, a non-embedded STSong-Light/UTF-16 for the rest),
+// so a mixed sentence never appeared as one hex string.
+//
+// There is now a single embedded font writing glyph ids, so a string appears
+// verbatim — as long as it fits on one line, because each wrapped line is its own
+// `Tj`. Callers asserting a caption that may wrap should pass a distinctive
+// fragment rather than the whole sentence; the exact wording is pinned by the
+// caption functions' own tests, not here.
+func pdfContainsRenderedText(pdf, text string) bool {
 	for _, segment := range splitPDFTextSegments(text) {
 		if segment.Text == "" {
 			continue
 		}
-		encoded := pdfUTF16Hex(segment.Text)
+		encoded := pdfRenderedText(segment.Text)
 		if segment.ASCII {
 			encoded = pdfASCIIHex(segment.Text)
 		}
@@ -322,7 +331,7 @@ func TestRedteamReportPDFFooterCarriesJudgeTrackCaption(t *testing.T) {
 	for _, track := range []RedteamJudgeTrack{RedteamJudgeTrackPlatform, RedteamJudgeTrackEngine} {
 		pdf := string(renderReportPDF(base(track)))
 		caption := RedteamJudgeTrackFooterCaptionOf(base(track).Metadata)
-		if !pdfContainsAllCJKSegments(pdf, caption) {
+		if !pdfContainsRenderedText(pdf, caption) {
 			t.Fatalf("%s 口径的 PDF 未渲染页脚口径说明：%q", track, caption)
 		}
 		// 页脚行的纵坐标必须在页脚安全区内（pdfFooterCaptionTextY=34），
@@ -344,7 +353,7 @@ func TestRedteamReportPDFFooterCarriesJudgeTrackCaption(t *testing.T) {
 		if track == RedteamJudgeTrackPlatform {
 			other = judgeTrackFooterEngine
 		}
-		if pdfContainsAllCJKSegments(pdf, other) {
+		if pdfContainsRenderedText(pdf, other) {
 			t.Fatalf("%s 口径的页脚混入了另一条链路的口径文案", track)
 		}
 	}
@@ -364,10 +373,10 @@ func TestRedteamReportPDFFooterShowsUnknownTrackForIllegalMetadata(t *testing.T)
 		CreatedAt:   time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC),
 	}
 	pdf := string(renderReportPDF(report))
-	if !pdfContainsAllCJKSegments(pdf, judgeTrackFooterInvalid) {
+	if !pdfContainsRenderedText(pdf, judgeTrackFooterInvalid) {
 		t.Fatalf("非法元数据的 PDF 页脚未显示「判定口径未知」")
 	}
-	if pdfContainsAllCJKSegments(pdf, judgeTrackFooterPlatform) {
+	if pdfContainsRenderedText(pdf, judgeTrackFooterPlatform) {
 		t.Fatalf("非法元数据不应在页脚被呈现为 platform 口径")
 	}
 }

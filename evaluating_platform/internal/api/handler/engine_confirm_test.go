@@ -1,8 +1,16 @@
 package handler
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	"evaluating_platform/internal/maclaw"
 )
 
 // sameIDs compares two id lists treating nil and empty as equal. The extractor
@@ -296,4 +304,52 @@ func TestPromptfooEnginePlanSelectionWithoutRemovedRefs(t *testing.T) {
 			t.Fatalf("plugins = %v, want unchanged", out.Plugins)
 		}
 	})
+}
+
+// TestConfirmPlanRefusesRemovalsItCannotHonour is the regression test for the
+// 2026-10-19 P1.
+//
+// Maclaw does not always fill `selected_capability_refs` (it sometimes writes the
+// plugins only into `risk_types`). Such a plan falls through to the runtime path,
+// which has no consumer for a removal list — measured on ai02: "remove every
+// plugin" was **accepted and re-ran the whole plan**, burning quota while the card
+// claimed the user had narrowed it.
+//
+// The card only shows × for refs it can render, so a normal user cannot reach
+// this; an API caller can. Refusing is the only honest answer — executing the
+// plan unchanged is the silent downgrade the whole mechanism exists to prevent.
+func TestConfirmPlanRefusesRemovalsItCannotHonour(t *testing.T) {
+	gateway := &fakeMaclawRuntimeGateway{
+		enabled: true,
+		messages: []maclaw.RuntimeMessage{{
+			ID:       "msg_plan_without_refs",
+			Role:     "assistant",
+			Metadata: map[string]string{"response_source": "plan_confirm"},
+			Content: `{"response_source":"plan_confirm","target_summary":{"target_type":"llm"},` +
+				`"risk_types":["jailbreak"],"test_count":5,"selection_strategy":"random","requires_confirmation":true}`,
+		}},
+	}
+	handler := NewMaclawRuntimeHandler(gateway, "inst_1")
+	router := newEnterpriseRoleRouter()
+	router.POST("/maclaw/evaluation/sessions/:id/confirm", func(c *gin.Context) {
+		c.Set("user_id", uuid.NewString())
+		handler.ConfirmPlan(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/maclaw/evaluation/sessions/sess_1/confirm",
+		strings.NewReader(`{"plan_message_id":"msg_plan_without_refs","test_count":5,"removed_capability_refs":["promptfoo_plugin:contracts"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s, want 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "plan_capability_removal_unsupported") {
+		t.Fatalf("body = %s, want the refusal code", w.Body.String())
+	}
+	// And nothing was executed: the whole point is not re-running the plan.
+	if gateway.confirmCalls != 0 {
+		t.Fatalf("confirmCalls = %d, want 0 — the plan must not be executed", gateway.confirmCalls)
+	}
 }

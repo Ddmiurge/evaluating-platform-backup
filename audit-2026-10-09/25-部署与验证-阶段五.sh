@@ -194,15 +194,29 @@ try:
     d=json.load(sys.stdin)
     for m in d.get('messages') or []:
         md=m.get('metadata') or {}
-        if md.get('card_type')=='report' and md.get('report_id'):
+        is_report = md.get('card_type')=='report' or md.get('evaluation_event_type')=='report' or md.get('response_source')=='report'
+        if is_report and md.get('report_id'):
             print(md['report_id']); break
 except Exception: pass" 2>/dev/null)
 
   if [ -z "$report_id" ]; then
-    bad "会话快照里没有报告卡（card_type=report + report_id）"
+    bad "会话快照里没有报告卡（card_type / evaluation_event_type / response_source 任一为 report，且带 report_id）"
     echo "   检查：这次评测走的是引擎链路吗？后端重启过吗（重启后卡片不再合成）？"
   else
-    ok "会话里有报告卡：$report_id"
+    card_id=$(printf '%s' "$snapshot" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    for m in d.get('messages') or []:
+        md=m.get('metadata') or {}
+        if md.get('report_id')=='$report_id':
+            print(m.get('id','')); break
+except Exception: pass" 2>/dev/null)
+    ok "会话里有报告卡：$report_id（消息 id=$card_id）"
+    case "$card_id" in
+      engine-report:*) ok "该卡由平台合成（engine-report:），即本批新增的路径" ;;
+      *) warn "该卡的消息 id 不是 engine-report: 形状 —— 它可能来自 maclaw 自己的报告消息（运行时路径）。若本轮评测是引擎链路，请核对为什么平台合成没有生效" ;;
+    esac
 
     dl=$(printf '%s' "$snapshot" | python3 -c "
 import json,sys

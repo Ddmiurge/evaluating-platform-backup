@@ -985,3 +985,35 @@ grant / plan_confirm 相关条款）。
 **两个会让人误判的点，脚本里也写了**：
 - §4 的卡片由**内存作业表**驱动，所以必须验「本轮部署之后跑的那次评测」；后端重启过就没了。
 - §5 的第 6 条（重新加载后移除状态丢失）是**已知限制**，不计入失败。
+
+
+---
+
+## 16. 阶段五验收后的两项修复（2026-10-19）
+
+### 16.1 PDF 字体：从不内嵌改为内嵌（用户现场反馈）
+
+报告 PDF 声明 `/BaseFont /STSong-Light` + `/Encoding /UniGB-UCS2-H` 却**没有字体程序** ——
+浏览器没有这个字体，整篇乱码。详见 `maclaw-current-state.md` 的同名一节：内嵌
+`DroidSansFallback`（Apache-2.0，`go:embed`），`/Identity-H` + `/ToUnicode` + `/W`，
+ASCII 仍走 Helvetica（内嵌的是**纯 CJK 回退字体，没有拉丁字形**）。
+
+代价：每份 PDF ≈ 1.6 MB。子集化是下一步。
+
+### 16.2 runtime 路径的移除项：改为 fail-closed 拒绝
+
+服务器记录 `25-阶段五服务器验证记录-20261019.md` §5 实测：计划卡 `selected_capability_refs`
+为空时（maclaw 只把插件写进 `risk_types`），confirm 落入 runtime 路径，**移除项被整体忽略**，
+「移除全部插件」反而把原计划完整跑了一遍。
+
+平台侧修法：带移除项但计划卡没有可逐项调整的能力 → **409 `plan_capability_removal_unsupported`**，
+不执行。**没有**采纳记录建议的「把 risk_types 归一化成 refs」—— 风险类别不是插件 id，映射过去
+是猜，猜错就是跑一批用户没选的插件。计划卡 refs 填充不一致是 maclaw 侧的问题。
+
+### 16.3 两个会误判的地方（写进脚本）
+
+- 判据 4 原来只认 `card_type=='report'`，实现里 maclaw 写的报告消息用的是
+  `evaluation_event_type`；脚本已同时接受三种字段，并额外打印**消息 id**：
+  `engine-report:<id>` = 平台合成，`msg_…` = maclaw 自己写的。
+  本轮观测到的是 `msg_…`，所以**平台合成的路径本轮并未被验到**。
+- 「移除全部插件」在 refs 为空的卡上不再是 202，而是 409。

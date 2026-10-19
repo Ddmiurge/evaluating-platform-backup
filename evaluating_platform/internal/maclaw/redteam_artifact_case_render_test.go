@@ -244,7 +244,7 @@ func TestPDFFindingPreservesPayloadLineBreaks(t *testing.T) {
 	pdf := string(renderReportPDF(report))
 
 	for _, want := range []string{"第一行", "第二行", "第三行", "回答第一行", "回答第二行"} {
-		if !strings.Contains(pdf, pdfUTF16Hex(want)) {
+		if !pdfContainsRenderedText(pdf, want) {
 			t.Errorf("pdf is missing line %q", want)
 		}
 	}
@@ -253,7 +253,7 @@ func TestPDFFindingPreservesPayloadLineBreaks(t *testing.T) {
 		"第二行\n\n第三行",
 		"回答第一行\n回答第二行",
 	} {
-		if strings.Contains(pdf, pdfUTF16Hex(withBreak)) {
+		if pdfContainsRenderedText(pdf, withBreak) {
 			t.Errorf("pdf emitted %q as one text run — the break reached the PDF as a rune", withBreak)
 		}
 	}
@@ -263,10 +263,24 @@ func TestPDFFindingPreservesPayloadLineBreaks(t *testing.T) {
 	}
 	// The label is attached to the first line only, so the reader can tell where
 	// the value starts without the break being lost.
-	if !strings.Contains(pdf, pdfUTF16Hex("攻击载荷：第一行")) {
+	if !pdfContainsRenderedText(pdf, "攻击载荷：第一行") {
 		t.Error("pdf does not label the first payload line")
 	}
-	if strings.Contains(pdf, pdfUTF16Hex("攻击载荷：第二行")) {
+	if pdfContainsRenderedText(pdf, "攻击载荷：第二行") {
 		t.Error("pdf repeated the payload label on a continuation line")
 	}
+}
+
+// pdfRenderedText is the Identity-H hex the PDF carries for a string.
+//
+// Since 2026-10-19 the report embeds one TrueType font and writes each rune as
+// its glyph id, so a rendered sentence appears verbatim in the content stream —
+// which is what these tests assert. Before that, ASCII went out as Latin-1 hex
+// through Helvetica and everything else as UTF-16 through a non-embedded
+// STSong-Light, and a mixed sentence therefore never appeared as one string.
+//
+// A sentence that WRAPS still does not appear whole: each wrapped line is its own
+// `Tj`. Assertions that may wrap should use a distinctive fragment.
+func pdfRenderedText(text string) string {
+	return reportPDFFont.encodeText(text)
 }

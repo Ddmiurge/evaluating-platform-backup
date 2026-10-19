@@ -283,7 +283,7 @@ func TestReportPDFCarriesJudgeSourceFallbackWarning(t *testing.T) {
 		CreatedAt: time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
 	}
 	pdf := string(renderReportPDF(report))
-	if !pdfContainsAllCJKSegments(pdf, "含 3 条兜底判定") {
+	if !pdfContainsRenderedText(pdf, "含 3 条兜底判定") {
 		t.Fatal("PDF 页脚未渲染判定标准的兜底警告")
 	}
 	// 无兜底时，页脚必须让位给固定声明，不得凭空出现警告。
@@ -292,7 +292,7 @@ func TestReportPDFCarriesJudgeSourceFallbackWarning(t *testing.T) {
 		RedteamJudgeTrackMetadataKey:  string(RedteamJudgeTrackEngine),
 		RedteamJudgeSourceMetadataKey: "category:harmful",
 	}
-	if pdfContainsAllCJKSegments(string(renderReportPDF(&clean)), "含 3 条兜底判定") {
+	if pdfContainsRenderedText(string(renderReportPDF(&clean)), "含 3 条兜底判定") {
 		t.Fatal("无兜底探测的 PDF 页脚不应出现兜底警告")
 	}
 }

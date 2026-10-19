@@ -394,6 +394,23 @@ func (h *MaclawRuntimeHandler) ConfirmPlan(c *gin.Context) {
 			engineSelection.withoutRemovedRefs(normalizedRefSet(in.RemovedCapabilityRefs)))
 		return
 	}
+	// Removals are only honourable on the engine fast path, where the plan's
+	// capability refs are the selection. A plan card whose refs are empty (MaClaw
+	// sometimes writes the plugins only into `risk_types`) falls through to the
+	// runtime path, which has no consumer for a removal list — measured on ai02:
+	// "remove every plugin" on such a card was **accepted and re-ran the whole
+	// plan**, burning quota while the card claimed the user had narrowed it.
+	//
+	// Refusing is the only honest option here. The alternative — executing the
+	// plan unchanged — is the silent downgrade this whole mechanism exists to
+	// prevent.
+	if len(normalizedRefSet(in.RemovedCapabilityRefs)) > 0 {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "这张计划卡没有列出可逐项调整的能力（selected_capability_refs 为空），因此无法执行你移除的项；按原计划执行会忽略你的选择。请在对话里重新描述评测需求以生成新的计划卡。",
+			"code":  "plan_capability_removal_unsupported",
+		})
+		return
+	}
 	if err := h.preflightSelectedSkillTenantModel(c, selectedSkills); err != nil {
 		return
 	}

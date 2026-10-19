@@ -15,10 +15,10 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf16"
 
 	"evaluating_platform/internal/maclaw/redteam"
 	"github.com/google/uuid"
@@ -1169,12 +1169,23 @@ func displayRiskLevel(value string) string {
 func renderReportPDF(report *EvaluationReport) []byte {
 	pages := []pdfRenderedPage{pdfCoverPageContent(report)}
 	pages = append(pages, pdfBodyPageContents(report)...)
+
+	// The glyphs the document actually uses: /W and the ToUnicode CMap are built
+	// from what the page writers recorded, so they cannot disagree with the text a
+	// reader sees.
+	usedGlyphs := collectPDFUsedGlyphs(pages)
+
+	// Object numbering: 1 catalog, 2 pages (filled below), 3 Type0 font,
+	// 4 CIDFontType2, 5 FontDescriptor, 6 FontFile2, 7 ToUnicode, 8 Helvetica.
 	objects := []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"",
-		"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [4 0 R] >>",
-		"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 5 >> >>",
-		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		pdfType0FontObject(3, 4, 7),
+		pdfCIDFontObject(3, 5, usedGlyphs),
+		pdfFontDescriptorObject(6),
+		pdfFontFileObject(),
+		pdfToUnicodeObject(usedGlyphs),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
 	}
 	pageObjectIDs := make([]int, 0, len(pages))
 	contentObjectIDs := make([]int, 0, len(pages))
@@ -1205,7 +1216,7 @@ func renderReportPDF(report *EvaluationReport) []byte {
 			}
 			xobjects = " /XObject << " + strings.Join(parts, " ") + " >>"
 		}
-		objects[pageObjectID-1] = fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 5 0 R >>%s >> /Contents %d 0 R >>", xobjects, contentObjectIDs[i])
+		objects[pageObjectID-1] = fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 8 0 R >>%s >> /Contents %d 0 R >>", xobjects, contentObjectIDs[i])
 	}
 	objects[1] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(pageObjectIDs))
 	return writePDFObjects(objects)
@@ -1233,11 +1244,19 @@ type pdfPageWriter struct {
 	buf    bytes.Buffer
 	y      float64
 	images []pdfReportImage
+	// usedGlyphs are the embedded-font glyph ids this page wrote.
+	//
+	// Recorded here rather than scraped back out of the content stream: with two
+	// fonts in play (Helvetica for Latin, the embedded font for CJK) the hex in a
+	// `Tj` no longer says which font produced it, so a scan would feed Latin-1
+	// bytes into the CJK glyph table.
+	usedGlyphs map[uint16]struct{}
 }
 
 type pdfRenderedPage struct {
-	Content string
-	Images  []pdfReportImage
+	Content    string
+	Images     []pdfReportImage
+	UsedGlyphs []uint16
 }
 
 type pdfReportImage struct {
@@ -1550,9 +1569,15 @@ func truncatePDFText(value string, maxWidth float64) string {
 }
 
 func (p *pdfPageWriter) rendered() pdfRenderedPage {
+	glyphs := make([]uint16, 0, len(p.usedGlyphs))
+	for gid := range p.usedGlyphs {
+		glyphs = append(glyphs, gid)
+	}
+	sort.Slice(glyphs, func(i, j int) bool { return glyphs[i] < glyphs[j] })
 	return pdfRenderedPage{
-		Content: p.buf.String(),
-		Images:  append([]pdfReportImage(nil), p.images...),
+		Content:    p.buf.String(),
+		Images:     append([]pdfReportImage(nil), p.images...),
+		UsedGlyphs: glyphs,
 	}
 }
 
@@ -1727,15 +1752,40 @@ func wrapPDFText(text string, maxWidth, size float64) []string {
 	return lines
 }
 
+// pdfRuneWidth is the advance of one rune at a given size, read from the embedded
+// font's hmtx table.
+//
+// It replaced a hand-written table (`space=0.28em`, ASCII`=0.48em`, everything
+// else one em). Those numbers were guesses, so line breaking and centred text
+// were laid out against a width the glyph did not have — invisible with a
+// monospaced-looking CJK font, wrong for the Latin runs inside Chinese sentences
+// (plugin ids, `sk-…`, URLs) that the reports are full of.
+// helveticaWidths are the Adobe StandardEncoding advance widths for the printable
+// ASCII range (0x20–0x7E), in 1/1000 em.
+//
+// Latin text is drawn with Helvetica — one of the PDF standard 14, present in
+// every reader, and the font the embedded CJK fallback face does NOT cover. Using
+// its real metrics replaces the old flat `0.48em per ASCII rune`, which made
+// English inside Chinese sentences break at the wrong column.
+var helveticaWidths = [95]uint16{
+	278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+	556, 556, 556, 556, 556, 556, 556, 556, 556, 556,
+	278, 278, 584, 584, 584, 556, 1015,
+	667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667,
+	778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+	278, 278, 278, 469, 556, 333,
+	556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556,
+	556, 333, 500, 278, 556, 500, 722, 500, 500, 500,
+	334, 260, 334, 584,
+}
+
+// pdfRuneWidth is the advance of one rune at a given size: Helvetica's table for
+// ASCII, the embedded font's hmtx for everything else.
 func pdfRuneWidth(r rune, size float64) float64 {
-	switch {
-	case r == ' ':
-		return size * 0.28
-	case r <= 0x7f:
-		return size * 0.48
-	default:
-		return size
+	if r >= 0x20 && r <= 0x7e {
+		return float64(helveticaWidths[r-0x20]) * size / 1000
 	}
+	return reportPDFFont.advancePoints(r, size)
 }
 
 func splitPDFStatusTag(line string) (string, string, bool) {
@@ -1768,6 +1818,18 @@ func (p *pdfPageWriter) centerText(text string, size float64, r, g, b float64) {
 	p.text(x, p.y, text, size, r, g, b)
 }
 
+// text writes one run of text with the embedded font.
+//
+// # One font, glyph ids, real widths (2026-10-19)
+//
+// It used to split the string into ASCII and non-ASCII segments, draw the ASCII
+// half with Helvetica and the rest with a non-embedded STSong-Light, and advance
+// the cursor with a hand-written per-rune width table. Browsers have no
+// STSong-Light, so every Chinese character came out as garbage; the width table
+// was an approximation that the real font makes unnecessary.
+//
+// Now every rune becomes its glyph id (Identity-H) in the one embedded font, and
+// the cursor advances by that glyph's real advance width.
 func (p *pdfPageWriter) text(x, y float64, text string, size float64, r, g, b float64) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -1778,27 +1840,29 @@ func (p *pdfPageWriter) text(x, y float64, text string, size float64, r, g, b fl
 		if segment.Text == "" {
 			continue
 		}
-		font := "F1"
-		encoded := pdfUTF16Hex(segment.Text)
+		fontName := "F1"
+		encoded := reportPDFFont.encodeText(segment.Text)
+		for _, rn := range []rune(segment.Text) {
+			if p.usedGlyphs == nil {
+				p.usedGlyphs = map[uint16]struct{}{}
+			}
+			p.usedGlyphs[reportPDFFont.GlyphID(rn)] = struct{}{}
+		}
 		if segment.ASCII {
-			font = "F2"
+			// Latin stays on Helvetica: it is one of the PDF standard 14, present
+			// in every reader, needs no embedding, and its Latin metrics are what
+			// the layout was tuned against. The embedded font is a CJK *fallback*
+			// face with no Latin glyphs at all.
+			fontName = "F2"
 			encoded = pdfASCIIHex(segment.Text)
 		}
-		fmt.Fprintf(&p.buf, "BT\n/%s %.1f Tf\n%.2f %.2f %.2f rg\n%.1f %.1f Td\n<%s> Tj\nET\n", font, size, r, g, b, cursor, y, encoded)
+		fmt.Fprintf(&p.buf, "BT\n/%s %.1f Tf\n%.2f %.2f %.2f rg\n%.1f %.1f Td\n<%s> Tj\nET\n", fontName, size, r, g, b, cursor, y, encoded)
 		cursor += pdfTextWidth(segment.Text, size)
 	}
 }
 
 func (p *pdfPageWriter) line(x1, y, x2 float64, r, g, b, width float64) {
 	fmt.Fprintf(&p.buf, "%.2f %.2f %.2f RG\n%.1f w\n%.1f %.1f m %.1f %.1f l S\n", r, g, b, width, x1, y, x2, y)
-}
-
-func pdfUTF16Hex(value string) string {
-	var buf bytes.Buffer
-	for _, code := range utf16.Encode([]rune(value)) {
-		fmt.Fprintf(&buf, "%04X", code)
-	}
-	return buf.String()
 }
 
 type pdfTextSegment struct {

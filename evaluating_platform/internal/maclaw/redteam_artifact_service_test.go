@@ -166,8 +166,24 @@ func TestRedteamArtifactServicePersistsEvidenceAndReportSafely(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportReport: %v", err)
 	}
-	if exported.Format != "pdf" || exported.ContentType != "application/pdf" || !strings.HasSuffix(exported.Filename, ".pdf") || !strings.HasPrefix(string(exported.Content), "%PDF-") || !strings.Contains(string(exported.Content), "/STSong-Light") {
+	if exported.Format != "pdf" || exported.ContentType != "application/pdf" || !strings.HasSuffix(exported.Filename, ".pdf") || !strings.HasPrefix(string(exported.Content), "%PDF-") {
 		t.Fatalf("export = %#v", exported)
+	}
+	// The font must be EMBEDDED, and the non-embedded CID font must be gone.
+	//
+	// `/STSong-Light` with `/UniGB-UCS2-H` is a font the reader is expected to
+	// have; browsers do not, so every Chinese character rendered as garbage
+	// (reported from the field after the stage-5 run). `/FontFile2` is the
+	// embedded program, `/Identity-H` is what makes the two-byte text code a
+	// glyph id. Counter-proof: revert the font objects → all three fail.
+	pdfBytes := string(exported.Content)
+	for _, want := range []string{"/FontFile2", "/Identity-H", "/DroidSansFallback", "/ToUnicode"} {
+		if !strings.Contains(pdfBytes, want) {
+			t.Errorf("exported PDF lacks %s — the font is not embedded", want)
+		}
+	}
+	if strings.Contains(pdfBytes, "/STSong-Light") {
+		t.Error("exported PDF still references the non-embedded STSong-Light font")
 	}
 	// The PDF is the deliverable, so the credential check has to be made on the
 	// bytes that leave, not only on the struct.
@@ -295,7 +311,7 @@ func TestRedteamReportPDFFindingCardPaginatesLongModelAnswer(t *testing.T) {
 	if strings.Count(pdf, "/Type /Page ") < 3 {
 		t.Fatalf("long finding answer should paginate across content pages")
 	}
-	if !strings.Contains(pdf, pdfUTF16Hex("测试项")) || !strings.Contains(pdf, pdfASCIIHex("002")) {
+	if !pdfContainsRenderedText(pdf, "测试项") || !pdfContainsRenderedText(pdf, "002") {
 		t.Fatalf("second finding disappeared from long-answer PDF")
 	}
 }
@@ -328,7 +344,7 @@ func TestRedteamReportKeepsReadableCredentialRelatedModelAnswer(t *testing.T) {
 		t.Fatalf("model answer should remain readable without secret-like values, got %q", got)
 	}
 	pdf := string(renderReportPDF(report))
-	if strings.Contains(pdf, "[redacted sensitive text]") || !strings.Contains(pdf, pdfASCIIHex("browser credentials")) {
+	if strings.Contains(pdf, "[redacted sensitive text]") || !pdfContainsRenderedText(pdf, "browser credentials") {
 		t.Fatalf("pdf should show a readable model answer summary, got redacted or missing text")
 	}
 }
@@ -368,7 +384,7 @@ func TestRedteamReportPDFEmbedsMultimodalTestImage(t *testing.T) {
 	if !strings.Contains(pdf, "/Subtype /Image") || !strings.Contains(pdf, "/Im1 Do") {
 		t.Fatalf("multimodal finding should embed the final test image in PDF")
 	}
-	if !strings.Contains(pdf, pdfUTF16Hex("测试图片：最终发送给被测模型的图像载荷")) {
+	if !pdfContainsRenderedText(pdf, "测试图片：最终发送给被测模型的图像载荷") {
 		t.Fatalf("pdf should label the embedded multimodal test image")
 	}
 }
@@ -465,8 +481,20 @@ func TestRedteamReportPDFUsesReadableBodyTypographyAndCardLayout(t *testing.T) {
 	if strings.Contains(pdf, "0.94 0.97 1.00 rg") {
 		t.Fatalf("pdf should not render the old finding-card blue fill")
 	}
-	if strings.Contains(pdf, "**") || strings.Contains(pdf, "###") || strings.Contains(pdf, "---") {
-		t.Fatalf("pdf should not contain markdown markers: %s", pdf)
+	// Markdown markers must be STRIPPED before rendering, not merely absent from
+	// the bytes.
+	//
+	// Scanning the whole file for "**" stopped meaning anything on 2026-10-19: the
+	// PDF now embeds a TrueType font, and a 3 MB binary contains such byte pairs by
+	// chance. The assertion is now made against the rendered text instead — the
+	// cleaned wording is present, the marked-up wording is not.
+	if !pdfContainsRenderedText(pdf, "评估报告") {
+		t.Fatal("pdf should carry the cleaned heading text")
+	}
+	for _, markedUp := range []string{"**评估报告**", "### 评估报告", "---"} {
+		if pdfContainsRenderedText(pdf, markedUp) {
+			t.Fatalf("pdf rendered the markdown marker verbatim: %q", markedUp)
+		}
 	}
 }
 
@@ -494,13 +522,13 @@ func TestRedteamReportPDFUsesTestPromptLabelAndFooterSafeArea(t *testing.T) {
 	pdf := string(renderReportPDF(report))
 	// 2026-10-16：标签从「测试问题」改为「攻击载荷」，对齐 promptfoo 逐条卡片的
 	// `Prompt:` / `Response:` 两段式（见 23-聊天链路报告原文与promptfoo对齐.md §7.3）。
-	if !strings.Contains(pdf, pdfUTF16Hex("攻击载荷：")) {
+	if !pdfContainsRenderedText(pdf, "攻击载荷：") {
 		t.Fatalf("pdf should render the final prompt under 攻击载荷 label")
 	}
-	if strings.Contains(pdf, pdfUTF16Hex("测试问题：")) {
+	if pdfContainsRenderedText(pdf, "测试问题：") {
 		t.Fatalf("pdf should not render the old 测试问题 label")
 	}
-	if strings.Contains(pdf, pdfUTF16Hex("问题摘要：")) {
+	if pdfContainsRenderedText(pdf, "问题摘要：") {
 		t.Fatalf("pdf should not render the old 问题摘要 label")
 	}
 	if !strings.Contains(pdf, "/F2") {
@@ -568,7 +596,7 @@ func TestRedteamReportPDFFindingCardShowsOriginalSampleAndRemovesBlueBox(t *test
 	}
 
 	pdf := string(renderReportPDF(report))
-	if !strings.Contains(pdf, pdfUTF16Hex("原样本问题：")) || !strings.Contains(pdf, pdfUTF16Hex("原始样本：请说明如何处理这个风险场景。")) {
+	if !pdfContainsRenderedText(pdf, "原样本问题：") || !pdfContainsRenderedText(pdf, "原始样本：请说明如何处理这个风险场景。") {
 		t.Fatalf("pdf should include original sample question in finding card")
 	}
 	if strings.Contains(pdf, "0.94 0.97 1.00 rg") {
@@ -630,10 +658,10 @@ func TestRedteamReportPDFUsesLatinFontForEnglishPromptSegments(t *testing.T) {
 	}
 
 	pdf := string(renderReportPDF(report))
-	if !strings.Contains(pdf, pdfASCIIHex("Final English prompt with CC-BOS payload")) {
+	if !pdfContainsRenderedText(pdf, "Final English prompt with CC-BOS payload") {
 		t.Fatalf("English prompt segment should use the Latin font instead of full-width CJK spacing")
 	}
-	if !strings.Contains(pdf, pdfUTF16Hex("和中文测试问题")) {
+	if !pdfContainsRenderedText(pdf, "和中文测试问题") {
 		t.Fatalf("Chinese prompt segment should remain in the CJK text font")
 	}
 }

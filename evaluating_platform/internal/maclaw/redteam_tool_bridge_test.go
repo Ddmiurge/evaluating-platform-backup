@@ -1308,7 +1308,7 @@ func TestRedteamToolBridgeBatchEvaluatesMultimodalSkillPayloadAndReportsContext(
 		t.Fatalf("ExportReport PDF: %v", err)
 	}
 	hasImage := strings.Contains(string(pdfExport.Content), "/Subtype /Image")
-	hasLabel := strings.Contains(string(pdfExport.Content), pdfUTF16Hex("测试图片："))
+	hasLabel := pdfContainsRenderedText(string(pdfExport.Content), "测试图片：")
 	if !hasImage || !hasLabel {
 		t.Fatalf("exported PDF should embed the final test image below the test question, hasImage=%v hasLabel=%v", hasImage, hasLabel)
 	}
