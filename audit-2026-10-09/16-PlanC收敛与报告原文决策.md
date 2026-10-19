@@ -2,7 +2,7 @@
 
 > 登记：2026-10-13｜架构师：高见远
 > 性质：**计划文档，本批不改任何代码。** 用户看完§6 决策清单后再决定是否执行。
-> 输入：`audit-2026-10-13-attack-generation-architecture.md`、`audit-2026-10-13-report-detail-boundary.md`
+> 输入：`audits/audit-2026-10-13-attack-generation-architecture.md`、`audits/audit-2026-10-13-report-detail-boundary.md`
 > 纪律：本文所有数字与代码位置均为**本轮实测复核**所得，与上游笔记有出入处**已在正文标注**。
 >
 > **2026-10-13 二次更新（用户决策回写）**：
@@ -311,7 +311,7 @@ Plan C 的配比由promptfoo 决定且记录在 `eval` 里。**但必须提前�
 | 权威数字 | `internal/maclaw/testdata/promptfoo_remote_dep.json` | `platform_catalog_totals: {plugins: 119, marked: 90, local_only: 29}`，promptfoo 0.123.0 |
 | **门控是路径无关的** | `promptfoo_engine/src/routes/runs.ts:50-66` | U6 闸门在 `POST /runs` 里，**在 `executeRedteamRun` 分支之前**。选Plan A 还是 Plan C 都会过这道闸 |
 | BFF 侧同样路径无关 | `internal/api/handler/engine_run.go:313` | `ValidateEngineRunRemoteGeneration` 在**凭据物化、落库、派发之前** |
-| 审计实测用的 5 个插件 | `audit-2026-10-13-attack-generation-architecture.md` | `prompt-extraction` / `pii` / `pii:social` / `prompt-injection` / `cross-session-leak` —— **实测 5 个全部 `marked=False`，即全在 29 个本地集内** |
+| 审计实测用的 5 个插件 | `audits/audit-2026-10-13-attack-generation-architecture.md` | `prompt-extraction` / `pii` / `pii:social` / `prompt-injection` / `cross-session-leak` —— **实测 5 个全部 `marked=False`，即全在 29 个本地集内** |
 
 **推论**：用户**今天就已经**只能选那 29 个。90 个远程依赖插件在 Plan A 下
 **同样被409 拒绝**（`plugin_requires_remote_generation`），并**同样在 UI 上置灰**
@@ -537,7 +537,7 @@ B 选定的是「**在报告这个载体里看**」，它有三种不同的实�
 
 ### 5.2 关键判断：**「敏感数据仓库」风险的准确边界**
 
-`audit-2026-10-13-report-detail-boundary.md` §5 把这称为「治理决策」。
+`audits/audit-2026-10-13-report-detail-boundary.md` §5 把这称为「治理决策」。
 我同意，并补充一条**更具体的判据**，让用户能自己判断：
 
 > **攻击原文入报告库之后，它会随报告一起离开平台。**
