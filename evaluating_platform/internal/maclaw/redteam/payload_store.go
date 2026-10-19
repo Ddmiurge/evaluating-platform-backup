@@ -217,6 +217,14 @@ func isSafePayloadMetadataKey(lower string) bool {
 	case "plugin_stats_json",
 		"strategy_stats_json":
 		return true
+	// 2026-10-19：**同类缺陷第三例**。报告渲染层用这个键决定要不要打「以上是编码前
+	// 原文、不是实际发送字节」的标注；键名含 "prompt"，被下面的子串黑名单剥掉，于是
+	// 标注整条链路失效 —— 读者会把兜底原文当成实际发送的载荷，比显示 [REDACTED] 更糟。
+	//
+	// 前两例：`generation_path`（撞 "path"，P2-6 的 P0）与 `num_tests_effective`。
+	// 值域是固定枚举（只写 "true"），显式列在这里而不是依赖"键名恰好安全"。
+	case "prompt_redacted_by_engine":
+		return true
 	default:
 		return false
 	}
