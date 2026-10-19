@@ -30,6 +30,7 @@
 | §7 PDF 逐条卡片形状对齐 | ✅ **服务器实测确认**（判据 9a） |
 | §6.4 前端文案与展开区 | ✅ |
 | §6.8 / §3 契约文档同步 | ✅（AGENTS.md / PROJECT_GUIDE.md / maclaw-current-state.md / 两个迁移文件的注释） |
+| **报告卡进入会话**（2026-10-19 补，见 §13） | ✅ 引擎快速通道的报告现在会在对话框里出现带下载按钮的卡片 |
 | **§12 卡片显示策略 + × 删标签** | ⏳ **未做，建议单独一批**（不影响报告正确性） |
 | §11.2 / §11.4 等决策 | ✅ 已记录 |
 
@@ -554,10 +555,22 @@ const finalTestCases = [...includeBasicTests ? pluginTestCases : [], ...strategy
 未选策略时不追加（否则用例集为空，直接 `no_test_cases` 失败）。
 
 **仍然存在的乘数**：S 个策略仍是 `S × num_tests` 条探针（每个策略各跑一遍插件用例）。
-**没有除回去**，因为下限会变成 `Σfanout × S` —— `harmful`（fanout 26）配两个策略会超过
-`EngineMaxNumTests=50` 而**无法提交**。所以口径定为：**一旦选了策略，`num_tests` 是「每个策略的上限」**，
-并让前端把乘积显示出来（`EngineEvalPage` 的 `strategyMultiplier`）。`num_tests_effective`
-按**productive** 策略数（排除 `basic`）相乘，所以报告里报的探针数与实际跑的一致。
+
+### 9.0.1 这个乘数的口径：**已裁定为「每个策略的上限」（选项 A）**
+
+两个选项，用户 2026-10-16 选了 A：
+
+| | A（**已选**） | B（未选） |
+|---|---|---|
+| `num_tests` 的含义 | **每个策略**各跑多少 | 本次总共跑多少 |
+| 2 个策略 + 填 10 | 20 条探针 | 10 条探针 |
+| `harmful`（fanout 26）+ 2 个策略 | ✅ 填 26 即可 | ❌ 下限变成 `26 × 2 = 52`，**超过输入上限 50，无法提交** |
+| 代价 | 数字的含义随策略个数变化（前端已显示乘积） | 必须同时提高 `EngineMaxNumTests`，即**放宽成本闸** |
+
+A 的理由：B 要动的其实不是「算术」而是那道成本闸（50 的存在就是为了限制单次评测的耗时与花费），
+而 A 没有任何组合会被堵死。**因此这条不是 bug，不要在没有重新裁定成本闸的前提下「修」它。**
+`num_tests_effective` 按 **productive** 策略数（排除 `basic`）相乘，所以报告里报的探针数与实际跑的一致；
+前端 `EngineEvalPage` 的 `strategyMultiplier` 把乘积显示出来。
 
 ### 9.1 实测带出的一条速度事实（用户侧预期管理）
 
@@ -876,3 +889,33 @@ grant / plan_confirm 相关条款）。
 | 7 | **不能删空** | 删光插件后确认 → 明确拒绝 + 原因，不产生 run 行 |
 | 8 | **策略真的被用了**（§12.2） | 卡片上显示的策略，在报告第 5 段能找到对应的那一块，且探针数与卡片一致（需要 §6.9 先补上） |
 | 9 | **Skill / 样本那条链路零回归** | 计划卡里同时有 Skill 与 promptfoo 插件时：Skill 标签**没有 ×**、仍走原链路、`selected_skills` 一字不改；确认结果与改动前一致 |
+
+
+---
+
+## 13. 报告卡进入会话（2026-10-19）
+
+阶段四验收时的一个问题：「距离对话框中出现可下载的 PDF 报告还差多远？」答案当时是**差一个环节**。
+
+**缺的是什么**：引擎快速通道由 BFF 自己编排 run，maclaw 不在这个环里 —— 所以从来没有
+任何东西往会话里写报告消息。报告生成了、`/reports/:id/export` 能导出 PDF、前端也有报告卡和
+下载按钮，但浏览器拿不到「该显示哪一份」。批量链路没有这个问题，因为那条路由 maclaw 写消息。
+
+**补法**（全部在 `evaluating_platform` 内，不需要动 maclaw）：
+
+| 项 | 落点 |
+|---|---|
+| 作业记住它对应的计划卡 | `PlatformEngineJob.PlanMessageID`（`engine_confirm.go` 建作业时写入） |
+| 按会话查作业 | `PlatformEngineJobStore.ListBySession` |
+| 合成报告消息 | `appendCompletedEngineReportMessages`：只对**成功且带 report id** 的作业；按 `report_id` 去重；写 `downloadable=true` / `download_format=pdf` / `card_type=report` |
+| 位置 | **紧贴对应的 `plan_confirm` 卡之后**，不是追加到末尾 —— 快照每次加载都会重建，追加的卡会沉到后续消息下面 |
+| 头部字段 | 取自**平台自己的报告存储**（`GetRedteamReport`），不走 `hydrateRuntimeReportMessages`：`MaclawSrvClient.GetEvaluationReport` 返回 `ErrUnsupported`，那条路径在本部署上一直是空转的 |
+| 前端 | **零改动** —— 报告卡本来就由 `msg.metadata` 驱动 |
+
+**测试**：6 个用例，其中 `TestGetSessionSynthesizesTheEngineReportCard` 走 HTTP handler，
+覆盖的是**接线**而不是辅助函数 —— 其余用例直接调函数，摘掉 `GetSession` 里的调用它们照样绿，
+正是 U8 吃过的那个亏。反证已跑：摘掉接线 → 该用例变红。
+
+**已知限制**：作业表在内存里，且恢复路径（`PlatformEngineJobFromRecord`）不还原 `ReportID`，
+所以**后端重启后卡片不再合成**。报告本身仍在库里，可经报告 API 获取。要做成跨重启持久，
+需要「按会话查报告」的存储查询 + 保存计划消息 id —— 一次迁移，本次刻意没加。

@@ -274,12 +274,15 @@ func (h *MaclawRuntimeHandler) confirmPromptfooEnginePlan(c *gin.Context, sessio
 	h.engineJobs.Create(&maclaw.PlatformEngineJob{
 		ID:          jobID,
 		EngineRunID: prepared.Record.ID,
-		UserID:      userID.String(),
-		InstanceID:  instanceID,
-		SessionID:   sessionID,
-		Status:      maclaw.EvaluationJobStatusRunning,
-		StatusText:  "promptfoo 引擎评测执行中",
-		StartedAt:   now,
+		// The card the user confirmed. The session snapshot uses it to place the
+		// report card next to its plan — see appendCompletedEngineReportMessages.
+		PlanMessageID: planMessage.ID,
+		UserID:        userID.String(),
+		InstanceID:    instanceID,
+		SessionID:     sessionID,
+		Status:        maclaw.EvaluationJobStatusRunning,
+		StatusText:    "promptfoo 引擎评测执行中",
+		StartedAt:     now,
 	})
 
 	// U5: persist the pfj- ↔ engine_run link so a restart can recover.

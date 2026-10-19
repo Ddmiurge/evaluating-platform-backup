@@ -1687,6 +1687,33 @@ func (b *RedteamToolBridge) SaveRedteamEvidence(ctx context.Context, userID uuid
 	}, nil
 }
 
+// GetRedteamReport reads one report from the platform's own artifact store.
+//
+// # Why this exists as a bridge method (2026-10-16)
+//
+// The chat session snapshot synthesizes a report card for a finished engine run,
+// and it needs the report's own fields (risk level, safety score, judge track,
+// success/failure counts) to fill it. `hydrateRuntimeReportMessages` cannot help
+// there: it goes through the runtime gateway, and under MaClawSrv
+// `GetEvaluationReport` returns `ErrUnsupported` — so on this deployment the
+// hydration step has always been a no-op.
+//
+// Reports for platform-orchestrated engine runs live in the platform's store, so
+// this is the correct source rather than a workaround.
+func (b *RedteamToolBridge) GetRedteamReport(ctx context.Context, userID uuid.UUID, reportID string) (*EvaluationReport, error) {
+	reportID = strings.TrimSpace(reportID)
+	if reportID == "" {
+		return nil, errors.New("report id is required")
+	}
+	if b == nil || b.artifacts == nil || !b.artifacts.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	if userID == uuid.Nil {
+		return nil, errors.New("platform user id is required")
+	}
+	return b.artifacts.GetReport(ctx, userID, reportID)
+}
+
 func (b *RedteamToolBridge) CompileRedteamReport(ctx context.Context, userID uuid.UUID, instanceID string, in CompileRedteamReportInput) (*EvaluationReport, error) {
 	if b != nil && b.artifacts != nil && b.artifacts.Enabled() && userID != uuid.Nil {
 		return b.artifacts.CompileReport(ctx, userID, instanceID, in)

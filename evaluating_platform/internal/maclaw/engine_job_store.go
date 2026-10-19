@@ -9,6 +9,8 @@ package maclaw
 // progress metadata only — counts, stages, durations, and report ids.
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,8 +26,16 @@ type PlatformEngineJobStore struct {
 
 // PlatformEngineJob is one platform-orchestrated engine evaluation.
 type PlatformEngineJob struct {
-	ID            string
-	EngineRunID   string
+	ID          string
+	EngineRunID string
+	// PlanMessageID is the plan_confirm card this job was confirmed from.
+	//
+	// Kept so the session snapshot can place the synthesized report card next to
+	// the plan the user approved, rather than appending it to the end of the
+	// conversation, where it would drift below every later message on each
+	// reload. In-memory only, like the rest of this store — see
+	// appendCompletedEngineReportMessages for what that costs.
+	PlanMessageID string
 	UserID        string
 	InstanceID    string
 	SessionID     string
@@ -99,6 +109,29 @@ func (s *PlatformEngineJobStore) Create(job *PlatformEngineJob) {
 }
 
 // Get returns a copy of the job if present.
+// ListBySession returns copies of every job bound to one session, oldest first.
+//
+// Copies for the same reason Get returns one: the map is shared with the
+// progress updater, which mutates entries under the lock.
+func (s *PlatformEngineJobStore) ListBySession(sessionID string) []*PlatformEngineJob {
+	trimmed := strings.TrimSpace(sessionID)
+	if s == nil || trimmed == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*PlatformEngineJob, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		if job == nil || strings.TrimSpace(job.SessionID) != trimmed {
+			continue
+		}
+		copied := *job
+		out = append(out, &copied)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
+	return out
+}
+
 func (s *PlatformEngineJobStore) Get(jobID string) *PlatformEngineJob {
 	if s == nil || jobID == "" {
 		return nil

@@ -176,6 +176,17 @@ func (h *MaclawRuntimeHandler) GetSession(c *gin.Context) {
 	}); err == nil {
 		messages = appendRuntimeJobProgressMessages(messages, sessionID, jobs)
 	}
+	// The engine fast path orchestrates the run in the BFF, so MaClaw never writes
+	// a report message — this is where the PDF becomes visible in the chat.
+	// Synthesized beside the progress cards and only after filtering, so a report
+	// message the runtime DID write is already in the list and wins the dedupe.
+	if jobs := h.engineJobs.ListBySession(sessionID); len(jobs) > 0 {
+		// A missing or unparseable user id costs only the card's header fields
+		// (risk level, score): the report lookup is scoped by user, so it returns
+		// nothing and the card is still built with its download button.
+		userID, _ := uuid.Parse(strings.TrimSpace(c.GetString("user_id")))
+		messages = appendCompletedEngineReportMessages(c.Request.Context(), h.engineBridge, userID, messages, sessionID, jobs)
+	}
 	c.JSON(http.StatusOK, maclawRuntimeSessionSnapshot{Session: session, Messages: messages})
 }
 
@@ -939,6 +950,169 @@ func appendRuntimeJobProgressMessages(messages []maclaw.RuntimeMessage, sessionI
 		})
 	}
 	return messages
+}
+
+// appendCompletedEngineReportMessages adds the report card for every finished
+// platform engine run in this session.
+//
+// # The gap this closes (2026-10-16)
+//
+// The BFF confirm fast path orchestrates the engine run itself, so MaClaw is not
+// in that loop and nothing ever wrote a report message into the session.
+// Everything else was already in place — the report is stored,
+// `/api/v1/maclaw/evaluation/reports/:id/export` serves the PDF, the frontend has
+// a report card with a download button, and this very handler already synthesizes
+// messages (the running-job progress cards just below). The missing link was
+// telling the browser WHICH report to show, so the PDF never appeared in the chat
+// even though it existed and was downloadable through the API.
+//
+// # Placement: after its plan, not at the end
+//
+// This snapshot is rebuilt on every session load. An appended card would sink
+// below every message sent after the evaluation and re-appear at the bottom each
+// time the user came back. So it goes immediately after the plan_confirm card the
+// user approved.
+//
+// # What does NOT survive a restart
+//
+// The job registry is in memory, and the recovery path
+// (`PlatformEngineJobFromRecord`) does not restore `ReportID` either. After a
+// backend restart the card stops being synthesized; the report itself is
+// persisted and stays reachable through the report API. Making it durable needs a
+// session→reports query and somewhere to keep the plan-message link — a migration
+// this change deliberately does not add.
+func appendCompletedEngineReportMessages(
+	ctx context.Context,
+	bridge *maclaw.RedteamToolBridge,
+	userID uuid.UUID,
+	messages []maclaw.RuntimeMessage,
+	sessionID string,
+	jobs []*maclaw.PlatformEngineJob,
+) []maclaw.RuntimeMessage {
+	if len(jobs) == 0 {
+		return messages
+	}
+	// A report already present in the session — from this path on an earlier load,
+	// or written by MaClaw on the agent-loop path — is not duplicated.
+	existing := map[string]bool{}
+	for _, msg := range messages {
+		if msg.Metadata == nil {
+			continue
+		}
+		if id := strings.TrimSpace(msg.Metadata["report_id"]); id != "" {
+			existing[id] = true
+		}
+	}
+	for _, job := range jobs {
+		if job == nil || job.Status != maclaw.EvaluationJobStatusSucceeded {
+			continue
+		}
+		reportID := strings.TrimSpace(job.ReportID)
+		if reportID == "" || existing[reportID] {
+			continue
+		}
+		existing[reportID] = true
+
+		metadata := map[string]string{
+			"card_type":             "report",
+			"response_source":       "report",
+			"evaluation_event_type": "report",
+			"report_id":             reportID,
+			"job_id":                job.ID,
+			"assessment_id":         job.ID,
+			"download_format":       "pdf",
+			"downloadable":          "true",
+			"status_text":           reportCardStatusText,
+		}
+		if job.PlannedCount > 0 {
+			metadata["planned_count"] = strconv.Itoa(job.PlannedCount)
+		}
+		if job.ExecutedCount > 0 {
+			metadata["executed_count"] = strconv.Itoa(job.ExecutedCount)
+		}
+		// The header fields come from the platform's own report store: the runtime
+		// gateway cannot serve reports on MaClawSrv (`GetEvaluationReport` returns
+		// `ErrUnsupported`), which is why `hydrateRuntimeReportMessages` is a no-op
+		// on this deployment. Best effort — a card with a working download button
+		// and a missing score beats no card at all.
+		if bridge != nil {
+			if report, err := bridge.GetRedteamReport(ctx, userID, reportID); err == nil {
+				mergeEngineReportCardMetadata(metadata, report)
+			}
+		}
+		messages = insertMessageAfterID(messages, job.PlanMessageID, maclaw.RuntimeMessage{
+			ID:         "engine-report:" + reportID,
+			SessionID:  sessionID,
+			Role:       "assistant",
+			OutputType: "application/vnd.maclaw.report+json",
+			Content:    reportCardStatusText,
+			Metadata:   metadata,
+			CreatedAt:  engineReportCardCreatedAt(job),
+		})
+	}
+	return messages
+}
+
+const reportCardStatusText = "评估任务已完成，可下载 PDF 报告。"
+
+// mergeEngineReportCardMetadata copies the report's own fields into the card.
+//
+// Only the keys the report card reads are copied, and only when the report has
+// them — an absent key renders as 「未记录」 rather than as a zero.
+func mergeEngineReportCardMetadata(metadata map[string]string, report *maclaw.EvaluationReport) {
+	if report == nil {
+		return
+	}
+	if value := strings.TrimSpace(report.RiskLevel); value != "" {
+		metadata["risk_level"] = value
+	}
+	if report.SafetyScore != nil {
+		metadata["safety_score"] = strconv.FormatFloat(*report.SafetyScore, 'f', -1, 64)
+	}
+	for key, value := range report.Metadata {
+		switch key {
+		case maclaw.RedteamJudgeTrackMetadataKey,
+			maclaw.RedteamJudgeSourceMetadataKey,
+			maclaw.RedteamGenerationPathMetadataKey,
+			maclaw.RedteamNumTestsEffectiveMetadataKey:
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				metadata[key] = trimmed
+			}
+		}
+	}
+}
+
+func engineReportCardCreatedAt(job *maclaw.PlatformEngineJob) time.Time {
+	if job.CompletedAt != nil {
+		return *job.CompletedAt
+	}
+	if !job.StartedAt.IsZero() {
+		return job.StartedAt
+	}
+	return time.Now().UTC()
+}
+
+// insertMessageAfterID places card directly after the message with anchorID,
+// falling back to appending.
+//
+// The fallback matters: the report is the evaluation's output, and hiding it
+// because a plan id went missing would turn a placement problem into a lost
+// result.
+func insertMessageAfterID(messages []maclaw.RuntimeMessage, anchorID string, card maclaw.RuntimeMessage) []maclaw.RuntimeMessage {
+	anchorID = strings.TrimSpace(anchorID)
+	if anchorID != "" {
+		for i := range messages {
+			if strings.TrimSpace(messages[i].ID) != anchorID {
+				continue
+			}
+			out := make([]maclaw.RuntimeMessage, 0, len(messages)+1)
+			out = append(out, messages[:i+1]...)
+			out = append(out, card)
+			out = append(out, messages[i+1:]...)
+			return out
+		}
+	}
+	return append(messages, card)
 }
 
 func jobWasTriggeredByConfirmedPlan(messages []maclaw.RuntimeMessage, job maclaw.EvaluationJob) bool {
