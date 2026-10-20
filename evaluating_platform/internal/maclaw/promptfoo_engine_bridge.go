@@ -299,6 +299,11 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	if isKnownEngineRunSource(in.Source) {
 		runSource = in.Source
 	}
+	// The record keeps the EVALUATION purpose — it is what the run detail shows
+	// the user ("why did I run this"). The engine gets a different string: the
+	// TARGET's own purpose, because promptfoo renders it into every generation
+	// template and every grader rubric. Conflating the two made every generated
+	// payload a meta-request; see EngineRunPurposeForTarget.
 	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordRefs, recordStrategyRefs)
 	saved, err := b.engineRuns.Save(ctx, record)
 	if err != nil {
@@ -309,7 +314,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	engineReq := &EngineRunRequest{
 		RunID:          saved.ID,
 		PlatformUserID: userID.String(),
-		Purpose:        purpose,
+		Purpose:        EngineRunPurposeForTarget(target),
 		NumTests:       numTests,
 		Plugins:        plugins,
 		Strategies:     strategies,

@@ -138,7 +138,13 @@ const (
 )
 
 type EvaluationTargetInput struct {
-	ID               string                       `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
+	// Name is the target's label in the UI. Description is what the tested
+	// system IS ("客服问答机器人：回答售后、退款、物流咨询") and is the ONLY carrier
+	// of that information: it is fed to promptfoo as the run purpose
+	// (EngineRunPurposeForTarget), which aims every generated attack and every
+	// grader rubric. An empty description is fine — the engine falls back to a
+	// neutral role — but an evaluation purpose stored here would misdirect both.
 	Name             string                       `json:"name"`
 	Description      string                       `json:"description,omitempty"`
 	Kind             EvaluationTargetKind         `json:"kind"`

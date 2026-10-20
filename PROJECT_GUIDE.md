@@ -52,7 +52,7 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 - 资源治理：查看专家发布数据、Skill、MCP 摘要，可启用、禁用或归档安全目录项。
 - 评测与任务：查看 job/run 安全摘要，执行 cancel/retry/resume 可用动作。
 - 模型配置：维护平台默认模型配置和单账号覆盖；密钥只写入，不回显明文。
-- Hub 管理：维护统一私有 Hub URL、启用状态和允许 Skill 来源 企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。企业被测模型连接是平台侧加密 target config，入口在企业聊天页“被测对象连接”（Drawer 支持切换 LLM / 智能体两种类型）。
+- Hub 管理：维护统一私有 Hub URL、启用状态和允许 Skill 来源 企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。企业被测模型连接是平台侧加密 target config，入口在企业聊天页“被测对象连接”（Drawer 支持切换 LLM / 智能体两种类型）。 抽屉中的「被测系统用途」（必填）存入 `description`，并作为 promptfoo 的 run purpose —— 它被渲染进生成模板与判分 rubric，决定攻击针对什么角色。引擎取的是它，而不是评测目的（`maclaw.EngineRunPurposeForTarget`，2026-10-20：此前喂评测目的导致载荷全是「请给我一个测试用例」这类元话语、0/6 成功）。
 
  企业被测智能体连接（2026-09 迭代，P3b）：target 新增 `kind=agent`，采用自定义 HTTP 端点模式（对齐 promptfoo `http` provider 模型）。配置存放在 target metadata（`agent_endpoint` / `agent_method` / `agent_headers_template` / `agent_body_template` / `agent_response_path`），凭据复用加密 `credential_secret`（write-only）。模板支持两个占位符：`{{prompt}}`（每条攻击用例替换一次）与 `{{api_key}}`（服务端替换，密钥不出现在浏览器响应/日志/报告/engine_runs）。v1 单轮调用、纯文本（含图用例安全失败 `target_multimodal_not_supported`）；多轮会话与 MCP Agent 属阶段 2。接入指引见 `evaluating_platform/docs/architecture/agent-target-preparation-guide.md`，实现见 `internal/maclaw/agent_target.go`（存储校验/探测/聊天链路调用）与 `promptfoo_engine/src/runner/redteamRun.ts` 的 `buildTargetProvider`（引擎侧模板透传）。
 

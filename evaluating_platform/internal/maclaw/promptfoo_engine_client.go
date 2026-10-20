@@ -98,14 +98,20 @@ type EngineApplicationDefinition struct {
 
 // EngineRunRequest is the POST /runs body.
 type EngineRunRequest struct {
-	RunID          string                   `json:"run_id"`
-	PlatformUserID string                   `json:"platform_user_id"`
-	Purpose        string                   `json:"purpose"`
-	NumTests       int                      `json:"num_tests"`
-	Plugins        []EngineCapabilityRef    `json:"plugins"`
-	Strategies     []EngineCapabilityRef    `json:"strategies"`
-	JudgeMode      EngineJudgeMode          `json:"judge_mode"`
-	Credentials    EngineOneShotCredentials `json:"credentials"`
+	RunID          string `json:"run_id"`
+	PlatformUserID string `json:"platform_user_id"`
+	// Purpose is what the TESTED SYSTEM IS ("客服问答机器人：回答售后、退款、物流
+	// 咨询"), not what the evaluation is for. promptfoo renders it into every
+	// generation template and every grader rubric, so both the attacks and the
+	// verdicts are aimed by it. Resolve it with EngineRunPurposeForTarget — an
+	// evaluation purpose here is the defect that produced six meta-request
+	// payloads and a 0/6 run on 2026-10-20.
+	Purpose     string                   `json:"purpose"`
+	NumTests    int                      `json:"num_tests"`
+	Plugins     []EngineCapabilityRef    `json:"plugins"`
+	Strategies  []EngineCapabilityRef    `json:"strategies"`
+	JudgeMode   EngineJudgeMode          `json:"judge_mode"`
+	Credentials EngineOneShotCredentials `json:"credentials"`
 	// Catalog is the plugin/strategy classification source of truth the BFF
 	// hands to the engine (U2/T2.2). Optional for backward compatibility: when
 	// absent the engine falls back to its "unknown plugin" defaults

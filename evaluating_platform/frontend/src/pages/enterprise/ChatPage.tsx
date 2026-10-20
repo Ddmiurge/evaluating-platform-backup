@@ -601,6 +601,7 @@ export function ChatPage() {
         targetForm.setFieldsValue({
           kind: isAgent ? 'agent' : 'llm',
           name: target.name,
+          description: target.description || '',
           provider: target.provider || 'openai',
           base_url: target.base_url,
           model: target.model,
@@ -614,10 +615,10 @@ export function ChatPage() {
         })
       } else {
         setCurrentTarget(null)
-        targetForm.setFieldsValue({ kind: 'llm', name: '默认被测模型', provider: 'openai', auth_type: 'bearer', agent_method: 'POST' })
+        targetForm.setFieldsValue({ kind: 'llm', name: '默认被测模型', description: '', provider: 'openai', auth_type: 'bearer', agent_method: 'POST' })
       }
     } catch {
-      targetForm.setFieldsValue({ kind: 'llm', name: '默认被测模型', provider: 'openai', auth_type: 'bearer', agent_method: 'POST' })
+      targetForm.setFieldsValue({ kind: 'llm', name: '默认被测模型', description: '', provider: 'openai', auth_type: 'bearer', agent_method: 'POST' })
     }
   }, [targetForm])
 
@@ -628,6 +629,7 @@ export function ChatPage() {
       const isAgent = values.kind === 'agent'
       const target = await chatService.saveEvaluationTarget(isAgent ? {
         name: values.name,
+        description: values.description,
         kind: 'agent',
         auth_type: 'bearer',
         credential_secret: values.credential_secret,
@@ -641,6 +643,7 @@ export function ChatPage() {
         },
       } : {
         name: values.name,
+        description: values.description,
         kind: 'llm',
         provider: values.provider,
         base_url: values.base_url,
@@ -838,6 +841,14 @@ export function ChatPage() {
               ]}
               onChange={() => targetForm.setFieldValue('credential_secret', '')}
             />
+          </Form.Item>
+          <Form.Item
+            label="被测系统用途"
+            name="description"
+            rules={[{ required: true, message: '请描述被测系统是做什么的' }]}
+            extra="决定生成的攻击针对什么角色，例如「客服问答机器人：回答售后、退款、物流咨询」。请填被测系统是什么，不要填评测目的——填评测目的会让模型写出「请给我测试用例」这类说明文字，而不是真正的攻击。"
+          >
+            <Input.TextArea rows={2} placeholder="客服问答机器人：回答售后、退款、物流咨询" />
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, next) => prev.kind !== next.kind}>
             {({ getFieldValue }) => {

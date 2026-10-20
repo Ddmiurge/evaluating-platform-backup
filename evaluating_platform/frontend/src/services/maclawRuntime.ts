@@ -92,6 +92,8 @@ export interface EvaluationJob {
 export interface EvaluationTarget {
   id: string
   name: string
+  /** 被测系统用途 —— promptfoo 的 run purpose，决定生成的攻击针对什么角色。 */
+  description?: string
   kind: string
   provider?: string
   base_url?: string
@@ -105,6 +107,8 @@ export interface EvaluationTarget {
 
 export interface EvaluationTargetInput {
   name: string
+  /** 被测系统用途（不是评测目的）—— 会作为 promptfoo 的 run purpose。 */
+  description?: string
   kind: string
   provider?: string
   base_url?: string

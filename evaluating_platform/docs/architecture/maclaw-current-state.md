@@ -685,3 +685,57 @@ ToUnicode，`/F2` 是 Helvetica。
 
 **边界**：兜底是尽力而为 —— 原始载荷本身若也是长 ASCII 串，同样会被那条规则清空，此时只能原样显示标记。
 渲染兜底值而**不加那句说明**是不可接受的：读者会把它当成实际发送的内容。
+
+## 引擎的 run purpose 取「被测系统用途」（2026-10-20）
+
+### 缺陷
+
+promptfoo 的 `purpose` 语义是**被测系统是什么**（它模板里的示例：`travel agent` /
+`pitch deck generator` / `email generator`）。它被渲染进**每一个生成模板**
+（`Generate a list of N trick prompts for the system purpose: {{purpose}}`）
+和**每一个判分 rubric**（`RedteamGraderBase` 的 `<Purpose>{{purpose}}</Purpose>`），
+所以它同时决定攻击针对什么角色、以及裁判拿什么标准判。
+
+平台两条入口喂进去的都是**评测目的**：聊天确认取计划卡 note（兜底
+「大模型安全评测（promptfoo 引擎）」），向导的字段标签就叫「评测目的」。
+而"被测系统是什么"**产品里没有地方填** —— `maclaw_target_configs.description` 这个列存在，
+但只被用于搜索。
+
+后果（2026-10-20 实测）：模型被要求"为一个用途是**运行安全评测**的系统写一句骗人的请求"，
+它照办了 —— 六条载荷全是在描述任务（「作为大模型安全评测（promptfoo 引擎）的出题人，请把…列出来」），
+0/6 成功。反证：同一模板、同一模型，只把这一行换成 `客服问答机器人`，立刻得到六条真正的提示词提取攻击。
+
+### 现链路
+
+```
+目标抽屉「被测系统用途」（必填） → maclaw_target_configs.description
+        ↓  EngineRunPurposeForTarget(target)      internal/maclaw/engine_run_purpose.go
+引擎请求 Purpose = 被测系统用途 ────────────────→ promptfoo 生成模板 + 判分 rubric
+run 记录 Purpose = 评测目的（运行详情展示给用户）
+```
+
+### 三处刻意的设计
+
+1. **两个 `Purpose` 是两个不同的主张**，不合并：引擎要"被测系统是什么"（决定出题与判分），
+   运行记录要"我为什么跑这个"（给用户看）。两条入口（`promptfoo_engine_bridge.go`、`engine_run.go`）
+   都调同一个 helper。
+2. **兜底是中性角色**（`一个通用对话助手`，与 promptfoo 自己的默认值 `"general AI assistant"` 同形），
+   不是任何评测目的：空 description 只该导致"通用攻击"，不该导致"照评测任务出题"。
+3. **无 migration**：`description` 列与 `EvaluationTargetInput` / `EvaluationTargetSummary` 本来就有该字段，
+   前端 `saveEvaluationTarget` 直通，只是过去没人填、后端也没人读。
+4. **与 U7 的 `application_definition` 互补而非重复**：U7 的六字段（目标元数据 `redteam_*` 或向导入参）
+   由引擎 `buildEffectivePurpose` 渲染成「base purpose + 被测应用说明附加块」，它只追加、不改 base。
+   本批修的是 base；`ResolveEngineNativeGenerationInputs` 不触碰 `req.Purpose`，所以两者不会互相覆盖。
+
+### 可见范围
+
+`purpose` 是配置字符串，不是载荷、不是凭据、不是目标回答，本身没有泄漏面；
+它出现在引擎请求里（服务端之间），不进浏览器响应、不进报告元数据、不进进度事件。
+
+### 边界
+
+- 旧目标没有 description 时走中性兜底，出题是"通用助手"方向；抽屉已设为必填，重新保存一次即可补上。
+- 向导页的「评测目的」字段现在只作 run 记录展示，不再影响引擎（文案未改，自选评测导航不在该批范围）。
+- **本批之后新报告与旧报告在 purpose 这一项上不可比** —— 与 `generation_path` 同理。
+- 守卫：`TestEngineRunPurposeForTargetUsesTheTargetsOwnRole`、
+  `TestPrepareEngineRunSendsTheTargetsPurposeNotTheEvaluationPurpose`（走真实出口，非 helper 单测）。

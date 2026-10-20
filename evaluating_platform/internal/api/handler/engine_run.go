@@ -460,13 +460,18 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	engineReq := &maclaw.EngineRunRequest{
 		RunID:          saved.ID,
 		PlatformUserID: userID.String(),
-		Purpose:        in.Purpose,
-		NumTests:       numTests,
-		Plugins:        plugins,
-		Strategies:     strategies,
-		JudgeMode:      judgeMode,
-		Credentials:    derefOrEmpty(maclaw.MaterializeEngineCredentialsWithGeneration(target, generation)),
-		Catalog:        maclaw.PromptfooEngineCatalog(),
+		// Same split as the chat confirm path: `in.Purpose` (「评测目的」) is
+		// recorded on the run, while the engine is given the TARGET's purpose.
+		// promptfoo renders the purpose into its generation templates, so the
+		// evaluation purpose there made the model write test-case descriptions
+		// instead of attacks — see maclaw.EngineRunPurposeForTarget.
+		Purpose:     maclaw.EngineRunPurposeForTarget(target),
+		NumTests:    numTests,
+		Plugins:     plugins,
+		Strategies:  strategies,
+		JudgeMode:   judgeMode,
+		Credentials: derefOrEmpty(maclaw.MaterializeEngineCredentialsWithGeneration(target, generation)),
+		Catalog:     maclaw.PromptfooEngineCatalog(),
 	}
 	// U7: carry the application description through to the engine so promptfoo's
 	// native generation can aim at this system rather than attack generically.
