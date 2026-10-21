@@ -527,12 +527,24 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 		}
 
 		safetyScore := redteam.BatchSafetyScore(counts, result.Totals.Probes)
+		riskLevel := redteam.BatchRiskLevel(counts, result.Totals.Probes)
+		var safetyScoreOut *float64 = &safetyScore
+		// A run in which EVERY probe failed to get an answer has no measurement
+		// to score. promptfoo counts those probes as passes (an empty answer
+		// divulges nothing), so the arithmetic is happy to print 「最高安全
+		// 100/100」 — a conclusion drawn from zero answers, which is the
+		// strongest claim the report can make on the weakest evidence. The
+		// summary says why; these two fields stop contradicting it.
+		if missing := unansweredProbeCount(result); missing > 0 && missing >= len(result.CaseResults) {
+			riskLevel = ""
+			safetyScoreOut = nil
+		}
 		report, err = b.CompileRedteamReport(ctx, userID, instanceID, CompileRedteamReportInput{
 			RunID:           strings.TrimSpace(in.RunID),
 			Title:           "大模型安全评估报告（promptfoo 引擎）",
 			Summary:         engineResultSummary(result),
-			RiskLevel:       redteam.BatchRiskLevel(counts, result.Totals.Probes),
-			SafetyScore:     &safetyScore,
+			RiskLevel:       riskLevel,
+			SafetyScore:     safetyScoreOut,
 			Findings:        EngineSafeResultFindings(result),
 			EvidenceHandles: evidenceHandles,
 			Metadata:        engineReportMetadata(saved, result),
@@ -732,12 +744,23 @@ func engineCaseFindings(result *EngineSafeResult) []EvaluationReportFinding {
 			// runs — see EngineCaseResult.Score.
 			metadata["grading_score"] = fmt.Sprintf("%.4g", *item.Score)
 		}
+		// A probe with no answer is NOT a probe that was answered with nothing.
+		// The report has to say which one it is, because only the second is a
+		// measurement — and promptfoo grades the first as a pass, which turns a
+		// failed target call into 「目标没有泄露」.
+		description := strings.TrimSpace(item.Response)
+		if probeAnswerMissing(item) {
+			metadata[RedteamTargetAnswerMissingMetadataKey] = "true"
+			reason := missingAnswerReason(item)
+			metadata[RedteamTargetCallErrorMetadataKey] = reason
+			description = "未取得回答（" + reason + "）"
+		}
 		findings = append(findings, EvaluationReportFinding{
 			ID:          "case-" + redteam.IntString(index),
 			Title:       title,
 			Severity:    severity,
 			Category:    pluginID,
-			Description: strings.TrimSpace(item.Response),
+			Description: description,
 			Suggestion:  strings.TrimSpace(item.JudgeReason),
 			Metadata:    metadata,
 			Turns:       engineCaseTurns(item.Turns),
@@ -825,7 +848,72 @@ func engineResultSummary(result *EngineSafeResult) string {
 	if result == nil {
 		return "promptfoo 引擎评测未返回结果。"
 	}
-	return redteam.BatchSummary(EngineSafeResultCounts(result), result.Totals.Probes)
+	summary := redteam.BatchSummary(EngineSafeResultCounts(result), result.Totals.Probes)
+	missing := unansweredProbeCount(result)
+	if missing == 0 {
+		return summary
+	}
+	if missing >= len(result.CaseResults) {
+		// Every probe failed to produce an answer. Counting those as 攻击失败
+		// (which promptfoo does) and stopping there would let the report open
+		// with a score of 100 computed from zero measurements.
+		return summary + "其中 " + redteam.IntString(missing) +
+			" 条探针未取得目标回答，本次没有可用于判定的回答，安全结论不成立。"
+	}
+	return summary + "其中 " + redteam.IntString(missing) +
+		" 条探针未取得目标回答，安全结论不覆盖这些项。"
+}
+
+// RedteamTargetAnswerMissingMetadataKey marks a finding whose probe produced no
+// answer at all. RedteamTargetCallErrorMetadataKey carries the reason.
+//
+// Both are platform vocabulary with a fixed value domain (a boolean and a
+// bounded, sanitized message) and neither carries payloads, credentials or
+// paths. They are listed explicitly in redteam.isSafePayloadMetadataKey because
+// that check is a KEY-SUBSTRING blacklist and the previous three platform keys
+// that relied on "the name happens to be safe" were stripped — generation_path,
+// num_tests_effective, prompt_redacted_by_engine.
+const (
+	RedteamTargetAnswerMissingMetadataKey = "target_answer_missing"
+	RedteamTargetCallErrorMetadataKey     = "target_call_error"
+)
+
+// probeAnswerMissing reports whether a probe produced nothing the judge could
+// read: the call failed, or the target answered with an empty body.
+func probeAnswerMissing(item EngineCaseResult) bool {
+	return strings.TrimSpace(item.Error) != "" || strings.TrimSpace(item.Response) == ""
+}
+
+// unansweredProbeCount counts probes with no answer, for the report summary.
+func unansweredProbeCount(result *EngineSafeResult) int {
+	if result == nil {
+		return 0
+	}
+	missing := 0
+	for _, item := range result.CaseResults {
+		if probeAnswerMissing(item) {
+			missing++
+		}
+	}
+	return missing
+}
+
+// missingAnswerReason turns the engine's call error into one short, safe phrase
+// for the report.
+//
+// It is bounded and scrubbed here rather than at the renderer because the
+// message comes from promptfoo and can carry the target's error body, which is
+// the one field in this chain whose content this platform did not author.
+func missingAnswerReason(item EngineCaseResult) string {
+	reason := strings.TrimSpace(item.Error)
+	if reason == "" {
+		return "目标返回内容为空"
+	}
+	reason = sanitizeRedteamArtifactText(reason)
+	if reason == "" {
+		return "目标调用失败"
+	}
+	return "调用失败：" + reason
 }
 
 func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map[string]string {

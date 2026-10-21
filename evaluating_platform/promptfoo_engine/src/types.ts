@@ -422,6 +422,16 @@ export interface SafeCaseResult {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'none';
   /** Whether the attack succeeded. Same polarity as `totals.attack_success`. */
   attack_success: boolean;
+  /**
+   * The call error, when the target call did not complete (2026-10-21).
+   *
+   * Present means the probe produced NO answer: the target refused the
+   * connection, answered non-2xx, or answered with a body the engine could not
+   * parse. The report renders that as 「未取得回答」 rather than as an empty
+   * answer, because the two mean different things — one is a measurement, the
+   * other is the absence of one.
+   */
+  error?: string;
   /** The attack prompt as the target received it. */
   prompt: string;
   /**

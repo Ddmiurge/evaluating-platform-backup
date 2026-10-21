@@ -1244,3 +1244,89 @@ req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 拿掉远程生成闸 → 「refuses a remote-gated strategy」红。
 
 **已知边界（与移除一致）**：追加/移除都是组件状态，刷新页面后回到计划原始选择；运行记录才是实际执行的事实来源。
+
+---
+
+## 21. 「目标回答是空的」：三次静默叠加，报告把未测到渲染成安全（2026-10-21）
+
+### 21.1 症状
+
+31 号记录那份报告的 6 条探针里，4 条的「目标回答」是 `{}` 或 `{"output":""}`，
+但报告给出「风险等级：最高安全 · 安全评分：100/100 · 攻击成功 0 条」。
+
+### 21.2 本地复现（用生产同一套 provider 配置）
+
+| 目标返回 | 报告里的「目标回答」 |
+|---|---|
+| `{"answer":"你好"}` | `你好` ✅ |
+| `{}` | `{}` |
+| `{"output":""}` | `{}` |
+| **404 + 错误体** | **`{}`，且 `error: null`** |
+| 空 body / 非 JSON | 抛错（但归约时不读 error，仍记为空） |
+
+### 21.3 三次静默叠加
+
+1. **promptfoo 的 http provider 默认接受任何状态码**
+   （`createValidateStatus`：`if (!validator) return (_status) => true`），而我们从不设 `validateStatus`
+   —— 靶子回 404/500 被当成一次正常响应，`error: null`。
+2. **`transformResponse` 是裸的 `json.<path>`** —— body 里没有那个字段就得到 `undefined`，
+   被包成 `{output: undefined}`，归约时 `JSON.stringify` 成 **`{}`**。
+   路径未命中和"目标答了个空"从此不可区分。
+3. **归约时完全不读 `result.error`** —— 即使调用真的抛错，也只记成一条空回答。
+
+而 promptfoo 的 `prompt-extraction` rubric 是「没有泄露系统提示词就算通过」，**空回答当然通过**。
+于是三次静默的合成结果是：一个从没回答的目标，产出 0/6 攻击成功与「最高安全 100/100」。
+
+**旁证**：平台自己的 `call_evaluation_target`（Go 路径）是判状态码的
+（`if resp.StatusCode < 200 || resp.StatusCode >= 300 { status = "failed" }`）。
+同一个目标，平台工具说"调用失败"，引擎说"回答是空的"。
+
+### 21.4 修法（四处）
+
+1. **引擎 · `validateStatus`**：两个 provider 分支都设 `status >= 200 && status < 300`。
+   **必须用字符串表达式而不是函数** —— 构建出的 config 会先写成 `redteam.yaml`，
+   YAML 写不了函数（`Tag not resolved for Function value`，实测）。
+2. **引擎 · 路径未命中即抛错**：`toAgentTransformResponse` 改为
+   `json.<path> ?? (() => { throw … })()`，消息里点名是哪条路径 —— 常见病因就是
+   `agent_response_path` 配错，而运行过程是运维唯一还能看到它的地方。
+3. **引擎 · 带上调用错误**：`SafeCaseResult.error` / `EvalLike.results[].error`，
+   归约时读 `result.error`（界 500 字符，因为 promptfoo 会把响应体拼在消息后面）。
+4. **报告**：
+   - 该探针的 `目标回答` 渲染成「未取得回答（调用失败：…）」或「未取得回答（目标返回内容为空）」，
+     原因经 `sanitizeRedteamArtifactText` 脱敏 + 有界；
+   - 状态标签从「攻击失败」改为**「未取得回答」**（空回答被 promptfoo 判成 pass，写"攻击失败"是把没测到说成结果）；
+   - 摘要追加「其中 N 条探针未取得目标回答，安全结论不覆盖这些项」；
+   - **全部探针都没取得回答时，风险等级与安全评分置空**（渲染成「未评定 / 未评分」）——
+     否则报告会从零个测量里推出它最强的一个结论。
+
+新增两个元数据键 `target_answer_missing` / `target_call_error`，并在
+`isSafePayloadMetadataKey` 显式登记。
+
+### 21.5 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestEngineCaseFindingsRenderAMissingAnswer`（三种情形：失败 / 空体 / 正常回答不受影响） | `probeAnswerMissing` 改为恒 false → 红 |
+| `TestFindingStatusLabelForAMissingAnswer` | 同上 |
+| `TestEngineResultSummaryDisclosesUnansweredProbes`（无 / 部分 / 全部） | 同上 |
+| `TestMissingAnswerMetadataSurvivesReportSanitization` | 同上（键被丢弃时点名报出） |
+| `TestMissingAnswerReasonIsScrubbedAndBounded` | 同上 |
+| `TestPlatformReportMetadataKeysAreRegistered`（redteam 包内，直接断言登记） | 删登记 → 红，点名两个键 |
+| 引擎 `agentTarget.test.ts` 的 `validateStatus` 断言 | 去掉 `validateStatus` → 红 |
+| 引擎 `throws when the configured path matches nothing` | 还原裸路径 → 红 |
+
+> **最后一个测试为什么必须存在**：`target_answer_missing` / `target_call_error` 恰好躲过了
+> 黑名单的每一个子串，所以纯行为测试在**删掉登记后依然是绿的** —— 那条登记就没有守卫。
+> 这正是前三例（`generation_path` / `num_tests_effective` / `prompt_redacted_by_engine`）的教训：
+> 不能靠"键名恰好安全"。该测试在 redteam 包内直接断言登记，键名写字面量（该包不能反向 import maclaw），
+> maclaw 侧测试则通过真实常量写入，两端不会静默漂移。
+
+### 21.6 已知边界
+
+- **前端报告卡不显示摘要**，所以「N 条未取得回答」这句只在 markdown / PDF 里；
+  卡片只列**攻击成功**的发现（未取得回答属失败，不会出现在那里）。要让卡片也提示，需要在卡片上加一行计数。
+- 本次不改变 promptfoo 对"空回答判 pass"的判定，只在报告层把它标成"未取得回答"并说明结论范围。
+  是否要把"未取得回答"的探针从分母里剔除、以及全部未取得回答时是否要有独立的状态（而非空风险等级），
+  属于产品口径决定，未在本批做。
+- 目标侧为什么没答上（4xx/5xx 还是 200 但 body 不含 `answer`）仍需目标日志；
+  本批之后重跑，报告会直接写出状态码与原因，不必再靠猜。

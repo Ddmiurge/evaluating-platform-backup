@@ -522,6 +522,13 @@ func findingLooksSuccessful(finding EvaluationReportFinding) bool {
 }
 
 func findingStatusLabel(finding EvaluationReportFinding) string {
+	// A probe whose target call produced no answer was not judged at all:
+	// promptfoo's rubric passes an empty output ("nothing was divulged"), so
+	// printing 攻击失败 would present a missing measurement as a result — and
+	// 攻击成功 would be worse. Checked before judge_result for the same reason.
+	if strings.EqualFold(strings.TrimSpace(finding.Metadata[RedteamTargetAnswerMissingMetadataKey]), "true") {
+		return "未取得回答"
+	}
 	if rawResult := strings.TrimSpace(finding.Metadata["judge_result"]); rawResult != "" {
 		switch redteam.NormalizedJudgeResultKey(rawResult) {
 		case "success":

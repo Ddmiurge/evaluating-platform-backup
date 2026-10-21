@@ -453,6 +453,17 @@ type EngineCaseResult struct {
 	OriginalPrompt string `json:"original_prompt,omitempty"`
 	// Response is the target's answer, verbatim.
 	Response string `json:"response"`
+	// Error is the target call's failure, when the call did not complete
+	// (2026-10-21). Present means the probe produced NO answer: the target
+	// refused the connection, answered non-2xx, or answered with a body the
+	// configured extraction path could not resolve.
+	//
+	// It exists because those three cases used to arrive as `output: undefined`
+	// with `error: null` — the report rendered 目标回答 as `{}` and promptfoo's
+	// prompt-extraction rubric graded an empty answer as a PASS, so a target that
+	// never answered produced 0/6 successes and a 「最高安全 100/100」 report.
+	// See probeAnswerMissing.
+	Error string `json:"error,omitempty"`
 	// JudgeReason is the grader's reasoning, verbatim.
 	JudgeReason string `json:"judge_reason"`
 	// Score is promptfoo's own grading score, absent when its grader produced

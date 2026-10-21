@@ -225,6 +225,13 @@ func isSafePayloadMetadataKey(lower string) bool {
 	// 值域是固定枚举（只写 "true"），显式列在这里而不是依赖"键名恰好安全"。
 	case "prompt_redacted_by_engine":
 		return true
+	// 2026-10-21：**同类缺陷第四例的预防**。报告用这两个键区分「目标没回答」和
+	// 「回答就是空的」——前者不是测量，后者是。值域是 "true" 与一条已脱敏、有界的
+	// 失败原因，都不含载荷/凭据/路径。键名恰好躲过了黑名单子串，但那正是前三例的
+	// 教训：显式登记，别靠运气。
+	case "target_answer_missing",
+		"target_call_error":
+		return true
 	default:
 		return false
 	}

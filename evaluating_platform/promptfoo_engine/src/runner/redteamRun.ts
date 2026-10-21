@@ -68,6 +68,14 @@ export interface EvalLike {
     };
     /** Result-level vars. Which of the two promptfoo populates depends on the path. */
     vars?: Record<string, unknown>;
+    /**
+     * The call error, when the target call did not complete. promptfoo sets it
+     * for a provider that threw — which, since the target provider validates the
+     * status, is what a non-2xx target response produces. `error` present means
+     * there is no answer to grade, which is a different claim from "the answer
+     * was empty"; see `caseCallError`.
+     */
+    error?: unknown;
     /** The prompt document; `raw` is the rendered text. */
     prompt?: { raw?: unknown };
     /**
@@ -179,6 +187,20 @@ function substituteAgentAPIKey(template: string, apiKey: string): string {
  * Convert a user-facing dot path (e.g. `reply.text`, `choices[0].message.content`,
  * `json.data.reply`) into the transformResponse expression promptfoo's http
  * provider expects (e.g. `json.reply.text`). Empty path → the whole JSON body.
+ *
+ * # A path that matches nothing THROWS (2026-10-21)
+ *
+ * It used to be a bare `json.<path>`, which yields `undefined` when the body
+ * has no such field — and `undefined` is not a distinguishable outcome.
+ * promptfoo wraps it as `{ output: undefined }`, the report serialized that as
+ * 目标回答 `{}`, and promptfoo's prompt-extraction rubric then PASSED it ("the
+ * system prompt was not divulged"). So a target answering with an unexpected
+ * body produced a silent non-measurement that read as a safe result.
+ *
+ * Throwing turns it into the same thing a non-2xx now produces: a case error
+ * that reaches the report as 「未取得回答（…）」. The message names the path
+ * because the usual cause is a misconfigured `agent_response_path` — and the
+ * run is where the operator can still see it.
  */
 export function toAgentTransformResponse(raw?: string): string {
   const path = (raw ?? '')
@@ -187,7 +209,7 @@ export function toAgentTransformResponse(raw?: string): string {
     .replace(/^\.+/, '')
     .replace(/\.+$/, '');
   if (!path) return 'json';
-  return `json.${path}`;
+  return `json.${path} ?? (() => { throw new Error('agent response path "${path}" matched nothing in the response body') })()`;
 }
 
 /**
@@ -213,6 +235,42 @@ export function toAgentTransformResponse(raw?: string): string {
  * than by a flag: with no placeholder, `sessionParser` is never emitted and the
  * emitted config is byte-identical to U8's.
  */
+/**
+ * Only a 2xx counts as a target response.
+ *
+ * A STRING, not a function: the built provider config is serialized to
+ * `redteam.yaml` before the run and the YAML writer cannot represent a function
+ * ("Tag not resolved for Function value" — measured). promptfoo evaluates this
+ * form itself (`new Function('status', 'return <expr>')`), so the document stays
+ * plain data.
+ *
+ * # Why this is set explicitly (measured 2026-10-21)
+ *
+ * promptfoo's default accepts EVERY status:
+ *
+ *   async function createValidateStatus(validator) {
+ *     if (!validator) return (_status) => true;
+ *
+ * So a target answering 404/500 was treated as an ordinary response:
+ * `transformResponse` (`json.answer`) found nothing, the case carried
+ * `output: undefined, error: null`, and the report rendered 目标回答 as `{}`.
+ * promptfoo's prompt-extraction rubric then PASSES an empty output ("the system
+ * prompt was not divulged"), so a target that never answered produced 0/6 attack
+ * successes and a 「最高安全 100/100」 report — a conclusion drawn from no
+ * measurements at all.
+ *
+ * Measured locally with this provider config: a 404 with an error body yields
+ * `output: {}` and `error: null` before the fix, and throws
+ * `HTTP call failed with status 404 …` after it. That message reaches
+ * `case_results[].error` and the report renders 「未取得回答（调用失败）」.
+ *
+ * The platform's own Go call path already treats non-2xx as a failed call
+ * (`redteam_bridge.go`: `status = "failed"`); this is the engine agreeing with
+ * it. A target that is up but slow still gets its own classification — this only
+ * rejects what the HTTP layer already says went wrong.
+ */
+const VALIDATE_TARGET_STATUS = 'status >= 200 && status < 300';
+
 export function buildTargetProvider(target: OneShotCredentials['target']): {
   id: string;
   config: Record<string, unknown>;
@@ -267,6 +325,7 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
         headers,
         body,
         transformResponse: toAgentTransformResponse(target.agent_response_path),
+        validateStatus: VALIDATE_TARGET_STATUS,
         // Only present when a conversation was asked for. See the function
         // header for why its absence is what preserves v1 behaviour.
         ...(conversationWanted ? { sessionParser: buildSessionParser(responsePath) } : {}),
@@ -292,6 +351,9 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
         messages: [{ role: 'user', content: '{{prompt}}' }],
       },
       transformResponse: 'json.choices[0].message.content',
+      // Same reason as the agent branch: without this a 401/404/500 from the
+      // target reads as an empty answer and is graded as a pass.
+      validateStatus: VALIDATE_TARGET_STATUS,
       ...(target.timeout_seconds ? { timeout: target.timeout_seconds * 1000 } : {}),
     },
   };
@@ -495,6 +557,7 @@ export function reduceEvalToSafeResult(
       attack_success: success,
       prompt: casePromptText(r, injectVar),
       response: caseResponseText(r),
+      ...(caseCallError(r) ? { error: caseCallError(r) } : {}),
       judge_reason: typeof r.gradingResult?.reason === 'string' ? r.gradingResult.reason : '',
       ...(originalPromptOf(metadata) ? { original_prompt: originalPromptOf(metadata) } : {}),
       ...(typeof r.gradingResult?.score === 'number' ? { score: r.gradingResult.score } : {}),
@@ -673,6 +736,29 @@ function casePromptText(result: EvalResultLike, injectVar: string): string {
  * as "the target said nothing", which is a claim about the target we would have
  * no basis for.
  */
+/**
+ * The call error promptfoo recorded for this probe, or '' when the call landed.
+ *
+ * # Why the reducer has to read this (2026-10-21)
+ *
+ * Until the target provider set `validateStatus`, promptfoo's http provider
+ * accepted every status, so a failed call arrived as `output: undefined` with
+ * `error: null` and the two were indistinguishable in the report — every one of
+ * them rendered as 目标回答 `{}`. With the validator in place a non-2xx throws,
+ * and promptfoo stores the message here. Dropping it at reduction time would
+ * waste that: the report could say 「未取得回答」 but not why.
+ *
+ * Bounded at 500 runes because promptfoo appends the response body to the
+ * message (`… : <data>`), and a target returning a large error page must not
+ * blow up the engine's result document. Credentials and paths are stripped
+ * later, by the report layer, which knows what a report field is.
+ */
+function caseCallError(result: EvalResultLike): string {
+  const raw = typeof result.error === 'string' ? result.error.trim() : '';
+  if (!raw) return '';
+  return raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
+}
+
 function caseResponseText(result: EvalResultLike): string {
   const output = result.response?.output;
   if (typeof output === 'string') return output;

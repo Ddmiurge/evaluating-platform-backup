@@ -129,7 +129,9 @@ describe('buildTargetProvider (U9 conversation wiring)', () => {
     expect(JSON.stringify(config.body)).not.toContain('{{conversation_id}}');
     expect(config.sessionParser).toBe("data.body.conversation_id ?? ''");
     // And it must be derived from the response path, not hardcoded.
-    expect(config.transformResponse).toBe('json.conversation_id');
+    // The expression carries miss handling as well (see
+    // toAgentTransformResponse); the path is what this test is about.
+    expect(config.transformResponse).toContain('json.conversation_id');
   });
 
   it('never rewrites the endpoint, so a session id cannot land in a URL', () => {

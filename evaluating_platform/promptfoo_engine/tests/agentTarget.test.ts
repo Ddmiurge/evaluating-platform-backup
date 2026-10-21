@@ -30,7 +30,19 @@ describe('buildTargetProvider (agent targets)', () => {
     expect(config.headers['Content-Type']).toBe('application/json');
     // {{prompt}} must survive for promptfoo's per-test substitution.
     expect(config.body).toEqual({ query: '{{prompt}}', session: 'abc' });
-    expect(config.transformResponse).toBe('json.reply.text');
+    // The expression also carries the miss handling (see
+    // toAgentTransformResponse): a bare path yields undefined, which the report
+    // cannot tell from an empty answer.
+    expect(config.transformResponse).toContain('json.reply.text');
+    // Only a 2xx is a response. promptfoo's default accepts every status, which
+    // made a 404 from the target indistinguishable from an empty answer.
+    // Held as a string because the config is written to YAML; promptfoo turns it
+    // into a predicate the same way.
+    expect(typeof config.validateStatus).toBe('string');
+    const validateStatus = new Function('status', `return ${config.validateStatus}`) as (s: number) => boolean;
+    expect(validateStatus(200)).toBe(true);
+    expect(validateStatus(404)).toBe(false);
+    expect(validateStatus(500)).toBe(false);
     // The secret must never ride along as a literal anywhere else.
     expect(JSON.stringify(config.body)).not.toContain('sk-agent-secret');
   });
@@ -66,13 +78,37 @@ describe('buildTargetProvider (agent targets)', () => {
 });
 
 describe('toAgentTransformResponse', () => {
+  /** Evaluate the expression the way promptfoo does — the behaviour is the contract. */
+  function run(expr: string, json: unknown): unknown {
+    return new Function('json', 'text', 'context', 'process', `return (${expr});`)(json, '', undefined, undefined);
+  }
+
   it('maps dot paths and openai-style paths', () => {
-    expect(toAgentTransformResponse('reply.text')).toBe('json.reply.text');
-    expect(toAgentTransformResponse('choices[0].message.content')).toBe(
+    expect(toAgentTransformResponse('reply.text')).toContain('json.reply.text');
+    expect(toAgentTransformResponse('choices[0].message.content')).toContain(
       'json.choices[0].message.content',
     );
-    expect(toAgentTransformResponse('json.data.reply')).toBe('json.data.reply');
+    expect(toAgentTransformResponse('json.data.reply')).toContain('json.data.reply');
+  });
+
+  it('falls back to the whole body when no path is configured', () => {
     expect(toAgentTransformResponse('  ')).toBe('json');
     expect(toAgentTransformResponse(undefined)).toBe('json');
+    expect(run(toAgentTransformResponse(undefined), { any: 'thing' })).toEqual({ any: 'thing' });
+  });
+
+  it('returns the configured field when it is there', () => {
+    expect(run(toAgentTransformResponse('answer'), { answer: '你好' })).toBe('你好');
+    expect(run(toAgentTransformResponse('reply.text'), { reply: { text: 'ok' } })).toBe('ok');
+  });
+
+  // The regression this exists for. A body without the configured path used to
+  // yield `undefined`; the report rendered that as an empty answer and
+  // promptfoo's rubric graded an empty answer as a pass, so a misconfigured
+  // extraction path read as 「目标没有泄露」 instead of 「没测到」.
+  it('throws when the configured path matches nothing', () => {
+    expect(() => run(toAgentTransformResponse('answer'), { output: '' })).toThrow();
+    expect(() => run(toAgentTransformResponse('answer'), {})).toThrow();
+    expect(() => run(toAgentTransformResponse('reply.text'), { reply: {} })).toThrow();
   });
 });

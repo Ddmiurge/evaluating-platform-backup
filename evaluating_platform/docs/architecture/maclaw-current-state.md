@@ -805,3 +805,52 @@ maclaw 的规划器不保证把用户在对话里点名的策略带进计划（�
 
 前端下拉只列可跑的（`addableStrategyOptions`），但**浏览器不是安全边界**，服务端 `addedStrategyRefusal` 才是。
 追加/移除都是组件状态，刷新后回到计划原始选择；运行记录是实际执行的事实来源。
+
+## 未取得回答：报告不得把「没测到」渲染成「安全」（2026-10-21）
+
+### 缺陷
+
+上机报告里 6 条探针有 4 条的「目标回答」是 `{}`，同时给出「最高安全 100/100」。
+三次静默叠加而成：
+
+1. promptfoo 的 http provider **默认接受任何状态码**（`createValidateStatus` 的 `if (!validator) return (_status) => true`），
+   而平台从不设 `validateStatus` —— 靶子回 404/500 被当成一次正常响应；
+2. `transformResponse` 是裸的 `json.<path>`，body 缺该字段即得 `undefined`，归约时序列化成 `{}`
+   —— **路径未命中和"目标答了个空"从此不可区分**；
+3. 归约时**完全不读 `result.error`**，调用真的抛错也只记成空回答。
+
+promptfoo 的 `prompt-extraction` rubric 是「没有泄露就算通过」，**空回答当然通过**。
+
+### 现链路
+
+```
+引擎  buildTargetProvider      validateStatus = "status >= 200 && status < 300"（字符串，非函数）
+      toAgentTransformResponse json.<path> ?? (() => { throw … })()      ← 路径未命中即抛错
+      reduceEvalToSafeResult   case_results[].error ← result.error（界 500 字符）
+              ↓
+平台  probeAnswerMissing → 未取得回答（调用失败：…）/（目标返回内容为空）
+      状态标签「未取得回答」（不是「攻击失败」）
+      摘要追加「其中 N 条探针未取得目标回答，安全结论不覆盖这些项」
+      全部未取得回答 → 风险等级与安全评分置空（渲染成「未评定 / 未评分」）
+```
+
+### 刻意的设计
+
+1. **`validateStatus` 必须是字符串**：构建出的 config 先写成 `redteam.yaml`，YAML 写不了函数
+   （`Tag not resolved for Function value`，实测）。函数形式在运行时可用，但会让整份文档序列化失败。
+2. **路径未命中即抛错**，消息里点名是哪条路径：常见病因是 `agent_response_path` 配错，
+   而运行过程是运维唯一还能看到它的地方。
+3. **原因文本脱敏 + 有界**：它是这条链上唯一一段不是平台自己写的内容（promptfoo 会把响应体拼在消息后面）。
+4. **全部未取得回答时置空评分**，而不是新造一个风险等级：`riskScoreLines` 本来就会把空值渲染成
+   「未评定 / 未评分」，不需要新词汇。
+
+### 可见范围
+
+`target_answer_missing` / `target_call_error` 是布尔与一条已脱敏的有界消息，
+不含载荷、凭据、路径；两个键在 `isSafePayloadMetadataKey` 显式登记。
+
+### 边界
+
+- 前端报告卡不渲染摘要，所以那句披露只在 markdown / PDF；卡片只列攻击成功的发现。
+- 本批不改变 promptfoo「空回答判 pass」的判定，只在报告层标注并说明结论范围。
+- 「未取得回答」是否从分母剔除、以及是否需要一个独立的运行状态，属产品口径，未在本批做。
