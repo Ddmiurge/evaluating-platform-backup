@@ -48,6 +48,11 @@ type maclawRuntimeConfirmInput struct {
 	// so a ref it did not offer is ignored rather than added — see
 	// promptfooEnginePlanSelection.withoutRemovedRefs.
 	RemovedCapabilityRefs []string `json:"removed_capability_refs,omitempty"`
+	// AddedCapabilityRefs names promptfoo STRATEGIES the user added on the card
+	// before confirming (2026-10-21). Strategies only, and every id is proven
+	// runnable before the run starts — see addedStrategyRefusal for why this
+	// axis is the one that may be widened.
+	AddedCapabilityRefs []string `json:"added_capability_refs,omitempty"`
 }
 
 func NewMaclawRuntimeHandler(gateway maclaw.RuntimeGateway, instanceID string) *MaclawRuntimeHandler {
@@ -390,8 +395,18 @@ func (h *MaclawRuntimeHandler) ConfirmPlan(c *gin.Context) {
 	// capabilities run platform-side (the MaClaw agent loop has no engine
 	// fast path, and its LLM tool-calling is unreliable here).
 	if engineSelection, ok := promptfooEnginePlanSelectionFromContent(planMessage.Content); ok && len(selectedSkills) == 0 && len(resources) == 0 {
-		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount,
-			engineSelection.withoutRemovedRefs(normalizedRefSet(in.RemovedCapabilityRefs)))
+		// Strategies the user added on the card are validated BEFORE the
+		// removals are applied: an unusable addition must refuse the confirm,
+		// not be silently dropped and leave the card promising a technique that
+		// never ran.
+		if code, message, refused := addedStrategyRefusal(in.AddedCapabilityRefs); refused {
+			c.JSON(http.StatusConflict, gin.H{"error": message, "code": code})
+			return
+		}
+		selection := engineSelection.
+			withoutRemovedRefs(normalizedRefSet(in.RemovedCapabilityRefs)).
+			withAddedStrategies(in.AddedCapabilityRefs)
+		h.confirmPromptfooEnginePlan(c, sessionID, instanceID, planMessage, in, effectiveTestCount, selection)
 		return
 	}
 	// Removals are only honourable on the engine fast path, where the plan's

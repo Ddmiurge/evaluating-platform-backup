@@ -544,6 +544,7 @@ export const maclawRuntimeChatService = {
     testCount?: number,
     planMessageId?: string,
     removedRefs?: string[],
+    addedRefs?: string[],
   ): Promise<RuntimeSendResult> {
     const body: Record<string, unknown> = {}
     if (testCount) body.test_count = testCount
@@ -552,6 +553,11 @@ export const maclawRuntimeChatService = {
     // ever REMOVES what the plan offered — a request that names something the
     // plan did not select is ignored, never added (see ConfirmPlan).
     if (removedRefs && removedRefs.length > 0) body.removed_capability_refs = removedRefs
+    // Strategies the user ADDED on the card. The strategy axis is the only one
+    // the server accepts additions on (a plugin decides what gets generated and
+    // stays bound to the plan), and it refuses any id this deployment cannot
+    // run rather than dropping it — see addedStrategyRefusal.
+    if (addedRefs && addedRefs.length > 0) body.added_capability_refs = addedRefs
     const res = await api.post<EvaluationJob>(`/maclaw/evaluation/sessions/${sessionId}/confirm`, body, { timeout: 600000 })
     const job = res.data
     const hasRun = Boolean(job.progress?.run_id || job.result?.run?.id || job.status === 'running' || job.status === 'succeeded')

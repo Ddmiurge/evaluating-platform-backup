@@ -202,6 +202,109 @@ func (s promptfooEnginePlanSelection) withoutRemovedRefs(removed map[string]bool
 	return out
 }
 
+// addedStrategyRefusal reports why the strategies the user added on the plan
+// card cannot be honoured, or refused=false when they can.
+//
+// # Why addition exists at all, and why it is not removal's mirror
+//
+// Removal is safe by construction: it can only take away what the plan already
+// offered, so a crafted request cannot widen anything. Addition is the client
+// naming a capability the plan never selected, which is exactly what the
+// authorisation rule in withoutRemovedRefs exists to prevent — so the server
+// decides what may be added and proves each id is runnable before it is.
+//
+// Two limits, both deliberate:
+//
+//   - STRATEGIES ONLY. A plugin decides what gets generated and tested; the
+//     plan's plugin list is the authorisation for that. A strategy only wraps
+//     the cases those plugins produce, so adding one cannot widen what the run
+//     is allowed to attack. Adding a plugin is refused, not ignored: silently
+//     dropping it would look like the card's selection had been honoured.
+//   - Every added id must be in this deployment's catalog, not withdrawn, and
+//     not remote-gated — the same three gates the wizard applies at submit.
+//     Without them a hand-written request could name a strategy the engine
+//     throws on (`native_generation_strategy_unknown`) or silently drops, and
+//     the card would have promised a technique that never ran.
+//
+// Why this is worth the extra surface: maclaw's planner does not reliably carry
+// a strategy the user asked for in the chat (measured 2026-10-20 — "攻击策略要
+// 选择base64" produced a plan with no strategy at all). The card is where the
+// user can see and correct that, and it only works if the correction reaches
+// the engine.
+func addedStrategyRefusal(refs []string) (code, message string, refused bool) {
+	strategyPrefix := maclaw.CapabilitySourcePromptfooStrategy + ":"
+	for _, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(ref), strategyPrefix) {
+			return EnginePlanErrAddedRefNotStrategy,
+				"计划卡只允许追加攻击策略（promptfoo_strategy:<id>）：" + ref + " 不是策略，插件与专家资源必须由计划本身选中。",
+				true
+		}
+		id := strings.TrimSpace(ref[len(strategyPrefix):])
+		if id == "" || !maclaw.PromptfooCatalogStrategyExists(id) {
+			return EnginePlanErrAddedStrategyUnknown,
+				"攻击策略 " + id + " 不在本环境的策略目录里，无法追加；请从计划卡的下拉里选择。",
+				true
+		}
+	}
+	// The same gates the wizard runs at submit, over just the added ids.
+	added := addedStrategyRefs(refs, nil)
+	engineRefs := make([]maclaw.EngineCapabilityRef, 0, len(added))
+	for _, id := range added {
+		engineRefs = append(engineRefs, maclaw.EngineCapabilityRef{ID: id})
+	}
+	if err := maclaw.ValidateEngineRunStrategyRetirement(engineRefs); err != nil {
+		return EnginePlanErrAddedStrategyUnknown, err.Error(), true
+	}
+	if err := maclaw.ValidateEngineRunRemoteGeneration(nil, engineRefs); err != nil {
+		return EnginePlanErrAddedStrategyUnknown, err.Error(), true
+	}
+	return "", "", false
+}
+
+// withAddedStrategies returns the selection with the added strategies appended.
+//
+// Deduplicated against what is already selected, so a card that adds a strategy
+// the plan happened to pick does not run it twice. Callers must run
+// addedStrategyRefusal first — this function assumes every ref is a usable
+// strategy ref and does not re-check.
+func (s promptfooEnginePlanSelection) withAddedStrategies(refs []string) promptfooEnginePlanSelection {
+	added := addedStrategyRefs(refs, s.Strategies)
+	if len(added) == 0 {
+		return s
+	}
+	out := s
+	out.Strategies = append(append([]string{}, s.Strategies...), added...)
+	return out
+}
+
+// addedStrategyRefs extracts the ids from `promptfoo_strategy:<id>` refs,
+// dropping blanks and anything already in `existing`.
+func addedStrategyRefs(refs []string, existing []string) []string {
+	strategyPrefix := maclaw.CapabilitySourcePromptfooStrategy + ":"
+	seen := make(map[string]bool, len(existing)+len(refs))
+	for _, id := range existing {
+		seen[strings.ToLower(strings.TrimSpace(id))] = true
+	}
+	out := make([]string, 0, len(refs))
+	for _, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		if ref == "" || !strings.HasPrefix(strings.ToLower(ref), strategyPrefix) {
+			continue
+		}
+		id := strings.TrimSpace(ref[len(strategyPrefix):])
+		if id == "" || seen[strings.ToLower(id)] {
+			continue
+		}
+		seen[strings.ToLower(id)] = true
+		out = append(out, id)
+	}
+	return out
+}
+
 // normalizedRefSet trims a removal list into a lookup set. Empty entries are
 // dropped: a blank ref names nothing, and treating it as "remove everything"
 // would be the opposite of what an empty entry means.
@@ -242,6 +345,16 @@ const (
 	// would silently downgrade the evaluation to "ask the target directly", which
 	// is the exact failure this path was fixed for.
 	EnginePlanErrStrategyRefsUnresolved = "promptfoo_strategy_refs_unresolved"
+	// EnginePlanErrAddedRefNotStrategy — the card tried to ADD something on the
+	// plugin or resource axis. The plan's plugins are the authorisation for what
+	// gets generated, so only strategies may be added; see
+	// addedStrategyRefusal.
+	EnginePlanErrAddedRefNotStrategy = "promptfoo_added_ref_not_a_strategy"
+	// EnginePlanErrAddedStrategyUnknown — the card added a strategy id this
+	// deployment cannot run: not in the catalog, withdrawn in P3-1, or
+	// remote-gated. Refused rather than dropped, because the card would
+	// otherwise show a technique that never ran.
+	EnginePlanErrAddedStrategyUnknown = "promptfoo_added_strategy_unknown"
 )
 
 // promptfooEnginePlanRefusal reports why a confirmed plan cannot be executed as

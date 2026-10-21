@@ -530,3 +530,137 @@ func TestAgentTargetSummaryNeverCarriesAConversationValue(t *testing.T) {
 		t.Fatalf("summary carries a conversation value rather than the placeholder: %s", raw)
 	}
 }
+
+// The agent health check must send the SAME request a real attack case sends.
+//
+// It used to GET the endpoint. An agent endpoint is a conversation API (POST
+// with a JSON body, mirroring promptfoo's `http` provider), so the GET returned
+// 404/405 and 「保存并测试」 reported 「target health check failed」 for every agent
+// target no matter how healthy it was — the long-standing field report behind
+// this test. The counter-proof is the first assertion: this server answers 405
+// to anything but POST, which is what a real agent gateway does.
+func TestProbeAgentTargetSendsTheConfiguredMethodAndBody(t *testing.T) {
+	var gotMethod string
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if query, ok := body["query"].(string); ok {
+			gotQuery = query
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"reply":{"text":"ok"}}`))
+	}))
+	defer server.Close()
+
+	keyStore := agentTestKeyStore(t)
+	service := NewTargetConfigService(&memoryTargetConfigStore{}, keyStore)
+	userID := uuid.New()
+	if _, err := service.SaveTarget(context.Background(), userID, EvaluationTargetInput{
+		Name:             "客服 Agent",
+		Kind:             EvaluationTargetKindAgent,
+		CredentialSecret: "sk-agent-secret",
+		Enabled:          true,
+		Metadata: map[string]string{
+			TargetMetadataAgentEndpoint:     server.URL + "/chat",
+			TargetMetadataAgentBodyTmpl:     `{"query":"{{prompt}}"}`,
+			TargetMetadataAgentResponsePath: "reply.text",
+		},
+	}); err != nil {
+		t.Fatalf("SaveTarget: %v", err)
+	}
+
+	result, err := service.ProbeTarget(context.Background(), userID, "")
+	if err != nil {
+		t.Fatalf("ProbeTarget: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("probe used %s, want the target's configured method POST", gotMethod)
+	}
+	if gotQuery != agentProbePrompt {
+		t.Errorf("probe body query = %q, want the rendered body template carrying %q", gotQuery, agentProbePrompt)
+	}
+	if result.Status != EvaluationTargetHealthHealthy {
+		t.Fatalf("probe status = %q message = %q, want healthy", result.Status, result.Message)
+	}
+	// The credential is substituted server-side and must not come back out.
+	if strings.Contains(result.Message, "sk-agent-secret") {
+		t.Fatalf("probe message leaked the credential: %q", result.Message)
+	}
+}
+
+// A 200 whose body yields no answer text is not a usable target: the platform
+// hands the judge what it extracts, so an empty extraction fails every case.
+// Reporting it healthy here would move the failure to the first attack case,
+// after the run has already been paid for.
+func TestProbeAgentTargetReportsAnEmptyAnswerAsDegraded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	keyStore := agentTestKeyStore(t)
+	service := NewTargetConfigService(&memoryTargetConfigStore{}, keyStore)
+	userID := uuid.New()
+	if _, err := service.SaveTarget(context.Background(), userID, EvaluationTargetInput{
+		Name:    "空回答 Agent",
+		Kind:    EvaluationTargetKindAgent,
+		Enabled: true,
+		Metadata: map[string]string{
+			TargetMetadataAgentEndpoint: server.URL + "/chat",
+		},
+	}); err != nil {
+		t.Fatalf("SaveTarget: %v", err)
+	}
+
+	result, err := service.ProbeTarget(context.Background(), userID, "")
+	if err != nil {
+		t.Fatalf("ProbeTarget: %v", err)
+	}
+	if result.Status != EvaluationTargetHealthDegraded {
+		t.Fatalf("probe status = %q message = %q, want degraded", result.Status, result.Message)
+	}
+}
+
+// The agent welcome-card set and the plan card's 目标类型 both key off the
+// target's KIND, and the frontend reads it from this round trip — the POST
+// response first, then the list. So the kind has to survive both, and a silent
+// downgrade to "llm" here would show up only as "the cards didn't change".
+func TestAgentTargetKindSurvivesTheSaveAndListRoundTrip(t *testing.T) {
+	keyStore := agentTestKeyStore(t)
+	service := NewTargetConfigService(&memoryTargetConfigStore{}, keyStore)
+	userID := uuid.New()
+	saved, err := service.SaveTarget(context.Background(), userID, EvaluationTargetInput{
+		Name:    "客服 Agent",
+		Kind:    EvaluationTargetKindAgent,
+		Status:  EvaluationTargetStatusPublished,
+		Enabled: true,
+		Metadata: map[string]string{
+			TargetMetadataAgentEndpoint: "https://agent.example.com/chat",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveTarget: %v", err)
+	}
+	if saved.Kind != EvaluationTargetKindAgent {
+		t.Errorf("POST response kind = %q, want %q", saved.Kind, EvaluationTargetKindAgent)
+	}
+	items, err := service.ListTargets(context.Background(), userID, EvaluationTargetQuery{})
+	if err != nil {
+		t.Fatalf("ListTargets: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("list returned %d targets, want 1", len(items))
+	}
+	if items[0].Kind != EvaluationTargetKindAgent {
+		t.Errorf("listed kind = %q, want %q", items[0].Kind, EvaluationTargetKindAgent)
+	}
+	if !items[0].Enabled {
+		t.Error("listed target is disabled, so the frontend list would drop it and the page would fall back to the llm cards")
+	}
+}

@@ -507,7 +507,7 @@ export function ChatPage() {
     await sendToSession(session.id, trimmed, false)
   }, [activeId, createSession, messages, runningSessionIds, sendToSession, sendingSessionId])
 
-  const handleConfirmPlan = useCallback(async (msgId: string, testCount: number, removedRefs?: string[]) => {
+  const handleConfirmPlan = useCallback(async (msgId: string, testCount: number, removedRefs?: string[], addedRefs?: string[]) => {
     if (!activeId) return
     const sessionId = activeId
     const progressMessage = buildConfirmProgressMessage(sessionId, msgId, testCount)
@@ -520,7 +520,7 @@ export function ChatPage() {
         ...messagesForSession(previous, sessionId).filter(message => message.id !== progressMessage.id),
         progressMessage,
       ]))
-      const result = await chatService.confirmPlan(sessionId, testCount, msgId, removedRefs)
+      const result = await chatService.confirmPlan(sessionId, testCount, msgId, removedRefs, addedRefs)
       if (activeIdRef.current !== sessionId) {
         if (result.job?.status === 'succeeded' || (!result.run && !result.job)) {
           markSessionRunning(sessionId, false)
@@ -760,7 +760,7 @@ export function ChatPage() {
                 <MessageBubble
                   key={msg.id}
                   msg={msg}
-                  onPlanConfirm={(rounds, planMessageId, removedRefs) => handleConfirmPlan(planMessageId || msg.id, rounds, removedRefs)}
+                  onPlanConfirm={(rounds, planMessageId, removedRefs, addedRefs) => handleConfirmPlan(planMessageId || msg.id, rounds, removedRefs, addedRefs)}
                   onQuickReply={(text) => {
                     if (!activeId || activeSending || activeRunning) return
                     void sendToSession(activeId, text, true)

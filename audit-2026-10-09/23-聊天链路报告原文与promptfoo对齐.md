@@ -1171,3 +1171,76 @@ helper 正确而 call site 仍传旧值是这次缺陷的形状，单测盖不�
   因为自选评测导航不在本批范围内）。它不再"骗人"：该字段本来就是评测目的，
   被测系统用途现在由目标抽屉承载。
 - **`purpose` 影响生成与判分两侧**，所以本批之后的报告与之前的不宜并列对比。
+
+---
+
+## 20. 智能体探活、策略可发现性、计划卡追加策略（2026-10-21）
+
+上机反馈三件事，逐个处置。
+
+### 20.1 「保存并测试」对智能体目标永远报 target health check failed（老问题，已修）
+
+`TargetConfigService.ProbeTarget` 对 `kind=agent` 的目标**用 GET 请求那个端点**，而且完全没用
+`agent_method` / 请求体模板 / 响应提取路径：
+
+```go
+req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+```
+
+智能体端点是 **POST 会话接口**（对齐 promptfoo 的 `http` provider），GET 必然 404/405 ——
+所以无论目标多健康都报失败。它探测的请求与平台真正发的请求**不是同一个**，这才是病灶。
+
+**修法**：新增 `probeAgentTarget`，用 `buildAgentTargetRequestSpec` 渲染**与真实攻击用例同形**的请求
+（方法、头、体模板，`{{api_key}}` 服务端替换），探针语是中性句 `请回复 ok`（不能长得像攻击串，
+否则会污染对方日志）。另外 2xx 不等于可用：还要求响应能取出回答文本，否则报 degraded 并说明原因 ——
+与真实调用链一致（`agent_response_path` 取不到时回退通用抽取，所以不会误报）。凭据只在服务端替换，
+不进返回值、不进 message。
+
+**反证**：把方法改回 GET → `TestProbeAgentTargetSendsTheConfiguredMethodAndBody` 报红
+（`probe used GET` / `status = degraded`）。新增 `TestProbeAgentTargetReportsAnEmptyAnswerAsDegraded`
+钉住"200 但取不到回答"这一档。
+
+> 顺带钉住一个此前没测的事实：`TestAgentTargetKindSurvivesTheSaveAndListRoundTrip` —— 智能体目标的
+> `kind` 要穿过保存响应与列表接口。前端"agent 用 agent 那套推荐卡"完全依赖它。
+
+### 20.2 对话里点名 base64，计划卡不选（诊断：maclaw 规划器 + 我们的一处说明缺口）
+
+先排掉两条不属于病因的：
+
+- **没有任何"选项卡"会发给 maclaw**。前端发消息只带 `{ content }`，BFF 不推插件/策略选项
+  （AGENTS.md 禁止自动注入能力上下文）。计划卡上的能力 chips **是 maclaw 自己产出的**，平台只原样转发。
+- **不存在"maclaw 选了但我们吞掉"**。卡片解析接受字符串与对象两种形态；认不出前缀的 ref 也会
+  显示在卡片上（归入「使用能力」），不会被静默隐藏；真被吞掉时确认还会**拒绝执行**
+  （`promptfoo_strategy_refs_unresolved`），不会静默降级。
+
+真正的缺口：策略目录**是**可发现的（`PromptfooPluginCatalogCards()` 为 30 条原生策略各生成一张
+`promptfoo_strategy:<id>` 卡，`search_redteam_plugin_catalog` 的查询还专门把"策略"当元词），
+但**工具描述没把这条轴说清楚**：`search_platform_redteam_capabilities` 的描述里没有插件/策略二字；
+`search_redteam_plugin_catalog` 虽然提到"plugin and strategy catalog"，可操作性指令却只写了
+`plugin_id`。而按 AGENTS.md，工具描述是 maclaw 唯一能读到的「该传什么」的说明。
+
+**修法（本批 A）**：两条搜索工具的描述补成三件事 —— 结果含 `promptfoo_plugin:<id>` 与
+`promptfoo_strategy:<id>` 两类卡；前者生成用例、后者包装；用户点名手法时应选中对应策略卡，
+并以 `source_ref` 原样回传进计划卡的 `selected_capability_refs`。`SearchRedteamPluginCatalog`
+返回体里的中文说明同步补上。快照随之更新（`mcp_tool_snapshot.json`，diff 只有这两条描述）。
+
+**边界**：这只解决"规划器有没有理由知道策略轴存在"。若它根本不调平台搜索（`redteam_evaluation_v1`
+快速路径可能直接凭 Skill 摘要出计划），描述再准也没用 —— 那属于 maclaw 侧，见 20.3 的兜底。
+
+### 20.3 计划卡可以直接追加攻击策略（本批 C）
+
+因为不能指望规划器，所以给用户一条确定性的纠正路径：**计划卡上的「攻击策略」行现在始终渲染**，
+计划没选策略时也能在这里补。计划选中的用 × 移除，用户自己加的用 × 撤回，两者都进确认请求。
+
+- **只对策略轴开放**。插件决定"生成什么、测什么"，属于计划授权范围；策略只是包装那些用例，
+  所以追加策略不会扩大这次运行被允许生成的范围。追加插件被**拒绝**（不是忽略）。
+- **每个 id 都必须真能跑**：在本环境策略目录里、未被 P3-1 下线、未被远程生成闸住 —— 与向导提交时的三道闸同源。
+  不能跑的追加**拒绝**（`promptfoo_added_ref_not_a_strategy` / `promptfoo_added_strategy_unknown`），
+  不静默丢弃：否则卡片上写着用了某手法、实际没跑。
+- 追加项与计划自身的选择**去重**，且**不计入 `DeclaredStrategies`**（那是计划声明的信号，不是用户加的）。
+- 卡片下拉只列可跑的（`addableStrategyOptions`），但**浏览器不是边界**，服务端 `addedStrategyRefusal` 才是。
+
+**反证**：拿掉"只能追加策略"这道闸 → 「refuses a plugin ref」「refuses an expert resource ref」两条红；
+拿掉远程生成闸 → 「refuses a remote-gated strategy」红。
+
+**已知边界（与移除一致）**：追加/移除都是组件状态，刷新页面后回到计划原始选择；运行记录才是实际执行的事实来源。

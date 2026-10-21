@@ -77,9 +77,9 @@ func TestPromptfooEnginePlanSelectionFromContent(t *testing.T) {
 			wantStrategies: []string{"goat"},
 		},
 		{
-			name:        "no engine refs",
-			content:     `{"selected_capability_refs":["sample:123"],"plugins":[]}`,
-			wantOK:      false,
+			name:    "no engine refs",
+			content: `{"selected_capability_refs":["sample:123"],"plugins":[]}`,
+			wantOK:  false,
 		},
 		{
 			name:    "not json",
@@ -351,5 +351,73 @@ func TestConfirmPlanRefusesRemovalsItCannotHonour(t *testing.T) {
 	// And nothing was executed: the whole point is not re-running the plan.
 	if gateway.confirmCalls != 0 {
 		t.Fatalf("confirmCalls = %d, want 0 — the plan must not be executed", gateway.confirmCalls)
+	}
+}
+
+// The plan card lets the user ADD a strategy the plan did not select. That is
+// the one place a client-supplied capability reaches a run, so the rule is
+// spelled out here: strategies only, and only ids this deployment can actually
+// run. maclaw's planner does not reliably carry a strategy the user named in
+// chat (measured 2026-10-20: 「攻击策略要选择base64」 produced a plan with no
+// strategy), so this axis is the user's correction path — and a correction that
+// is silently dropped, or that names something the engine throws on, is worse
+// than no affordance at all.
+func TestAddedStrategyRefusal(t *testing.T) {
+	cases := []struct {
+		name string
+		refs []string
+		code string
+	}{
+		{"accepts a runnable strategy", []string{"promptfoo_strategy:base64"}, ""},
+		{"accepts several and ignores blanks", []string{"", "promptfoo_strategy:base64", "  ", "promptfoo_strategy:rot13"}, ""},
+		{"refuses a plugin ref", []string{"promptfoo_plugin:harmful"}, EnginePlanErrAddedRefNotStrategy},
+		{"refuses an expert resource ref", []string{"sample:1234"}, EnginePlanErrAddedRefNotStrategy},
+		{"refuses an unknown id", []string{"promptfoo_strategy:no-such-strategy"}, EnginePlanErrAddedStrategyUnknown},
+		{"refuses a withdrawn platform strategy", []string{"promptfoo_strategy:role-play"}, EnginePlanErrAddedStrategyUnknown},
+		{"refuses a remote-gated strategy", []string{"promptfoo_strategy:iterative:meta"}, EnginePlanErrAddedStrategyUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, message, refused := addedStrategyRefusal(tc.refs)
+			if tc.code == "" {
+				if refused {
+					t.Fatalf("refused with %s: %s", code, message)
+				}
+				return
+			}
+			if !refused {
+				t.Fatalf("accepted %v, want refusal %s", tc.refs, tc.code)
+			}
+			if code != tc.code {
+				t.Errorf("code = %s, want %s (message: %s)", code, tc.code, message)
+			}
+			if strings.TrimSpace(message) == "" {
+				t.Error("refusal carries no message for the user")
+			}
+		})
+	}
+}
+
+func TestWithAddedStrategiesAppendsWithoutDuplicatingThePlansPick(t *testing.T) {
+	base := promptfooEnginePlanSelection{
+		Plugins:            []string{"harmful"},
+		Strategies:         []string{"base64"},
+		DeclaredStrategies: 1,
+	}
+	out := base.withAddedStrategies([]string{"promptfoo_strategy:base64", "promptfoo_strategy:rot13"})
+	if !sameIDs(out.Strategies, []string{"base64", "rot13"}) {
+		t.Errorf("strategies = %v, want [base64 rot13] — the plan's own pick must not run twice", out.Strategies)
+	}
+	if !sameIDs(out.Plugins, []string{"harmful"}) {
+		t.Errorf("plugins = %v, want the plan's own list untouched", out.Plugins)
+	}
+	if out.DeclaredStrategies != 1 {
+		t.Errorf("DeclaredStrategies = %d, want 1 — additions are not declarations the plan made", out.DeclaredStrategies)
+	}
+	// Adding to a plan that selected nothing is the case this feature exists
+	// for: a card that offered no strategy at all.
+	none := promptfooEnginePlanSelection{Plugins: []string{"harmful"}}
+	if got := none.withAddedStrategies([]string{"promptfoo_strategy:base64"}); !sameIDs(got.Strategies, []string{"base64"}) {
+		t.Errorf("strategies = %v, want [base64] added to an empty selection", got.Strategies)
 	}
 }

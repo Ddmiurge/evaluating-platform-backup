@@ -142,7 +142,7 @@ func (b *RedteamToolBridge) SearchRedteamPluginCatalog(in SearchRedteamPluginCat
 		Cards:       cards,
 		Total:       len(cards),
 		Engine:      "promptfoo",
-		Description: "内置引擎评测插件与策略目录。确认执行时选择 plugin_id 传入 run_promptfoo_redteam_evaluation。",
+		Description: "内置引擎评测插件与策略目录，两条轴都在这里：插件卡（promptfoo_plugin:<id>）负责生成攻击用例，策略卡（promptfoo_strategy:<id>）负责包装载荷。用户点名某个手法或包装（例如 base64）时，应选中对应的策略卡，而不是不带策略出计划。选中项请以 source_ref 原样回传进计划卡的 selected_capability_refs；执行时插件 id 传 plugins、策略 id 传 strategies。",
 	}, nil
 }
 

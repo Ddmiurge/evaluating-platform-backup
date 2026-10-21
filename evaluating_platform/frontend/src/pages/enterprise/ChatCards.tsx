@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
-import { Avatar, Button, InputNumber, Progress, Spin, message } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Avatar, Button, InputNumber, Progress, Select, Spin, message } from 'antd'
 import { ApiOutlined, BugOutlined, CheckCircleOutlined, DownloadOutlined, ExportOutlined, LoadingOutlined, PlayCircleOutlined, ReloadOutlined, RobotOutlined, SafetyOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 
 import type { ChatMessage, PlanInfo, WelcomeCapability } from '../../services/chat'
 import { reportService, triggerBrowserDownload } from '../../services/report'
-import { ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS } from '../../services/engineEval'
+import { ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS, isStrategyRemoteGenerationGated, isStrategyRetired } from '../../services/engineEval'
 import { LABELS, RESOURCE_MODE_LABELS, normalizePlanForDisplay, reportGenerationPathCaption, reportJudgeSourceCaption, reportJudgeTrackCaption, resolveReportSafetyScore } from './chatDisplay'
 import { parseChatMarkdown, type ChatMarkdownInline } from './chatMarkdown'
 
@@ -208,6 +208,23 @@ export function planRefGroups(plan: PlanInfo): PlanRefGroups {
   return groups
 }
 
+/**
+ * The strategies this card may still offer to ADD.
+ *
+ * Mirrors the server's rule (addedStrategyRefusal): withdrawn platform
+ * strategies and strategies this deployment cannot run are not offered at all,
+ * so the common refusal never happens — the server keeps its own check because
+ * the browser is not a security boundary. Already-planned and already-added ids
+ * are dropped so the same strategy cannot be added twice.
+ */
+export function addableStrategyOptions(plannedRefs: string[], addedRefs: string[]): Array<{ value: string; label: string }> {
+  const taken = new Set([...plannedRefs, ...addedRefs])
+  return ENGINE_STRATEGY_OPTIONS
+    .filter((option) => !isStrategyRetired(option.id) && !isStrategyRemoteGenerationGated(option.id))
+    .map((option) => ({ value: `promptfoo_strategy:${option.id}`, label: option.name }))
+    .filter((option) => !taken.has(option.value))
+}
+
 function displayCapabilityName(ref: string) {
   const text = String(ref || '').trim()
   if (!text) return ''
@@ -227,7 +244,7 @@ function PlanConfirmCard({
   confirmedTestCount,
 }: {
   plan: PlanInfo
-  onConfirm: (count: number, removedRefs: string[]) => void
+  onConfirm: (count: number, removedRefs: string[], addedRefs: string[]) => void
   confirmed: boolean
   confirmedTestCount?: number
 }) {
@@ -270,6 +287,25 @@ function PlanConfirmCard({
   // fix, and is deliberately not part of this change.
   const [removedRefs, setRemovedRefs] = useState<string[]>([])
   const removed = new Set(removedRefs)
+
+  // Strategies the user ADDED on this card.
+  //
+  // Why this exists: maclaw's planner does not reliably carry a strategy the
+  // user named in the chat (measured 2026-10-20 — 「攻击策略要选择base64」 came
+  // back as a plan with no strategy at all), and the card was removal-only, so
+  // there was no way to correct it short of the wizard. The server accepts
+  // additions on the STRATEGY axis only — plugins decide what gets generated
+  // and stay bound to the plan — and validates each id is runnable before the
+  // run starts (see addedStrategyRefusal).
+  const [addedRefs, setAddedRefs] = useState<string[]>([])
+  const [pendingStrategy, setPendingStrategy] = useState<string | undefined>(undefined)
+  const strategyOptions = useMemo(
+    () => addableStrategyOptions(refGroups.strategies.map((chip) => chip.ref), addedRefs),
+    [refGroups.strategies, addedRefs],
+  )
+  const strategyLabel = (ref: string) => (
+    ENGINE_STRATEGY_OPTIONS.find((option) => `promptfoo_strategy:${option.id}` === ref)?.name || ref
+  )
   const toggleRef = (ref: string) => {
     if (confirmed) return
     setRemovedRefs((previous) => (
@@ -341,7 +377,84 @@ function PlanConfirmCard({
           </div>
         </div>
         {renderChips('攻击插件', refGroups.plugins, true)}
-        {renderChips('攻击策略', refGroups.strategies, true)}
+        {/* 攻击策略行**始终渲染**：计划没选策略时，这里就是用户唯一能补上的地方。
+            计划选中的用 × 移除；用户自己加的用 × 撤回；两者都会写进确认请求。 */}
+        <div style={{ display: 'flex', gap: 8, fontSize: 13, alignItems: 'flex-start' }}>
+          <span style={{ color: 'var(--text-muted)', minWidth: 70 }}>攻击策略</span>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {refGroups.strategies.map((chip) => {
+              const isRemoved = removed.has(chip.ref)
+              return (
+                <span
+                  key={chip.ref}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    background: isRemoved ? 'transparent' : 'rgba(22, 163, 74, 0.10)',
+                    border: isRemoved ? '1px dashed var(--border-color)' : 'none',
+                    color: isRemoved ? 'var(--text-muted)' : 'var(--color-low)',
+                    padding: '2px 8px', borderRadius: 4, fontSize: 12,
+                    textDecoration: isRemoved ? 'line-through' : 'none',
+                  }}
+                >
+                  {chip.label}
+                  {!confirmed && (
+                    <button
+                      type="button"
+                      aria-label={isRemoved ? `恢复 ${chip.label}` : `移除 ${chip.label}`}
+                      title={isRemoved ? '恢复' : '本次不要这一项'}
+                      onClick={() => toggleRef(chip.ref)}
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, color: 'inherit', fontSize: 12, lineHeight: 1 }}
+                    >
+                      {isRemoved ? '↺' : '×'}
+                    </button>
+                  )}
+                </span>
+              )
+            })}
+            {addedRefs.map((ref) => (
+              <span
+                key={ref}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  background: 'rgba(22, 163, 74, 0.10)', color: 'var(--color-low)',
+                  padding: '2px 8px', borderRadius: 4, fontSize: 12,
+                }}
+              >
+                {strategyLabel(ref)}
+                {!confirmed && (
+                  <button
+                    type="button"
+                    aria-label={`撤回 ${strategyLabel(ref)}`}
+                    title="撤回这次追加"
+                    onClick={() => setAddedRefs((previous) => previous.filter((item) => item !== ref))}
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, color: 'inherit', fontSize: 12, lineHeight: 1 }}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+            {!confirmed && (
+              <Select
+                size="small"
+                placeholder="＋ 添加策略"
+                aria-label="添加攻击策略"
+                style={{ minWidth: 132 }}
+                value={pendingStrategy}
+                options={strategyOptions}
+                onChange={(value) => {
+                  setPendingStrategy(undefined)
+                  if (typeof value === 'string' && value) {
+                    setAddedRefs((previous) => (previous.includes(value) ? previous : [...previous, value]))
+                  }
+                }}
+              />
+            )}
+            {confirmed && refGroups.strategies.length === 0 && addedRefs.length === 0 && (
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>无（直接提问）</span>
+            )}
+          </div>
+        </div>
         {renderChips('使用能力', refGroups.others, false)}
         {(normalizedPlan.selection_reasons || []).length > 0 && (
           <div style={{ display: 'flex', gap: 8, fontSize: 13, alignItems: 'flex-start' }}>
@@ -362,7 +475,7 @@ function PlanConfirmCard({
           <CheckCircleOutlined /> 已确认，正在按 {testCount} 条测试问题启动评估...
         </div>
       ) : (
-        <Button type="primary" size="small" onClick={() => onConfirm(testCount, removedRefs)}>
+        <Button type="primary" size="small" onClick={() => onConfirm(testCount, removedRefs, addedRefs)}>
           确认执行
         </Button>
       )}
@@ -841,7 +954,7 @@ export function MessageBubble({
   retryingJobIds,
 }: {
   msg: ChatMessage
-  onPlanConfirm: (count: number, planMessageId: string, removedRefs?: string[]) => void
+  onPlanConfirm: (count: number, planMessageId: string, removedRefs?: string[], addedRefs?: string[]) => void
   onQuickReply?: (text: string) => void
   confirmedMsgs: Set<string>
   confirmedTestCounts: Record<string, number>
@@ -878,7 +991,7 @@ export function MessageBubble({
         {cardType === 'plan_confirm' && !isUser && msg.metadata?.plan && (
           <PlanConfirmCard
             plan={msg.metadata.plan as PlanInfo}
-            onConfirm={(count, removedRefs) => onPlanConfirm(count, msg.id, removedRefs)}
+            onConfirm={(count, removedRefs, addedRefs) => onPlanConfirm(count, msg.id, removedRefs, addedRefs)}
             confirmed={confirmedMsgs.has(msg.id) || isStalePlan}
             confirmedTestCount={confirmedTestCounts[msg.id]}
           />

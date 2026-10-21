@@ -739,3 +739,69 @@ run 记录 Purpose = 评测目的（运行详情展示给用户）
 - **本批之后新报告与旧报告在 purpose 这一项上不可比** —— 与 `generation_path` 同理。
 - 守卫：`TestEngineRunPurposeForTargetUsesTheTargetsOwnRole`、
   `TestPrepareEngineRunSendsTheTargetsPurposeNotTheEvaluationPurpose`（走真实出口，非 helper 单测）。
+
+## 智能体探活：探测请求必须与真实调用同形（2026-10-21）
+
+### 缺陷
+
+`ProbeTarget` 对 `kind=agent` 的目标用 **GET** 请求端点，且忽略 `agent_method` / 请求体模板 /
+响应提取路径。智能体端点是 POST 会话接口，GET 必然 404/405 —— 于是「保存并测试」对任何健康的
+智能体目标都报 `target health check failed`。它探测的请求与平台真正发的请求**不是同一个**。
+
+### 现链路
+
+```
+probeAgentTarget
+  → buildAgentTargetRequestSpec(target, "请回复 ok")   与真实攻击用例同一个渲染器
+  → 按 agent_method 发（默认 POST），头/体模板均来自目标配置，{{api_key}} 服务端替换
+  → 2xx 且能取出回答文本 → healthy
+     取不到 → degraded + 原因（agent_response_path 取不到时回退通用抽取，与真实调用一致）
+```
+
+### 刻意的设计
+
+1. **探针语是中性句**（`请回复 ok`），不是 canary、不是攻击串：探针不该在对方日志里看起来像一次评测。
+2. **2xx 不等于可用**：平台要把回答交给裁判，取不到回答的目标在第一条用例上就会失败 ——
+   报 healthy 等于把失败推迟到用户已经付过费的运行里。
+3. **凭据只在服务端替换**，不进返回值、不进 message。
+
+### 守卫
+
+`TestProbeAgentTargetSendsTheConfiguredMethodAndBody`（服务器只收 POST，否则 405）、
+`TestProbeAgentTargetReportsAnEmptyAnswerAsDegraded`、以及此前缺失的
+`TestAgentTargetKindSurvivesTheSaveAndListRoundTrip`（前端按 kind 选推荐卡，靠这个往返）。
+
+## 计划卡可以追加攻击策略（2026-10-21）
+
+### 为什么
+
+maclaw 的规划器不保证把用户在对话里点名的策略带进计划（实测：「攻击策略要选择base64」产出的计划
+完全没有策略），而计划卡此前只能删、不能加，用户没有纠正路径。
+
+### 契约
+
+```
+确认请求
+  removed_capability_refs  ← 计划选中的、用户划掉的（2026-10-16，仍然只减不增）
+  added_capability_refs    ← 用户追加的，只允许 promptfoo_strategy:<id>（2026-10-21）
+```
+
+### 三道闸（服务端，与向导提交同源）
+
+1. 必须是 `promptfoo_strategy:` ref —— 追加插件/资源被**拒绝**，因为插件决定生成什么，属于计划授权范围；
+2. id 必须在本环境策略目录里（不在 → 拒绝）；
+3. 未被 P3-1 下线、未被远程生成闸住（`ValidateEngineRunStrategyRetirement` /
+   `ValidateEngineRunRemoteGeneration`）→ 拒绝。
+
+拒绝码：`promptfoo_added_ref_not_a_strategy` / `promptfoo_added_strategy_unknown`。
+**一律拒绝而不是丢弃** —— 丢弃会让卡片显示一个从未执行的手法。追加项与计划自身选择去重，
+且不计入 `DeclaredStrategies`。
+
+### 可见范围
+
+`added_capability_refs` 是策略 id 列表，不是载荷、不是凭据；它不进浏览器响应、不进报告元数据。
+
+### 边界
+
+前端下拉只列可跑的（`addableStrategyOptions`），但**浏览器不是安全边界**，服务端 `addedStrategyRefusal` 才是。
+追加/移除都是组件状态，刷新后回到计划原始选择；运行记录是实际执行的事实来源。

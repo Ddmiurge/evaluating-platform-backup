@@ -1,8 +1,10 @@
 package maclaw
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	appcrypto "evaluating_platform/internal/crypto"
+	"evaluating_platform/internal/maclaw/redteam"
 	"evaluating_platform/internal/model"
 )
 
@@ -151,13 +154,11 @@ func (s *TargetConfigService) ProbeTarget(ctx context.Context, userID uuid.UUID,
 		return nil, NewUpstreamError(http.MethodPost, "/platform/evaluation/targets/"+targetID+"/health-check", http.StatusNotFound, "target not found")
 	}
 	healthURL := strings.TrimSpace(target.Metadata["health_url"])
+	if healthURL == "" && TargetIsAgent(*target) {
+		return s.probeAgentTarget(ctx, *target), nil
+	}
 	if healthURL == "" {
-		if TargetIsAgent(*target) {
-			// Agent targets: probe the conversation endpoint itself.
-			healthURL = strings.TrimSpace(target.Metadata[TargetMetadataAgentEndpoint])
-		} else {
-			healthURL = strings.TrimRight(strings.TrimSpace(target.BaseURL), "/") + "/models"
-		}
+		healthURL = strings.TrimRight(strings.TrimSpace(target.BaseURL), "/") + "/models"
 	}
 	healthURL = substituteAgentAPIKey(healthURL, strings.TrimSpace(target.CredentialSecret))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
@@ -183,6 +184,88 @@ func (s *TargetConfigService) ProbeTarget(ctx context.Context, userID uuid.UUID,
 	}
 	summary.HealthStatus = status
 	return &EvaluationTargetProbeResult{Target: *summary, Status: status, Message: message, StatusCode: resp.StatusCode, CheckedAt: started}, nil
+}
+
+// agentProbePrompt is the benign message the agent health check sends.
+//
+// A probe has to send *something* — an agent endpoint is a conversation API and
+// has no model list to read — so this is deliberately a harmless, answerable
+// sentence rather than a canary or an attack string: a probe must never look
+// like an evaluation case in the target's own logs.
+const agentProbePrompt = "请回复 ok"
+
+// agentProbeMaxBodyBytes bounds how much of the agent's answer the probe reads.
+const agentProbeMaxBodyBytes = 64 * 1024
+
+// probeAgentTarget checks an agent target by making the SAME request a real
+// attack case makes.
+//
+// # Why not GET the endpoint
+//
+// The probe used to GET `agent_endpoint`. An agent endpoint is a conversation
+// API mirroring promptfoo's `http` provider — POST with a JSON body — so a GET
+// returned 404/405 and every agent target reported 「target health check failed」
+// no matter how healthy it was. That is the long-standing field report this
+// function fixes; the metadata it ignored (`agent_method`, the body template,
+// the response path) is exactly what made the old probe a different request
+// from the one the platform actually sends.
+//
+// # Why a 2xx is not enough
+//
+// The platform renders the body template and then reads the answer back out of
+// the response — by `agent_response_path` when that resolves, and by generic
+// extraction otherwise. An endpoint that answers 200 with a body the platform
+// can hand to nobody is NOT a working target: calling it healthy would move the
+// failure to the first attack case, after the user has already paid for a run.
+// So the probe requires the same thing the run requires — some answer text —
+// and reports 「degraded」 with that reason when there is none.
+//
+// The credential is substituted server-side by buildAgentTargetRequestSpec and
+// never appears in the returned result or its message.
+func (s *TargetConfigService) probeAgentTarget(ctx context.Context, target EvaluationTargetInput) *EvaluationTargetProbeResult {
+	started := time.Now()
+	summary := targetSummaryFromInput(target)
+	fail := func(status EvaluationTargetHealthStatus, message string, statusCode int) *EvaluationTargetProbeResult {
+		summary.HealthStatus = status
+		return &EvaluationTargetProbeResult{Target: *summary, Status: status, Message: message, StatusCode: statusCode, CheckedAt: started}
+	}
+	spec, err := buildAgentTargetRequestSpec(target, agentProbePrompt)
+	if err != nil {
+		return fail(EvaluationTargetHealthUnavailable, "agent target configuration is invalid: "+err.Error(), 0)
+	}
+	req, err := http.NewRequestWithContext(ctx, spec.Method, spec.Endpoint, bytes.NewReader(spec.Body))
+	if err != nil {
+		return fail(EvaluationTargetHealthUnavailable, "agent endpoint url is invalid", 0)
+	}
+	req.Header = spec.Header
+	resp, err := targetConfigHTTPClient.Do(req)
+	if err != nil {
+		return fail(EvaluationTargetHealthUnavailable, "target connection failed", 0)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		status := EvaluationTargetHealthUnavailable
+		if resp.StatusCode < 500 {
+			status = EvaluationTargetHealthDegraded
+		}
+		return fail(status, "agent endpoint returned a non-2xx status", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, agentProbeMaxBodyBytes))
+	extracted := strings.TrimSpace(extractAgentResponseText(body, agentTargetResponsePath(target)))
+	if extracted == "" {
+		// Mirror the real call path (redteam_bridge.go): the response path is a
+		// PREFERENCE, not a requirement — an unset or non-resolving one falls
+		// back to generic extraction, and the judge is handed whatever that
+		// yields. A probe that demanded the configured path would report a
+		// perfectly working target as broken, which is the same class of
+		// false alarm this function exists to remove.
+		extracted = strings.TrimSpace(redteam.ExtractTargetResponseText(body))
+	}
+	if extracted == "" {
+		return fail(EvaluationTargetHealthDegraded, "agent endpoint responded but its body yielded no answer text; check the response extraction path", resp.StatusCode)
+	}
+	summary.HealthStatus = EvaluationTargetHealthHealthy
+	return &EvaluationTargetProbeResult{Target: *summary, Status: EvaluationTargetHealthHealthy, Message: "agent responded", StatusCode: resp.StatusCode, CheckedAt: started}
 }
 
 func (s *TargetConfigService) getStoredTarget(ctx context.Context, userID uuid.UUID) (*storedEvaluationTarget, *TargetConfigRecord, error) {
