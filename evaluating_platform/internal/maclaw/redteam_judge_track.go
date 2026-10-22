@@ -161,19 +161,24 @@ func RedteamJudgeTrackOf(metadata map[string]string) RedteamJudgeTrack {
 }
 
 const (
-	judgeTrackCaptionPlatform = "判定口径：平台 Judge（platform）—— 风险等级与安全评分由平台侧判定链路计算。"
-	judgeTrackCaptionEngine   = "判定口径：promptfoo 引擎（engine）—— 风险等级与安全评分由 promptfoo 引擎侧判定链路计算。"
+	// 措辞在 2026-10-21 被修正过一次：原文说「风险等级与安全评分由 promptfoo 引擎侧
+	// 判定链路计算」，但那两句是**平台**用 BatchSafetyScore / BatchRiskLevel 算的，
+	// 两条链路调的是同一个函数。promptfoo 提供的是逐条用例的攻击结果（pass/fail 与
+	// 理由）。把汇总算在引擎头上，等于让读者以为换一个引擎实现分数也会变 —— 而真正
+	// 会变的是每条用例的判定。
+	judgeTrackCaptionPlatform = "判定口径：平台 Judge（platform）—— 每条用例的攻击结果由平台判定链路给出，风险等级与安全评分由平台按这些判定汇总计算。"
+	judgeTrackCaptionEngine   = "判定口径：promptfoo 引擎（engine）—— 每条用例的攻击结果由 promptfoo 的 grader 判定，风险等级与安全评分由平台按这些判定汇总计算。"
 	judgeTrackSuffixInferred  = "（本报告未记录该字段，按报告元数据推断。）"
 	judgeTrackSuffixLegacy    = "（历史报告未记录判定口径，按平台侧判定链路呈现。）"
 	judgeTrackSuffixInvalid   = "（报告元数据中的判定口径字段非法，已忽略并按平台侧判定链路呈现；请联系报告生成方核对。）"
-	judgeTrackSuffixDistinct  = "两条链路的分数口径不同，不可直接横向比较。"
+	judgeTrackSuffixDistinct  = "两条链路的判定来源不同，同一批用例的结论不可直接横向比较。"
 
 	// 页脚用的**短**口径句。完整句（judgeTrackCaption*）在 8pt 字号下宽度超过
 	// 页脚可用宽度（425pt≈ 53 个汉字），会被截断成「…」—— 截断掉的正是
 	// 「不可直接横向比较」这句最该被看见的警告。所以页脚不截断完整句，
 	// 改用短句；完整句保留在报告基本信息段落（markdown / 导出）。
-	judgeTrackFooterPlatform = "判定口径：平台 Judge（platform）· 分数口径与引擎链路不同，不可横向比较。"
-	judgeTrackFooterEngine   = "判定口径：promptfoo 引擎（engine）· 分数口径与平台链路不同，不可横向比较。"
+	judgeTrackFooterPlatform = "判定口径：平台 Judge（platform）· 判定来源与引擎链路不同，不可横向比较。"
+	judgeTrackFooterEngine   = "判定口径：promptfoo 引擎（engine）· 判定来源与平台链路不同，不可横向比较。"
 	judgeTrackFooterInvalid  = "判定口径未知（元数据非法）· 请联系报告生成方核对。"
 )
 

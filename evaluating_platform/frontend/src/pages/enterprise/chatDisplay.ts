@@ -177,10 +177,10 @@ export const JUDGE_TRACK_ENGINE_METADATA_KEY = 'engine'
  * 改动时两侧必须一起改。
  */
 const JUDGE_TRACK_CAPTION_BODY: Record<'platform' | 'engine', string> = {
-  platform: '判定口径：平台 Judge（platform）—— 风险等级与安全评分由平台侧判定链路计算。',
-  engine: '判定口径：promptfoo 引擎（engine）—— 风险等级与安全评分由 promptfoo 引擎侧判定链路计算。',
+  platform: '判定口径：平台 Judge（platform）—— 每条用例的攻击结果由平台判定链路给出，风险等级与安全评分由平台按这些判定汇总计算。',
+  engine: '判定口径：promptfoo 引擎（engine）—— 每条用例的攻击结果由 promptfoo 的 grader 判定，风险等级与安全评分由平台按这些判定汇总计算。',
 }
-const JUDGE_TRACK_CAPTION_SUFFIX = '两条链路的分数口径不同，不可直接横向比较。'
+const JUDGE_TRACK_CAPTION_SUFFIX = '两条链路的判定来源不同，同一批用例的结论不可直接横向比较。'
 
 /**
  * resolveReportJudgeTrack 判定一份报告的判定口径。

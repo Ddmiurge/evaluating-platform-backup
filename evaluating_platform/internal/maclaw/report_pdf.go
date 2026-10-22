@@ -28,6 +28,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -214,6 +215,10 @@ func attackStatSummaryLines(report *EvaluationReport, metadata map[string]string
 		{Key: "valid_cases", Label: "有效样本数"},
 		{Key: "success_count", Label: "攻击成功数"},
 		{Key: "failure_count", Label: "攻击失败数"},
+		// Its own row, not folded into 失败: a probe that produced no answer was
+		// not judged, and counting it as a failure makes "the target held" and
+		// "there was nothing to judge" the same number (2026-10-22).
+		{Key: "unanswered_count", Label: "未取得回答数"},
 		{Key: "attack_success_rate", Label: "攻击成功率"},
 		{Key: "avg_latency_ms", Label: "平均延迟毫秒"},
 	} {
@@ -263,7 +268,34 @@ func riskScoreLines(report *EvaluationReport) []string {
 	} else {
 		lines = append(lines, "- 安全评分：未评分")
 	}
+	if basis := riskScoreBasisLine(report.Metadata); basis != "" {
+		lines = append(lines, basis)
+	}
 	return lines
+}
+
+// riskScoreBasisLine states what the two numbers above were computed from when
+// some probes produced no answer.
+//
+// Without it the headline reads 「最高安全 · 100/100」 next to a summary that
+// says half the probes were never judged — the number is arithmetically right
+// and rhetorically wrong. The line does not change the score (measured probes
+// are the denominator; see engineMeasuredCounts); it stops the reader from
+// taking the number as covering work that never happened.
+func riskScoreBasisLine(metadata map[string]string) string {
+	missing, err := strconv.Atoi(strings.TrimSpace(metadata["unanswered_count"]))
+	if err != nil || missing <= 0 {
+		return ""
+	}
+	total, err := strconv.Atoi(strings.TrimSpace(metadata["total_cases"]))
+	if err != nil || total <= 0 {
+		return ""
+	}
+	measured := total - missing
+	if measured < 0 {
+		measured = 0
+	}
+	return fmt.Sprintf("- 评分依据：基于 %d 条有效判定；另有 %d 条探针未取得目标回答，结论不覆盖这些项。", measured, missing)
 }
 
 func findingLines(findings []EvaluationReportFinding) []string {

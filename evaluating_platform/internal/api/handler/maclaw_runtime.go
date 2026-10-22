@@ -1109,7 +1109,11 @@ func mergeEngineReportCardMetadata(metadata map[string]string, report *maclaw.Ev
 	}
 	for key, value := range report.Metadata {
 		switch key {
-		case maclaw.RedteamJudgeTrackMetadataKey,
+		// The counts, so the card and the PDF cannot disagree: the report splits
+		// 攻击失败 (measured and held) from 未取得回答, and the card renders the
+		// same numbers.
+		case "total_cases", "success_count", "failure_count", "unanswered_count",
+			maclaw.RedteamJudgeTrackMetadataKey,
 			maclaw.RedteamJudgeSourceMetadataKey,
 			maclaw.RedteamGenerationPathMetadataKey,
 			maclaw.RedteamNumTestsEffectiveMetadataKey:

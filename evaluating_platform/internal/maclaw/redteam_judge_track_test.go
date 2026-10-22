@@ -11,6 +11,7 @@ package maclaw
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -400,5 +401,46 @@ func TestTruncatePDFTextKeepsFooterSingleLine(t *testing.T) {
 	}
 	if got := truncatePDFText("   ", 425); got != "" {
 		t.Fatalf("纯空白应返回空串：%q", got)
+	}
+}
+
+// The report card and the PDF are two renderings of ONE sentence about who
+// judged what. The frontend constant has carried "必须与后端逐字一致" since U4
+// and nothing enforced it — and on 2026-10-21 the sentence turned out to be
+// wrong on BOTH sides: it said 「风险等级与安全评分由 promptfoo 引擎侧判定链路计算」,
+// while both paths compute those two numbers with the same platform function
+// (BatchSafetyScore / BatchRiskLevel) over promptfoo's per-case verdicts.
+//
+// This reads the frontend source, so a one-sided edit fails here instead of
+// shipping two explanations of the same number. Counter-proof: change a
+// character on either side → red.
+func TestJudgeTrackCaptionMatchesFrontendMirror(t *testing.T) {
+	raw, err := os.ReadFile(frontendChatDisplayPath(t))
+	if err != nil {
+		t.Fatalf("read frontend chatDisplay.ts: %v", err)
+	}
+	source := string(raw)
+
+	for _, fragment := range []string{
+		judgeTrackCaptionPlatform,
+		judgeTrackCaptionEngine,
+		judgeTrackSuffixDistinct,
+	} {
+		if !strings.Contains(source, fragment) {
+			t.Errorf("frontend chatDisplay.ts is missing the fragment %q; the report card and the PDF would explain the same number differently", fragment)
+		}
+	}
+
+	// And the sentence itself must not re-assert the claim that was wrong: the
+	// engine judges each case, the platform aggregates. A caption that says
+	// otherwise sends a reader looking for a promptfoo option that does not exist.
+	for _, track := range []RedteamJudgeTrack{RedteamJudgeTrackPlatform, RedteamJudgeTrackEngine} {
+		caption := RedteamJudgeTrackCaption(RedteamJudgeTrackResolution{Track: track, Source: RedteamJudgeTrackSourceExplicit})
+		if strings.Contains(caption, "由 promptfoo 引擎侧判定链路计算") {
+			t.Errorf("%s caption still credits promptfoo with the aggregate score: %q", track, caption)
+		}
+		if !strings.Contains(caption, "由平台按这些判定汇总计算") {
+			t.Errorf("%s caption does not say the platform aggregates the verdicts: %q", track, caption)
+		}
 	}
 }

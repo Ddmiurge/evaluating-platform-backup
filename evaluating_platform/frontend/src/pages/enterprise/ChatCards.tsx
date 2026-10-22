@@ -505,6 +505,7 @@ function ReportCard({
   plannedCount,
   successCount,
   failureCount,
+  unansweredCount,
   jobId,
   recoveryAction,
   recoveryStrategy,
@@ -551,6 +552,8 @@ function ReportCard({
   plannedCount?: number
   successCount?: number
   failureCount?: number
+  /** Probes whose target call produced no answer — its own chip, never folded into 失败. */
+  unansweredCount?: number
   jobId?: string
   recoveryAction?: string
   recoveryStrategy?: string
@@ -634,11 +637,17 @@ function ReportCard({
       : typeof executedCount === 'number' && typeof successCount === 'number'
         ? Math.max(0, executedCount - successCount)
         : undefined
-    const stats = [
+    const stats: Array<[string, number | undefined]> = [
       ['执行', executedCount],
       ['成功', successCount],
       ['失败', resolvedFailureCount],
-    ].filter(([, value]) => typeof value === 'number')
+    ]
+    // Its own chip: 失败 now means "judged and held", so a probe that produced no
+    // answer has to appear somewhere or the run looks like it lost probes.
+    if (typeof unansweredCount === 'number' && unansweredCount > 0) {
+      stats.push(['未取得回答', unansweredCount])
+    }
+    const visibleStats = stats.filter(([, value]) => typeof value === 'number')
     // U4：口径说明放在统计格**之后**、下载按钮之前 —— 紧贴分数（用户正在比较的那个数），
     // 又在结论性文案之外。口径不明（非法元数据）时整行不渲染，不显示任何暗示。
     const trackCaption = (judgeTrackCaption ?? reportJudgeTrackCaption({ judgeTrack })).trim()
@@ -662,9 +671,9 @@ function ReportCard({
             <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 2 }}>安全分</span>
           </span>
         </div>
-        {stats.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${stats.length}, minmax(0, 1fr))`, gap: 6, marginBottom: 12 }}>
-            {stats.map(([labelText, value]) => (
+        {visibleStats.length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${visibleStats.length}, minmax(0, 1fr))`, gap: 6, marginBottom: 12 }}>
+            {visibleStats.map(([labelText, value]) => (
               <div key={labelText as string} style={{ border: '1px solid var(--border-color)', borderRadius: 6, padding: '6px 4px', textAlign: 'center', background: '#f8fafc' }}>
                 <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 700 }}>{value as number}</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 2 }}>{labelText as string}</div>
@@ -1031,6 +1040,7 @@ export function MessageBubble({
             plannedCount={msg.metadata?.planned_count as number | undefined}
             successCount={msg.metadata?.success_count as number | undefined}
             failureCount={msg.metadata?.failure_count as number | undefined}
+            unansweredCount={msg.metadata?.unanswered_count as number | undefined}
             isRunning={isRunning}
             jobId={msg.metadata?.job_id as string | undefined}
             recoveryAction={msg.metadata?.recovery_action as string | undefined}

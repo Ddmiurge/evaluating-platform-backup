@@ -1330,3 +1330,178 @@ req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
   属于产品口径决定，未在本批做。
 - 目标侧为什么没答上（4xx/5xx 还是 200 但 body 不含 `answer`）仍需目标日志；
   本批之后重跑，报告会直接写出状态码与原因，不必再靠猜。
+
+---
+
+## 22. 报告的三处如实性修复：失败原因、指标数字、判定口径措辞（2026-10-21 晚）
+
+P8 部署后上机报告（32 号记录）证明「未取得回答」链路按设计工作，同一份 PDF 又暴露三处。
+
+### 22.1 失败原因把内部信息带进了客户报告
+
+报告里原本是：
+
+```
+未取得回答（调用失败：Error: Request http://10.58.34.211/v1/chat-messa
+ges-1792573881806-8wpuggcnvz-1 timed out after 300000ms in queue
+at Timeout._onTimeout (file:///app/node_modules/promptfoo/dist/src/shared-Bn7oFdu
+M.js:385:29) at listOnTimeout (node:internal/timers:685:17)）
+```
+
+泄漏三样：**内网靶机地址**、**引擎容器内的文件路径**、Node 堆栈。而且对客户毫无意义。
+
+**为什么脱敏救不了它**：`redteamArtifactOwnPathPattern` 只认 `/.promptfoo/`、`/data/runs/`、`/app/dist/`
+三种前缀，`/app/node_modules/` 不在内；URL 没有任何规则；堆栈帧本来就不该在报告里。
+靠"再加一条前缀"是追着版本跑。
+
+**修法：分类，而不是清洗。** `classifyTargetCallError` 把 promptfoo 的消息识别成一句话：
+
+| 识别到的 | 报告写的 |
+|---|---|
+| `timed out after Nms` | 目标调用超时（N 秒） |
+| `http call failed with status NNN` | 目标返回异常状态码 HTTP NNN |
+| `path "X" matched nothing` | 响应里没有配置的提取路径「X」 |
+| `fetch failed` / `ECONNREFUSED` / `EAI_AGAIN` / … | 无法连接目标 |
+| 其它 | 目标调用失败 |
+
+提取路径那一档保留路径名：那是运维自己写的配置键，也是让配置错误可修的唯一线索。
+**未识别的消息一律折叠**——没人审过内容的那条，正是最不该透传的。
+
+**反证暴露了第二个坑**：把 `missingAnswerReason` 改回原样透传，测试**全绿** —— 因为防泄漏断言只测了
+分类函数本身，没测调用点。补了一条走 `EngineSafeResultFindings` 真实构造的守卫之后才红
+（helper 对、接线没接，是这个项目反复出现的形状）。
+
+### 22.2 评估指标的数字是错的
+
+同一份报告：摘要写「共执行 6 条测试」，指标段写「总测试数 1 / 攻击失败数 1」。
+
+`attackStatSummaryLines` 在没有 `total_cases` 元数据时，把 **`len(report.EvidenceHandles)`** 当总数；
+引擎链路只有一个证据句柄，所以恒为 1，而 `engineReportMetadata` 从不写 `total_cases`。
+P7 那份报告也是「总测试数 1」，当时被空回答盖过去了。
+
+**修法**：引擎报告写入 `total_cases` / `success_count` / `failure_count` / `attack_success_rate`，
+用 `EngineSafeResultCounts` 与 `Totals.Probes` 算 —— 与摘要句同源，两处不会再打架。
+（不改 `attackStatSummaryLines` 的兜底：那条路径平台 Judge 链路也在用，改它会动到历史报告的呈现。）
+
+### 22.3 判定口径那句是错的（用户提出）
+
+报告写「判定口径：promptfoo 引擎（engine）—— **风险等级与安全评分由 promptfoo 引擎侧判定链路计算**」。
+
+事实相反：
+
+| 谁负责什么 | 实现 |
+|---|---|
+| 每条用例的攻击结果（pass/fail + 理由） | promptfoo 的 grader（`judge_track=engine` 时） |
+| 风险等级 / 安全评分 | **平台公式** `BatchSafetyScore` / `BatchRiskLevel` |
+| 平台 Judge 链路 | `redteam_bridge.go:1024` 调**同一个** `BatchSafetyScore` |
+
+也就是说两条链路的**汇总公式相同**，真正不同的是**谁判每条用例**。所以：
+
+- 正文口径改为「每条用例的攻击结果由 … 判定，风险等级与安全评分由**平台**按这些判定汇总计算」；
+- 页脚短句从「分数口径与平台链路不同」改为「**判定来源**与平台链路不同」；
+- 前端 `chatDisplay.ts` 的镜像同步，并新增 `TestJudgeTrackCaptionMatchesFrontendMirror`：
+  注释从 U4 起就写着「必须逐字一致」，但从来没有东西执行它 —— 现在单侧改一个字就红。
+
+### 22.4 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestTargetCallErrorClassification`（6 类 + 不得携带 URL/路径/堆栈） | 分类函数返回原消息 → 红 |
+| `TestEngineCaseFindingsRenderAMissingAnswer/call site never forwards the raw message` | `missingAnswerReason` 原样透传 → 红（点名 `http://` / `/app/` / `node_modules`） |
+| `TestEngineReportMetadataCarriesTheProbeCounts` | 删掉 `total_cases` → 红（`total_cases = ""`） |
+| `TestJudgeTrackCaptionMatchesFrontendMirror` | 前端单侧改一个词 → 红（点名缺失片段） |
+| `TestReportPDFStructureMatchesGolden` | 按规则用 `UPDATE_REPORT_PDF_GOLDEN=1` 重生成；diff 只有页脚那一句（3 页各一处） |
+
+### 22.5 未做（口径决定，需主理人确认）
+
+- 「攻击失败 6 条」把 3 条没测到的也算进去了 —— 是否拆成「攻击失败 3 + 未取得回答 3」；
+- 部分缺失时标题仍是「最高安全 100/100」 —— 是否加限定或降级。
+
+---
+
+## 23. 「失败」与「没测到」拆开计数（2026-10-22，口径决定）
+
+### 23.1 为什么拆
+
+上机报告里同一批探针被数了两遍：
+
+```
+1. 评估摘要：共执行 6 条，攻击成功 0 条，攻击失败 6 条。
+            其中 3 条探针未取得目标回答，安全结论不覆盖这些项。
+5. 评估指标：攻击失败数 6
+```
+
+那 3 条超时的探针既在「攻击失败 6」里，又在「未取得回答 3」里。
+「攻击失败」本应表示**测了且防住了**，混进「没测到」之后，读者会把 6 条全读成"被防住了"。
+
+promptfoo 自己把"没有回答"记成 failure（空输出通过它的 rubric），所以这个数字必须由平台重算。
+
+### 23.2 现在的口径
+
+| 指标 | 含义 | 来源 |
+|---|---|---|
+| 总测试数 | 执行了多少条探针 | `Totals.Probes` |
+| 攻击成功数 | 判定为攻击成功 | promptfoo 的逐条判定 |
+| **攻击失败数** | **判定了且未成功**（= 有效判定 − 成功） | 平台重算 |
+| **未取得回答数** | 没拿到回答、无法判定 | `unansweredProbeCount` |
+| 攻击成功率 | 成功 / **有效判定数** | 平台重算 |
+
+三者相加等于总测试数。摘要句、评估指标段、报告卡三处同源（`engineMeasuredCounts`）。
+
+**安全评分的分母也改用有效判定数**：一条成功在 6 条里是 16.7%、在 3 条里是 33%，
+分母越大分数越好看 —— 没测到的探针不该摊薄风险。`engineRiskAndScore` 统一封装，
+同时保留「全部未取得回答 → 风险等级与安全评分置空」的既有规则。
+
+### 23.3 评分依据行
+
+```
+- 风险等级：最高安全
+- 安全评分：100.00
+- 评分依据：基于 3 条有效判定；另有 3 条探针未取得目标回答，结论不覆盖这些项。
+```
+
+数字不变、依据写清。不加新的风险等级（那会让前端的风险颜色与徽章都要跟着定义）。
+只在 `unanswered_count > 0` 时出现。
+
+### 23.4 报告卡
+
+卡片统计格从「执行 / 成功 / 失败」变成「执行 / 成功 / 失败 / 未取得回答」
+（仅当未取得回答 > 0 时出现第四格）。不做这一步的话，失败数从 6 变成 3，
+卡片看起来像"少了 3 条探针"。
+
+### 23.5 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestEngineReportMetadataCarriesTheProbeCounts`（failure 3 / unanswered 3） | 用 promptfoo 原值 → 红（`failure_count = "6"`） |
+| `TestEngineResultSummaryDisclosesUnansweredProbes`（攻击失败只数判定的） | 同上 → 红 |
+| `TestEngineRiskAndScoreUsesMeasuredProbes`（1 成功 / 3 有效 → 71.67，不是 83.33） | 分母改回总探针数 → 红 |
+| `TestRiskScoreBasisLine` | 去掉评分依据行 → 红 |
+
+### 23.6 边界
+
+- `redteam.BatchSafetyScore` / `BatchRiskLevel` / `BatchSummary` **函数本身没改**，
+  改的是引擎路径传进去的分母与计数；平台 Judge 链路仍用它原来的参数。
+- 平台 Judge 链路的"无回答"另有语义（它的判定链路会给失败），本次不动。
+
+---
+
+## 24. 下一批：专家策略包发布（需求确认，2026-10-22）
+
+**需求（主理人确认）**：专家在门户上传自己的 promptfoo **策略包**（`custom:<variant>` +
+`config.strategyText`），发布后进入评测的策略选择。
+
+**现状**：执行侧已经支持策略包（`resolveCustomStrategies`、`pf_strategy:` 标记、
+`promptfooStrategyRejectionHints`），但**发布端没有** —— 前端专家门户没有策略页
+（只有 `plugins` 的 `PromptfooPluginPublisher`），后端也没有策略包发布接口。
+
+**因此本批不做，下一批的范围**（与 U10 插件发布同形）：
+
+1. 发布 API + 加密存储（复用资源/插件包的存储与密钥）；
+2. 治理：管理员停用/下架即时生效，和插件包一致；
+3. 专家门户发布页（YAML 上传、版本、状态、拒收原因）；
+4. 守卫：拒收不可运行的 `strategyText`（与 `retiredStrategyCatalog` / 远程生成闸同源）、
+   包名不得与内置策略 id 冲突；
+5. 企业侧投影：发布后进入企业评测的策略选择（与插件包的投影规则一致）。
+
+**插件侧**：入口已存在（U10），主理人尚未测试 —— 等实测症状再定是发布链路还是投影链路的问题。

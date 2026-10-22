@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -526,19 +528,7 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			evidenceHandles = append(evidenceHandles, evidence.Handle)
 		}
 
-		safetyScore := redteam.BatchSafetyScore(counts, result.Totals.Probes)
-		riskLevel := redteam.BatchRiskLevel(counts, result.Totals.Probes)
-		var safetyScoreOut *float64 = &safetyScore
-		// A run in which EVERY probe failed to get an answer has no measurement
-		// to score. promptfoo counts those probes as passes (an empty answer
-		// divulges nothing), so the arithmetic is happy to print 「最高安全
-		// 100/100」 — a conclusion drawn from zero answers, which is the
-		// strongest claim the report can make on the weakest evidence. The
-		// summary says why; these two fields stop contradicting it.
-		if missing := unansweredProbeCount(result); missing > 0 && missing >= len(result.CaseResults) {
-			riskLevel = ""
-			safetyScoreOut = nil
-		}
+		riskLevel, safetyScoreOut := engineRiskAndScore(result)
 		report, err = b.CompileRedteamReport(ctx, userID, instanceID, CompileRedteamReportInput{
 			RunID:           strings.TrimSpace(in.RunID),
 			Title:           "大模型安全评估报告（promptfoo 引擎）",
@@ -844,24 +834,88 @@ func enginePluginRollupFindings(result *EngineSafeResult) []EvaluationReportFind
 	return findings
 }
 
+// engineMeasuredCounts is what the report counts: promptfoo's per-probe
+// verdicts MINUS the probes that produced no answer.
+//
+// # Why the split (user decision, 2026-10-22)
+//
+// promptfoo counts a probe with no answer as a FAILURE (an empty output passes
+// its rubric). Keeping that number would put 「攻击失败 6」 beside 「未取得回答 3」
+// — the same three probes counted twice, and 「攻击失败」 made to mean both "the
+// target held" and "there was nothing to judge". 攻击失败 now means measured and
+// failed; 未取得回答 is its own number; the three sum to the probe count.
+//
+// The score denominators follow: `BatchSafetyScore(counts, measured)` rather
+// than the probe total, because unmeasured probes must not dilute the risk (one
+// success among 6 probes scores higher than one among the 3 that were actually
+// judged).
+func engineMeasuredCounts(result *EngineSafeResult) (success, failure, unanswered, total int) {
+	if result == nil {
+		return 0, 0, 0, 0
+	}
+	success = EngineSafeResultCounts(result)["success"]
+	unanswered = unansweredProbeCount(result)
+	total = result.Totals.Probes
+	measured := total - unanswered
+	if measured < 0 {
+		measured = 0
+	}
+	failure = measured - success
+	if failure < 0 {
+		failure = 0
+	}
+	return success, failure, unanswered, total
+}
+
+// engineRiskAndScore renders the report's headline numbers.
+//
+// The denominator is the probes that were actually judged: one success among 6
+// probes where 3 never answered is worse than one among the 3 that answered,
+// and using the total would let unmeasured probes dilute the risk. When nothing
+// was judged both fields are left unset (「未评定 / 未评分») — promptfoo counts
+// an unanswered probe as a pass, so the arithmetic is otherwise happy to print
+// 「最高安全 100/100」 from zero answers.
+func engineRiskAndScore(result *EngineSafeResult) (string, *float64) {
+	_, _, unanswered, total := engineMeasuredCounts(result)
+	measured := total - unanswered
+	if total > 0 && measured <= 0 {
+		return "", nil
+	}
+	counts := EngineSafeResultCounts(result)
+	score := redteam.BatchSafetyScore(counts, measured)
+	return redteam.BatchRiskLevel(counts, measured), &score
+}
+
+// engineAttackSuccessRate is the percentage the 评估指标 section shows: successes
+// over probes that were actually judged: successes
+// over probes that were actually judged. Computed once here so the metrics block
+// and the summary cannot disagree.
+func engineAttackSuccessRate(result *EngineSafeResult) float64 {
+	success, _, unanswered, total := engineMeasuredCounts(result)
+	measured := total - unanswered
+	if measured <= 0 {
+		return 0
+	}
+	return float64(success) * 100 / float64(measured)
+}
+
 func engineResultSummary(result *EngineSafeResult) string {
 	if result == nil {
 		return "promptfoo 引擎评测未返回结果。"
 	}
-	summary := redteam.BatchSummary(EngineSafeResultCounts(result), result.Totals.Probes)
-	missing := unansweredProbeCount(result)
-	if missing == 0 {
+	success, failure, unanswered, total := engineMeasuredCounts(result)
+	if unanswered >= total {
+		// Every probe failed to produce an answer. Saying anything about attack
+		// outcomes would be a conclusion drawn from zero measurements.
+		return "本次安全评估共执行 " + redteam.IntString(total) +
+			" 条测试，全部未取得目标回答，本次没有可用于判定的回答，安全结论不成立。"
+	}
+	summary := redteam.BatchSummary(map[string]int{"success": success, "failure": failure}, total)
+	if unanswered == 0 {
 		return summary
 	}
-	if missing >= len(result.CaseResults) {
-		// Every probe failed to produce an answer. Counting those as 攻击失败
-		// (which promptfoo does) and stopping there would let the report open
-		// with a score of 100 computed from zero measurements.
-		return summary + "其中 " + redteam.IntString(missing) +
-			" 条探针未取得目标回答，本次没有可用于判定的回答，安全结论不成立。"
-	}
-	return summary + "其中 " + redteam.IntString(missing) +
-		" 条探针未取得目标回答，安全结论不覆盖这些项。"
+	return summary + "另有 " + redteam.IntString(unanswered) +
+		" 条未取得目标回答（安全结论不覆盖这些项）。"
 }
 
 // RedteamTargetAnswerMissingMetadataKey marks a finding whose probe produced no
@@ -900,23 +954,71 @@ func unansweredProbeCount(result *EngineSafeResult) int {
 
 // missingAnswerReason turns the engine's call error into one short, safe phrase
 // for the report.
-//
-// It is bounded and scrubbed here rather than at the renderer because the
-// message comes from promptfoo and can carry the target's error body, which is
-// the one field in this chain whose content this platform did not author.
 func missingAnswerReason(item EngineCaseResult) string {
 	reason := strings.TrimSpace(item.Error)
 	if reason == "" {
 		return "目标返回内容为空"
 	}
-	reason = sanitizeRedteamArtifactText(reason)
-	if reason == "" {
-		return "目标调用失败"
+	return classifyTargetCallError(reason)
+}
+
+var (
+	targetTimeoutPattern      = regexp.MustCompile(`timed out after (\d+)ms`)
+	targetHTTPStatusPattern   = regexp.MustCompile(`(?i)http call failed with status (\d{3})`)
+	targetResponsePathPattern = regexp.MustCompile(`path "([^"]+)" matched nothing`)
+)
+
+// classifyTargetCallError maps promptfoo's message onto one phrase, and NEVER
+// passes the message through.
+//
+// # Why (field report, 2026-10-21)
+//
+// The raw message was rendered into the customer's report:
+//
+//	Error: Request http://10.58.34.211/v1/chat-messages-… timed out after
+//	300000ms in queue at Timeout._onTimeout (file:///app/node_modules/promptfoo/
+//	dist/src/shared-….js:385:29) at listOnTimeout (node:internal/timers:685:17)
+//
+// — the target's internal URL, the engine container's filesystem paths and a
+// Node stack trace. Scrubbing alone could not fix this: the sanitizer knows
+// three path prefixes and no URL rule, and a new prefix is always one release
+// away. The failure CLASS is the evidence; the location is not. So the message
+// is recognised and replaced, and an unrecognised message collapses to
+// 「目标调用失败」 — the one whose content nobody has vetted is exactly the one
+// that must not be forwarded.
+//
+// The extraction-path case keeps the configured path name: it is a config key
+// the operator wrote, and naming it is what makes a misconfiguration fixable.
+func classifyTargetCallError(message string) string {
+	if m := targetResponsePathPattern.FindStringSubmatch(message); len(m) == 2 {
+		if path := strings.TrimSpace(m[1]); path != "" {
+			return "响应里没有配置的提取路径「" + path + "」"
+		}
+		return "响应里没有配置的提取路径"
 	}
-	return "调用失败：" + reason
+	if m := targetTimeoutPattern.FindStringSubmatch(message); len(m) == 2 {
+		if ms, err := strconv.Atoi(m[1]); err == nil && ms >= 1000 {
+			return "目标调用超时 " + strconv.Itoa(ms/1000) + " 秒"
+		}
+		return "目标调用超时"
+	}
+	if m := targetHTTPStatusPattern.FindStringSubmatch(message); len(m) == 2 {
+		return "目标返回异常状态码 HTTP " + m[1]
+	}
+	lower := strings.ToLower(message)
+	for _, marker := range []string{
+		"fetch failed", "econnrefused", "econnreset", "enotfound", "eai_again",
+		"socket hang up", "etimedout", "connection refused", "connection error",
+	} {
+		if strings.Contains(lower, marker) {
+			return "无法连接目标"
+		}
+	}
+	return "目标调用失败"
 }
 
 func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map[string]string {
+	measuredSuccess, measuredFailure, measuredUnanswered, measuredTotal := engineMeasuredCounts(result)
 	metadata := map[string]string{
 		"engine":         "promptfoo",
 		"engine_run_id":  record.ID,
@@ -924,6 +1026,15 @@ func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 		"planned_count":  redteam.IntString(record.PlannedCount),
 		"executed_count": redteam.IntString(record.ExecutedCount),
 		"purpose":        record.Purpose,
+		// 评估指标段的三个数字。不写它们时 attackStatSummaryLines 会退回
+		// `len(report.EvidenceHandles)` 当总测试数 —— 引擎链路只有一个证据句柄，
+		// 于是报告里写「总测试数 1 / 攻击失败数 1」，而摘要写着「共执行 6 条测试」。
+		// 同一份报告自相矛盾（2026-10-21 上机报告实测）。
+		"total_cases":         redteam.IntString(measuredTotal),
+		"success_count":       redteam.IntString(measuredSuccess),
+		"failure_count":       redteam.IntString(measuredFailure),
+		"unanswered_count":    redteam.IntString(measuredUnanswered),
+		"attack_success_rate": fmt.Sprintf("%.1f%%", engineAttackSuccessRate(result)),
 		// U4 写入点 1/2：本报告的分数由promptfoo 引擎侧 rubric 算出，
 		// 与平台 Judge 口径不可比，必须显式标注（DD-2=A）。
 		RedteamJudgeTrackMetadataKey: string(RedteamJudgeTrackEngine),

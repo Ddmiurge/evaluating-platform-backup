@@ -854,3 +854,53 @@ promptfoo 的 `prompt-extraction` rubric 是「没有泄露就算通过」，**�
 - 前端报告卡不渲染摘要，所以那句披露只在 markdown / PDF；卡片只列攻击成功的发现。
 - 本批不改变 promptfoo「空回答判 pass」的判定，只在报告层标注并说明结论范围。
 - 「未取得回答」是否从分母剔除、以及是否需要一个独立的运行状态，属产品口径，未在本批做。
+
+## 判定口径由谁承担：逐条判定 vs 汇总（2026-10-21）
+
+### 事实
+
+| 项 | 由谁完成 |
+|---|---|
+| 每条用例的攻击结果（pass/fail + 理由） | `judge_track=engine` → promptfoo 的 grader；`judge_track=platform` → 平台判定链路 |
+| 风险等级 / 安全评分 | **平台公式**：`redteam.BatchRiskLevel` / `redteam.BatchSafetyScore` |
+
+两条链路调的是**同一个**汇总函数（`promptfoo_engine_bridge.go` 与 `redteam_bridge.go` 各一处），
+所以「分数口径不同」是不准确的表述 —— 真正不同的是**判定来源**，而它会让同一批用例得到不同结论。
+
+### 修正
+
+- 正文口径：「每条用例的攻击结果由 <判定来源> 判定，风险等级与安全评分由**平台**按这些判定汇总计算」；
+- 页脚短句：「**判定来源**与 … 链路不同，不可横向比较」；
+- 前端 `chatDisplay.ts` 镜像同步；`TestJudgeTrackCaptionMatchesFrontendMirror` 读前端源码逐字断言，
+  单侧改动即红（这条注释从 U4 起就要求逐字一致，但一直没有东西执行它）。
+
+> 为什么值得单独记：这句话此前把"引擎判每条"说成了"引擎算总分"，
+> 会让读者以为换一个引擎实现分数就会变 —— 而实际会变的是每条用例的判定。
+
+## 计数口径：攻击失败 ≠ 没测到（2026-10-22）
+
+promptfoo 把「没有回答」记成 failure（空输出通过它的 rubric），所以引擎报告不能直接用它。
+
+| 指标 | 含义 | 计算 |
+|---|---|---|
+| 总测试数 | 执行的探针数 | `Totals.Probes` |
+| 攻击成功数 | 判定成功 | promptfoo 逐条判定 |
+| 攻击失败数 | **判定了且未成功** | 有效判定 − 成功 |
+| 未取得回答数 | 无法判定 | `unansweredProbeCount` |
+| 攻击成功率 | 成功 / **有效判定** | 平台重算 |
+
+三者相加 = 总测试数。摘要句、评估指标段、报告卡同源（`engineMeasuredCounts`）。
+
+**安全评分的分母也改为有效判定数**（`engineRiskAndScore` → `BatchSafetyScore(counts, measured)`）：
+一条成功在 6 条里是 16.7%、在 3 条里是 33%，分母越大分数越好看，没测到的探针不该摊薄风险。
+全部未取得回答时仍按既有规则置空（未评定 / 未评分）。
+
+**评分依据行**：部分缺失时在评分下方补一行「基于 N 条有效判定；另有 M 条探针未取得目标回答，
+结论不覆盖这些项。」数字不变、依据写清；不新造风险等级。
+
+**守卫**：`TestEngineReportMetadataCarriesTheProbeCounts`、`TestEngineResultSummaryDisclosesUnansweredProbes`、
+`TestEngineRiskAndScoreUsesMeasuredProbes`、`TestRiskScoreBasisLine`；反证分别为「用 promptfoo 原值」
+「分母改回总探针数」「去掉评分依据行」，均已跑红。
+
+**边界**：`BatchSafetyScore` / `BatchRiskLevel` / `BatchSummary` 函数本身未改，改的是引擎路径传入的
+分母与计数；平台 Judge 链路的「无回答」另有语义，本次不动。

@@ -341,6 +341,9 @@ function toChatMessage(message: RuntimeMessage): ChatMessage {
     metadata.planned_count = optionalNumber(message.metadata?.planned_count || message.metadata?.total_cases)
     metadata.success_count = optionalNumber(message.metadata?.success_count)
     metadata.failure_count = optionalNumber(message.metadata?.failure_count)
+    // Probes that produced no answer are NOT failures — the report counts them
+    // separately (2026-10-22) and the card renders the same split.
+    metadata.unanswered_count = optionalNumber(message.metadata?.unanswered_count)
     metadata.download_format = 'pdf'
     metadata.downloadable = Boolean(message.metadata?.report_id)
     content = ''
