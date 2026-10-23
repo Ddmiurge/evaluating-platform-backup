@@ -190,6 +190,10 @@ func main() {
 	// refused — that is the whole mechanism, and it is re-read per run rather
 	// than cached, which is what makes the effect immediate.
 	redteamToolBridge.SetCustomPluginResolver(maclawpkg.NewCustomPluginResolver(maclawResourcePublicationRepo, maclawResourceStoreService))
+	// The WIZARD path resolves packages through the same function the confirm
+	// path uses (2026-10-23). Wired after the resolver so a package is resolved
+	// with governance applied on both doors.
+	engineRunHandler.SetEngineCapabilityResolver(redteamToolBridge)
 	// Phase 1 confirm fast path: shared platform engine job store.
 	platformEngineJobs := maclawpkg.NewPlatformEngineJobStore()
 	maclawRuntimeHandler.SetPromptfooEngine(redteamToolBridge, platformEngineJobs, engineRunService)

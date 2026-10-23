@@ -284,7 +284,7 @@ export function PromptfooStrategyPublisher() {
           <Form.Item
             name="variant"
             label="策略标识（可选）"
-            extra="留空则按发布名推导为 custom:<名字>。不得与内置策略 id 冲突；执行时按它加载。"
+            extra="留空则按发布名推导为 custom:<名字>；包名含中文时会被折成一串连字符（如 custom:p13-----------v2），可读性差，建议显式填写。不得与内置策略 id 冲突；执行时按它加载。"
           >
             <Input placeholder="如：progressive-probe" />
           </Form.Item>

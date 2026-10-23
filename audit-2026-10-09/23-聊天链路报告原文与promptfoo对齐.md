@@ -1598,3 +1598,56 @@ promptfoo 自己把"没有回答"记成 failure（空输出通过它的 rubric�
 
 - 包正文不回显（安全边界）：重新发布时只回填名称/说明/版本，YAML 需重新粘贴；
 - 历史数据里可能已有同 handle 的多行：排序保证解析取最新，列表仍会显示多行，需要手工归档旧的。
+
+---
+
+## 27. 自定义策略真正能跑：两处 P1 + 一处错误文案（2026-10-23 收尾）
+
+34 号记录判定「发布端全部通过、执行链路仍不通（P1 × 2）/ 跨租户拒绝被吞成 503（P3）」。
+三处都在本轮修掉。
+
+### 27.1 P1-a：向导路径不解析专家包
+
+`engine_run.go` 直接构造 `EngineRunRequest` 调引擎，**从头到尾没有** `resolveCustomStrategies`
+（那条缝只在 `PreparePromptfooEngineRun` 里）。后果是双重的：引擎收到裸 `pf_strategy:` 标记被拒，
+**运行记录**也存了这个标记，违反「记录存解析后 id」。
+
+**修法**：把解析提取成 `RedteamToolBridge.ResolveEngineCapabilities`，两条入口共用；
+向导 handler 加一个可选的 `engineCapabilityResolver`（由 bridge 实现），在**建记录之前**解析：
+- 记录用 `RecordPlugins` / `RecordStrategies`（解析后 id）；
+- 引擎请求用 `EnginePlugins` / `EngineStrategies`（`promptfoo-custom:` 标记）+ `CustomPlugins` / `CustomStrategies`（包体）。
+解析失败（包已停用/不存在）走 `writeMaclawError` → 409 + 校验器自己的话，且不产生 run 记录。
+
+### 27.2 P1-b：引擎的词汇表校验跑在包内联之前
+
+`executeNativeRedteamRun` 先 `resolveNativeStrategies(request.strategies)`（未知 id 直接 throw），
+而把 `pf_strategy:` 换成 `custom:<variant>` 的 `applyCustomStrategyRefs` 在**构建器里**、也就是之后。
+所以计划卡路径即使把包正确送达也必然死于 `native_generation_strategy_unknown`。
+
+**修法**：进入校验前先 `applyCustomStrategyRefs`（幂等，构建器里的那次保留作兜底）。
+
+**修的时候还发现第二个半边**：`resolveNativeStrategies` 只返回 `{id}`，**丢 config** ——
+顺序修好后包体仍会被丢掉，promptfoo 会以 "Custom strategy requires strategyText in config" 拒绝。
+现在自定义策略保留 `config`；**内置策略仍然丢弃**（U9 有一条测试钉着"策略 config 不从请求透传"，
+正是它防住 `stateful` 从外部被设置 —— 那条测试在本轮一度变红，按它的注释「有人透传 config 时
+这条测试要重审」逐字处理：只放行自定义包）。
+
+### 27.3 P3：跨租户拒绝被吞成 503
+
+`SaveResource` 的归属校验返回的是裸 `errors.New(...)`，HTTP 层无处分类，落进兜底的
+`503 maclaw_unavailable`。现在改为哨兵 `maclaw.ErrResourceNotOwned`，
+`classifyMaclawError` 映射 **403 `resource_not_owned`** + 「资源不存在或不属于当前账号」。
+
+### 27.4 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| 引擎 `customStrategyRun.e2e`：`pf_strategy:` 包经 `executeNativeRedteamRun` 跑通，且包文本真的到达生成模型 | 校验回到 apply 之前 → `pf_strategy:h1 不在本引擎的策略词汇表内`；丢 config → `Custom strategy requires strategyText in config` |
+| `TestEngineRunHandlerResolvesExpertPackages`：引擎收到解析后标记 + 包体，记录存解析后 id；解析失败 409 且无记录 | 摘掉 `h.capabilities` 分支 → 引擎与记录都退回裸标记 |
+| `TestClassifyMaclawErrorResourceNotOwned`（含 wrapped） | 删 403 分支 → 503 |
+
+### 27.5 边界
+
+- 本轮没有服务器验证；需要重建 **engine + backend**（引擎与后端都改了），前端仅一处提示文案。
+- 包名含中文时派生 id 会折成一串连字符（`custom:p13-----------v2`）：发布页「策略标识」的说明已补提示，
+  建议显式填写。

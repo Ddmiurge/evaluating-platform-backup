@@ -340,10 +340,12 @@ export function assertPluginIdsAreAccepted(
  * on the Plan A path. Every id we *do* forward is validated against promptfoo's
  * own strategy list first.
  */
-export function resolveNativeStrategies(strategies: Array<{ id: string }>): Array<{ id: string }> {
+export function resolveNativeStrategies(
+  strategies: Array<{ id: string; config?: Record<string, unknown> }>,
+): Array<{ id: string; config?: Record<string, unknown> }> {
   const available = new Set(promptfoo.redteam.Strategies.map((s) => s.id));
   const seen = new Set<string>();
-  const native: Array<{ id: string }> = [];
+  const native: Array<{ id: string; config?: Record<string, unknown> }> = [];
 
   for (const ref of strategies ?? []) {
     const id = (ref?.id ?? '').trim();
@@ -367,7 +369,16 @@ export function resolveNativeStrategies(strategies: Array<{ id: string }>): Arra
       }
       if (seen.has(id)) continue;
       seen.add(id);
-      native.push({ id });
+      // Keep the package's config: for a custom strategy the config IS the
+      // package (strategyText, maxTurns, …). This function used to return ids
+      // only, which silently dropped it when the resolved list was forwarded to
+      // the builder — promptfoo then refused with "Custom strategy requires
+      // strategyText in config".
+      //
+      // Built-in refs keep the old behaviour (config dropped) on purpose: the
+      // U9 suite pins "strategy config is not plumbed from the request", which
+      // is what keeps `stateful` from being set from outside the guard.
+      native.push({ id, ...(ref.config ? { config: ref.config } : {}) });
       continue;
     }
     const mapping = nativeStrategyMapping(id);
@@ -1278,7 +1289,22 @@ export async function executeNativeRedteamRun(
   // P3-3: every strategy in the request is forwarded to promptfoo, or the run is
   // refused. There is no "these dimensions stay on the platform's own path" branch
   // any more — that was Plan A, and with it deleted an unknown id is an error.
-  const native = resolveNativeStrategies(request.strategies);
+  //
+  // # Expert packages are resolved BEFORE the vocabulary check (2026-10-23)
+  //
+  // `pf_strategy:<handle>` is a reference to a package, not an id promptfoo
+  // knows: the package is what names the executable `custom:<variant>`. The
+  // builder used to be the only place that replaced the markers, i.e. AFTER this
+  // check, so every custom-strategy run died here with
+  // `native_generation_strategy_unknown` — even when the package had been
+  // shipped with the request and the BFF had recorded the resolved id (measured
+  // in the P10 field verification). The replacement is idempotent, so the
+  // builder's own call remains as a backstop for a marker that somehow survived.
+  const requestStrategies = applyCustomStrategyRefs(
+    request.strategies,
+    resolveCustomStrategies(request.custom_strategies ?? []),
+  );
+  const native = resolveNativeStrategies(requestStrategies);
 
   const injectVar = (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR;
   // P2-2 (S-4): the cap is 50 in three places — this clamp, the BFF's

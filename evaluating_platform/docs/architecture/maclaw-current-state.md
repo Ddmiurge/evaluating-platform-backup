@@ -944,3 +944,22 @@ promptfoo 把「没有回答」记成 failure（空输出通过它的 rubric）�
 
 守卫：`TestRepublishingUpdatesTheSamePackage`（同 id / handle 稳定 / 只一行 / 他人被拒），
 反证为去掉归属校验与去掉 handle 复用。
+
+## 自定义策略的执行链路（2026-10-23）
+
+三处修复，缺一不可：
+
+1. **向导路径解析包**：`engine_run.go` 过去直接构造请求，只有 confirm 路径经过
+   `PreparePromptfooEngineRun`。解析提取为 `ResolveEngineCapabilities`，两条入口共用；
+   记录存解析后 id，引擎请求带 `promptfoo-custom:` 标记 + 包体。解析失败 → 409 + 校验器文案，无记录。
+2. **引擎先内联再校验**：`executeNativeRedteamRun` 先 `applyCustomStrategyRefs` 再
+   `resolveNativeStrategies`。标记不属于任何词汇表，先校验必然拒绝。
+3. **自定义策略保留 config**（内置仍丢弃）：包体就是 config，丢了 promptfoo 直接报
+   "Custom strategy requires strategyText in config"；内置丢弃是 U9 的既有不变量（`stateful`
+   不得从请求透传）。
+
+另：跨租户写改判 `403 resource_not_owned`（原为兜底 503 `maclaw_unavailable`）。
+
+守卫：引擎 `customStrategyRun.e2e`（跑通 + 包文本到达生成模型）、
+`TestEngineRunHandlerResolvesExpertPackages`、`TestClassifyMaclawErrorResourceNotOwned`；
+反证分别为「校验回到 apply 之前」「丢 config」「摘掉向导解析」「删 403 分支」。

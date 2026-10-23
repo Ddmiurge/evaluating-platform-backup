@@ -23,6 +23,14 @@ func classifyMaclawError(err error) (int, string, string) {
 	if errors.Is(err, maclaw.ErrNotConfigured) {
 		return http.StatusServiceUnavailable, "maclaw_not_configured", "maclaw runtime is not configured"
 	}
+	// A write naming an id that is not the caller's. Classified before the
+	// upstream fallbacks because otherwise it surfaced as
+	// `maclaw_unavailable` / 503 and read like a runtime outage (measured in the
+	// P10 verification). 403 rather than 404: the caller did name a specific id,
+	// and "not yours" is the actionable fact.
+	if errors.Is(err, maclaw.ErrResourceNotOwned) {
+		return http.StatusForbidden, "resource_not_owned", "资源不存在或不属于当前账号，无法更新。"
+	}
 
 	// U10: a rejected expert plugin package is the submitter's input being
 	// wrong, not an upstream failure. Classified before the generic fallbacks

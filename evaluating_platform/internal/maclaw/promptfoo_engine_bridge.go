@@ -156,6 +156,76 @@ type PreparedEngineRun struct {
 	StageDurations map[string]int64
 }
 
+// ResolvedEngineCapabilities is one run's selection after expert-published
+// packages have been resolved: which refs the ENGINE gets, which refs the RUN
+// RECORD stores, and the package definitions to ship with the request.
+//
+// Two id lists because the two consumers need different things (see
+// customPluginResolution): the record must never carry a transport marker
+// (`promptfoo-custom:` / `pf_strategy:`), while the engine must never see a
+// database handle.
+type ResolvedEngineCapabilities struct {
+	EnginePlugins    []EngineCapabilityRef
+	EngineStrategies []EngineCapabilityRef
+	RecordPlugins    []EngineCapabilityRef
+	RecordStrategies []EngineCapabilityRef
+	CustomPlugins    []EngineCustomPlugin
+	CustomStrategies []EngineCustomStrategy
+}
+
+// ResolveEngineCapabilities applies published-package resolution and admin
+// governance to a run's plugin and strategy refs.
+//
+// # Why this is exported (2026-10-23)
+//
+// It used to live inline in PreparePromptfooEngineRun, which is the confirm
+// path's entry. The WIZARD builds its own engine request and calls the engine
+// client directly, so it never resolved anything: a `pf_strategy:<handle>` from
+// the wizard reached the engine as a raw marker and the run record stored that
+// marker instead of the resolved id (measured in the P10 verification, run
+// er-10a185d5 — the engine refused it as an unknown strategy).
+//
+// Both entry points now call this one function, so the two doors cannot drift:
+// the wizard handler resolves and then builds its request exactly as before.
+func (b *RedteamToolBridge) ResolveEngineCapabilities(ctx context.Context, userID uuid.UUID, plugins, strategies []EngineCapabilityRef) (*ResolvedEngineCapabilities, error) {
+	pluginRes, err := b.resolveCustomPlugins(ctx, userID, plugins)
+	if err != nil {
+		return nil, err
+	}
+	strategyRes, err := b.resolveCustomStrategies(ctx, userID, strategies)
+	if err != nil {
+		return nil, err
+	}
+	recordPlugins := make([]EngineCapabilityRef, 0, len(pluginRes.recordIDs))
+	for _, id := range pluginRes.recordIDs {
+		recordPlugins = append(recordPlugins, EngineCapabilityRef{ID: id})
+	}
+	recordStrategies := make([]EngineCapabilityRef, 0, len(strategyRes.recordIDs))
+	for _, id := range strategyRes.recordIDs {
+		recordStrategies = append(recordStrategies, EngineCapabilityRef{ID: id})
+	}
+	return &ResolvedEngineCapabilities{
+		EnginePlugins:    pluginRes.engineRefs,
+		EngineStrategies: strategyRes.engineRefs,
+		RecordPlugins:    recordPlugins,
+		RecordStrategies: recordStrategies,
+		CustomPlugins:    pluginRes.packages,
+		CustomStrategies: strategyRes.packages,
+	}, nil
+}
+
+// recordIDsOf flattens refs to their ids for the normalized input, which carries
+// ids rather than refs.
+func recordIDsOf(refs []EngineCapabilityRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if id := strings.TrimSpace(ref.ID); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // PreparePromptfooEngineRun validates, materializes credentials, persists the
 // engine run record, and submits it to the engine. Returns immediately with
 // the engine run id (the engine executes in its own background worker).
@@ -234,31 +304,27 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	// Rejection happens before credential materialization and before the run
 	// record is persisted, so a refused package leaves no half-created run and
 	// no credential touched.
-	resolved, err := b.resolveCustomPlugins(ctx, userID, plugins)
+	capabilities, err := b.ResolveEngineCapabilities(ctx, userID, plugins, strategies)
 	if err != nil {
 		return nil, err
 	}
-	plugins = resolved.engineRefs
-	customPlugins := resolved.packages
+	plugins = capabilities.EnginePlugins
+	strategies = capabilities.EngineStrategies
+	customPlugins := capabilities.CustomPlugins
+	customStrategies := capabilities.CustomStrategies
 	// Phase 3 · 任务 2: the same treatment for expert-published strategy
 	// packages. Placed at the same seam for the same reason — this is the one
 	// function every confirmed engine run passes through, so a strategy package
 	// an admin disabled cannot reach the engine by any other route, and the
 	// refusal happens before credentials are materialized and before the run
 	// record is persisted.
-	strategyRes, err := b.resolveCustomStrategies(ctx, userID, strategies)
-	if err != nil {
-		return nil, err
-	}
-	strategies = strategyRes.engineRefs
-	customStrategies := strategyRes.packages
 	sessionID := firstNonEmptyString(in.ExecutionSessionID, in.SessionID, in.Metadata["session_id"])
 	normalized := PromptfooEngineRunInput{
 		RunID:              strings.TrimSpace(in.RunID),
 		Purpose:            purpose,
 		NumTests:           numTests,
-		Plugins:            resolved.recordIDs,
-		Strategies:         strategyRes.recordIDs,
+		Plugins:            recordIDsOf(capabilities.RecordPlugins),
+		Strategies:         recordIDsOf(capabilities.RecordStrategies),
 		JudgeMode:          string(judgeMode),
 		ExecutionUserID:    userID,
 		ExecutionSessionID: sessionID,
@@ -269,14 +335,10 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	// plugin packages and `pf_strategy:` for strategy packages. Using either
 	// here would put a transport detail into the record the report and the
 	// browser are built from.
-	recordRefs := make([]EngineCapabilityRef, 0, len(resolved.recordIDs))
-	for _, id := range resolved.recordIDs {
-		recordRefs = append(recordRefs, EngineCapabilityRef{ID: id})
-	}
-	recordStrategyRefs := make([]EngineCapabilityRef, 0, len(strategyRes.recordIDs))
-	for _, id := range strategyRes.recordIDs {
-		recordStrategyRefs = append(recordStrategyRefs, EngineCapabilityRef{ID: id})
-	}
+	// The record stores the resolved ids, never a transport marker — resolved by
+	// ResolveEngineCapabilities above.
+	recordRefs := capabilities.RecordPlugins
+	recordStrategyRefs := capabilities.RecordStrategies
 
 	stageDurations := map[string]int64{}
 	credStarted := time.Now()

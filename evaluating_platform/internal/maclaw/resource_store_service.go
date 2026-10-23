@@ -23,6 +23,13 @@ type ResourceStore interface {
 	GetResource(context.Context, uuid.UUID, string) (*ResourceRecord, error)
 }
 
+// ErrResourceNotOwned is returned when a write names an id the caller does not
+// own. The lookup is owner-scoped, so "does not exist" and "not yours" are the
+// same answer on purpose: distinguishing them would tell one expert which ids
+// another account holds. Kept as a sentinel so the HTTP layer can answer 403
+// instead of the generic 503 it used to produce.
+var ErrResourceNotOwned = errors.New("resource not found or not owned by this account")
+
 type ResourceStoreService struct {
 	store    ResourceStore
 	keyStore *appcrypto.KeyStore
@@ -125,7 +132,7 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 			return nil, err
 		}
 		if existing == nil {
-			return nil, errors.New("resource not found or not owned by this account")
+			return nil, ErrResourceNotOwned
 		}
 	} else {
 		id = uuid.New()

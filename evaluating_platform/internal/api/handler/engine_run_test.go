@@ -778,3 +778,86 @@ func TestEngineRunHandlerInvalidUser(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 }
+
+// The wizard path must resolve expert-published packages before building the
+// engine request.
+//
+// Measured in the P10 verification (run er-10a185d5): the wizard handler built
+// its request directly and only the confirm path resolved packages, so a
+// `pf_strategy:<handle>` reached the engine as a raw marker — refused as an
+// unknown strategy — and the run record stored the marker instead of the
+// resolved id. Both halves are asserted here: what the engine receives and what
+// the record keeps.
+//
+// Counter-proof: delete the h.capabilities block in CreateRun → the engine gets
+// the raw marker and the record stores it.
+func TestEngineRunHandlerResolvesExpertPackages(t *testing.T) {
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m",
+		CredentialSecret: "sk-secret", Enabled: true,
+	}}
+	engine := newEnabledFakeEngine()
+	h := newEngineRunHandler(engine, maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	h.SetEngineCapabilityResolver(&fakeCapabilityResolver{caps: &maclaw.ResolvedEngineCapabilities{
+		EnginePlugins:    []maclaw.EngineCapabilityRef{{ID: "contracts"}},
+		EngineStrategies: []maclaw.EngineCapabilityRef{{ID: "promptfoo-custom:h1"}},
+		RecordPlugins:    []maclaw.EngineCapabilityRef{{ID: "contracts"}},
+		RecordStrategies: []maclaw.EngineCapabilityRef{{ID: "custom:expert-probe"}},
+		CustomStrategies: []maclaw.EngineCustomStrategy{{Handle: "h1", StrategyID: "custom:expert-probe", Definition: "strategyText: x"}},
+	}})
+	r := newEngineRunRouter(h, "enterprise")
+
+	body := `{"purpose":"合规安全评测","plugins":[{"id":"contracts"}],"strategies":[{"id":"pf_strategy:h1"}],"num_tests":1}`
+	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", body)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+	if engine.createReq == nil {
+		t.Fatal("engine was not called")
+	}
+	if len(engine.createReq.Strategies) != 1 || engine.createReq.Strategies[0].ID != "promptfoo-custom:h1" {
+		t.Errorf("engine strategies = %+v, want the resolved marker only", engine.createReq.Strategies)
+	}
+	if len(engine.createReq.CustomStrategies) != 1 || engine.createReq.CustomStrategies[0].StrategyID != "custom:expert-probe" {
+		t.Errorf("engine custom strategies = %+v, want the package shipped with the request", engine.createReq.CustomStrategies)
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("run records = %d, want 1", len(store.records))
+	}
+	for _, record := range store.records {
+		if len(record.Strategies) != 1 || record.Strategies[0].ID != "custom:expert-probe" {
+			t.Errorf("record strategies = %+v, want the resolved id — never the transport marker", record.Strategies)
+		}
+	}
+
+	// A package the admin disabled (or that never existed) is the submitter's
+	// problem: refuse before a run record exists, with the validator's message.
+	store2 := newFakeRunStore()
+	h2 := newEngineRunHandler(newEnabledFakeEngine(), maclaw.NewEngineRunService(store2), targets, newFakeGenerationProvider())
+	h2.SetEngineCapabilityResolver(&fakeCapabilityResolver{err: &maclaw.CustomPluginRefError{
+		Code:    "pf_strategy_ref_unavailable",
+		Ref:     "pf_strategy:h1",
+		Message: "自定义策略 h1 当前不可用。",
+	}})
+	r2 := newEngineRunRouter(h2, "enterprise")
+	w2 := doJSON(r2, http.MethodPost, "/maclaw/engine/runs", body)
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w2.Code, w2.Body.String())
+	}
+	if !strings.Contains(w2.Body.String(), "pf_strategy_ref_unavailable") {
+		t.Errorf("response carries no resolver code: %s", w2.Body.String())
+	}
+	if len(store2.records) != 0 {
+		t.Fatalf("run record created for an unresolvable package: %+v", store2.records)
+	}
+}
+
+type fakeCapabilityResolver struct {
+	caps *maclaw.ResolvedEngineCapabilities
+	err  error
+}
+
+func (r *fakeCapabilityResolver) ResolveEngineCapabilities(context.Context, uuid.UUID, []maclaw.EngineCapabilityRef, []maclaw.EngineCapabilityRef) (*maclaw.ResolvedEngineCapabilities, error) {
+	return r.caps, r.err
+}

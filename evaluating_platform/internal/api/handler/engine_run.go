@@ -61,12 +61,34 @@ type engineTargetProvider interface {
 	GetTargetWithSecret(ctx context.Context, userID uuid.UUID) (*maclaw.EvaluationTargetInput, error)
 }
 
+// engineCapabilityResolver resolves expert-published plugin/strategy packages
+// for a run. Implemented by *maclaw.RedteamToolBridge.
+//
+// It is an interface rather than the bridge itself so the handler keeps its
+// existing test doubles and so a deployment without the bridge behaves exactly
+// as before (nil resolver → refs pass through untouched).
+type engineCapabilityResolver interface {
+	ResolveEngineCapabilities(ctx context.Context, userID uuid.UUID, plugins, strategies []maclaw.EngineCapabilityRef) (*maclaw.ResolvedEngineCapabilities, error)
+}
+
 type EngineRunHandler struct {
 	engine             engineClient
 	runs               *maclaw.EngineRunService
 	targetConfig       engineTargetProvider
 	generationProvider maclaw.EngineGenerationProvider
+	capabilities       engineCapabilityResolver
 	enabled            bool
+}
+
+// SetEngineCapabilityResolver wires the published-package resolver into the
+// wizard path. Without it the wizard can only run built-in capabilities — it
+// would forward a `pf_strategy:<handle>` marker verbatim and the engine would
+// refuse it (which is exactly what the P10 verification measured).
+func (h *EngineRunHandler) SetEngineCapabilityResolver(resolver engineCapabilityResolver) {
+	if h == nil {
+		return
+	}
+	h.capabilities = resolver
 }
 
 func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.EngineRunService, targets engineTargetProvider, generationProvider maclaw.EngineGenerationProvider) *EngineRunHandler {
@@ -446,11 +468,37 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		return
 	}
 
+	// Expert packages are resolved on THIS path too (2026-10-23). The confirm
+	// path gets this from PreparePromptfooEngineRun; the wizard builds its own
+	// request, so without this a `pf_strategy:<handle>` reached the engine as a
+	// raw marker AND the run record stored the marker instead of the resolved id
+	// (measured in the P10 verification, run er-10a185d5).
+	//
+	// Resolution can fail on a package the admin disabled or that no longer
+	// exists; that is the submitter's input, and writeMaclawError already maps
+	// CustomPluginRefError to 409 with the validator's own message.
+	recordPlugins, recordStrategies := plugins, strategies
+	var customPlugins []maclaw.EngineCustomPlugin
+	var customStrategies []maclaw.EngineCustomStrategy
+	if h.capabilities != nil {
+		resolved, err := h.capabilities.ResolveEngineCapabilities(c.Request.Context(), userID, plugins, strategies)
+		if err != nil {
+			writeMaclawError(c, err)
+			return
+		}
+		recordPlugins = resolved.RecordPlugins
+		recordStrategies = resolved.RecordStrategies
+		plugins = resolved.EnginePlugins
+		strategies = resolved.EngineStrategies
+		customPlugins = resolved.CustomPlugins
+		customStrategies = resolved.CustomStrategies
+	}
+
 	source := maclaw.EngineRunSourceWizard
 	if strings.TrimSpace(in.SessionID) != "" {
 		source = maclaw.EngineRunSourceChat
 	}
-	record := h.runs.NewRun(userID, strings.TrimSpace(in.InstanceID), strings.TrimSpace(in.SessionID), source, in.Purpose, judgeMode, numTests, strings.TrimSpace(target.ID), plugins, strategies)
+	record := h.runs.NewRun(userID, strings.TrimSpace(in.InstanceID), strings.TrimSpace(in.SessionID), source, in.Purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordPlugins, recordStrategies)
 	saved, err := h.runs.Save(c.Request.Context(), record)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist engine run"})
@@ -472,6 +520,10 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		JudgeMode:   judgeMode,
 		Credentials: derefOrEmpty(maclaw.MaterializeEngineCredentialsWithGeneration(target, generation)),
 		Catalog:     maclaw.PromptfooEngineCatalog(),
+		// Expert packages, already resolved above. The engine swaps each marker
+		// for the package's executable id and inlines its config.
+		CustomPlugins:    customPlugins,
+		CustomStrategies: customStrategies,
 	}
 	// U7: carry the application description through to the engine so promptfoo's
 	// native generation can aim at this system rather than attack generically.
