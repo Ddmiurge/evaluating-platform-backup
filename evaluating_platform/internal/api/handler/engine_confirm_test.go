@@ -421,3 +421,49 @@ func TestWithAddedStrategiesAppendsWithoutDuplicatingThePlansPick(t *testing.T) 
 		t.Errorf("strategies = %v, want [base64] added to an empty selection", got.Strategies)
 	}
 }
+
+// Expert-published packages are selected by their OWN ref form, and the resolver
+// switches on that prefix — so the confirm path has to collect the whole ref.
+//
+// Before 2026-10-23 these refs were silently dropped: a plan that selected only
+// a published plugin reached the confirm gate as 「计划里没有插件」, i.e. a
+// capability the engine could run was unreachable from the product.
+func TestPromptfooEnginePlanSelectionReadsExpertPackages(t *testing.T) {
+	content := `{"response_source":"plan_confirm",
+		"selected_capability_refs":[
+			"pf_plugin:my-generator",
+			{"source_ref":"promptfoo_plugin:contracts"}
+		],
+		"selected_capabilities":[
+			{"source_type":"resource","source_ref":"pf_strategy:my-wrapper"},
+			{"source_type":"promptfoo_strategy","source_ref":"promptfoo_strategy:rot13"}
+		]}`
+	selection, ok := promptfooEnginePlanSelectionFromContent(content)
+	if !ok {
+		t.Fatal("plan not recognised as an engine plan")
+	}
+	if !sameIDs(selection.Plugins, []string{"contracts", "pf_plugin:my-generator"}) {
+		t.Errorf("plugins = %v, want the expert package ref kept whole plus the built-in id", selection.Plugins)
+	}
+	if !sameIDs(selection.Strategies, []string{"pf_strategy:my-wrapper", "rot13"}) {
+		t.Errorf("strategies = %v, want the expert ref kept whole plus the built-in id", selection.Strategies)
+	}
+	if selection.DeclaredStrategies != 2 {
+		t.Errorf("DeclaredStrategies = %d, want 2", selection.DeclaredStrategies)
+	}
+
+	// And removal works on the same ref the card renders.
+	removed := selection.withoutRemovedRefs(normalizedRefSet([]string{"pf_plugin:my-generator"}))
+	if !sameIDs(removed.Plugins, []string{"contracts"}) {
+		t.Errorf("after removal plugins = %v, want only the built-in", removed.Plugins)
+	}
+	// Removing the expert strategy leaves the built-in one, and the declared
+	// count follows the survivors (a removal is a choice, not an unresolved ref).
+	removedStrategy := selection.withoutRemovedRefs(normalizedRefSet([]string{"pf_strategy:my-wrapper"}))
+	if !sameIDs(removedStrategy.Strategies, []string{"rot13"}) {
+		t.Errorf("strategies = %v, want only the built-in left", removedStrategy.Strategies)
+	}
+	if removedStrategy.DeclaredStrategies != 1 {
+		t.Errorf("DeclaredStrategies = %d, want 1", removedStrategy.DeclaredStrategies)
+	}
+}

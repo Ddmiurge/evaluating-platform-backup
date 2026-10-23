@@ -281,10 +281,26 @@ func normalizeCapabilityLimit(limit int) int {
 
 func resourceCapabilityCard(item model.MaclawResourcePublication) CapabilityCard {
 	metadata := safeCapabilityMetadata(item.Metadata)
+	// Expert-published promptfoo packages get the ENGINE's axis and ref form.
+	//
+	// A planner relays what it sees on the card into `plan_confirm`, so a card
+	// whose ref is a bare resource handle could only ever produce a ref nothing
+	// downstream recognises. Same reason as the plan extractor: the package has
+	// to be reachable by the ref the resolver switches on (2026-10-23).
+	sourceType := CapabilitySourceResource
+	sourceRef := item.SourceResourceHandle
+	switch EvaluationResourceKind(item.Kind) {
+	case EvaluationResourceKindPromptfooPlugin:
+		sourceType = CapabilitySourcePromptfooPlugin
+		sourceRef = CustomPluginRef(item.SourceResourceHandle)
+	case EvaluationResourceKindPromptfooStrategy:
+		sourceType = CapabilitySourcePromptfooStrategy
+		sourceRef = CustomStrategyRef(item.SourceResourceHandle)
+	}
 	return CapabilityCard{
-		SourceType:         CapabilitySourceResource,
+		SourceType:         sourceType,
 		SourceExpertUserID: item.SourceExpertUserID.String(),
-		SourceRef:          item.SourceResourceHandle,
+		SourceRef:          sourceRef,
 		SourceVersion:      normalizeVersion(item.SourceVersion),
 		Name:               item.Name,
 		Summary:            item.Summary,

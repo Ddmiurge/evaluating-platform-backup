@@ -251,7 +251,28 @@ func (r *MaclawResourcePublicationRepository) getBySourceResourceID(ctx context.
 }
 
 func (r *MaclawResourcePublicationRepository) GetPublishedByHandle(ctx context.Context, handle string) (*model.MaclawResourcePublication, error) {
-	return r.queryFirstPublication(ctx, "(source_resource_handle = $1 OR source_resource_id = $1) AND enabled = true AND status = 'published'", strings.TrimSpace(handle))
+	// ORDER BY is not decoration (2026-10-23). Without it, a handle with more
+	// than one publication row — possible for packages published before
+	// republishing reused the resource id — resolves to whichever row Postgres
+	// happens to return first, i.e. possibly a stale version. Newest wins.
+	const query = `(source_resource_handle = $1 OR source_resource_id = $1) AND enabled = true AND status = 'published'`
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+resourcePublicationColumns+`
+		FROM maclaw_resource_publications
+		WHERE `+query+`
+		ORDER BY updated_at DESC`, strings.TrimSpace(handle))
+	if err != nil {
+		return nil, fmt.Errorf("query maclaw resource publication: %w", err)
+	}
+	defer rows.Close()
+	items, err := scanResourcePublications(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
 }
 
 type MaclawResourceShadowRepository struct {

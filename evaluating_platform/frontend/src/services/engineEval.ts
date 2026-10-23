@@ -104,6 +104,33 @@ export const engineEvalService = {
     const res = await api.post<EngineRun>(`/maclaw/engine/runs/${encodeURIComponent(id)}/cancel`)
     return res.data
   },
+  /**
+   * Expert-published engine packages available to this account.
+   *
+   * Same endpoint the expert portal publishes through (`kind=pf_plugin` /
+   * `kind=pf_strategy`); for an enterprise account the resource list is served
+   * from the published catalogue, so this returns what experts actually ship.
+   * The ref the engine resolves is built HERE (`pf_plugin:<handle>`), because
+   * the handle alone is not a capability reference.
+   */
+  async listPublishedPackages(kind: 'pf_plugin' | 'pf_strategy'): Promise<PublishedEnginePackage[]> {
+    const res = await api.get<{ items: PublishedEnginePackage[] }>('/maclaw/evaluation/resources', {
+      params: { kind, limit: 200 },
+    })
+    return (res.data.items ?? []).filter((item) => item.enabled && item.status === 'published')
+  },
+}
+
+/** A published expert package, reduced to the safe fields the picker needs. */
+export interface PublishedEnginePackage {
+  id: string
+  handle: string
+  name: string
+  kind: string
+  version?: string
+  summary?: string
+  enabled: boolean
+  status: string
 }
 
 /** 内置引擎插件目录（由后端 promptfoo_plugin_catalog.go 生成的同源清单，勿手改 id）。 */

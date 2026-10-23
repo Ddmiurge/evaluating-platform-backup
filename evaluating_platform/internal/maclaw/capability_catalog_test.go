@@ -315,3 +315,41 @@ func mapValues(in map[string]string) []string {
 	}
 	return out
 }
+
+// A published package must reach a planner as a ref the engine can resolve.
+//
+// The card used to carry the bare resource handle, so a planner relaying it into
+// `plan_confirm` produced a ref nothing downstream recognised — the package was
+// publishable, executable, and unreachable from the product (2026-10-23).
+func TestResourceCapabilityCardGivesPackagesTheirEngineRef(t *testing.T) {
+	expert := uuid.New()
+	cases := []struct {
+		kind     string
+		handle   string
+		wantType string
+		wantRef  string
+	}{
+		{"pf_plugin", "gen-1", CapabilitySourcePromptfooPlugin, "pf_plugin:gen-1"},
+		{"pf_strategy", "wrap-1", CapabilitySourcePromptfooStrategy, "pf_strategy:wrap-1"},
+		{"sample", "gen-1", CapabilitySourceResource, "gen-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			card := resourceCapabilityCard(model.MaclawResourcePublication{
+				SourceExpertUserID:   expert,
+				SourceResourceHandle: tc.handle,
+				SourceResourceID:     "res-1",
+				Kind:                 tc.kind,
+				Name:                 "包",
+				Status:               "published",
+				Enabled:              true,
+			})
+			if card.SourceType != tc.wantType {
+				t.Errorf("source_type = %q, want %q", card.SourceType, tc.wantType)
+			}
+			if card.SourceRef != tc.wantRef {
+				t.Errorf("source_ref = %q, want %q", card.SourceRef, tc.wantRef)
+			}
+		})
+	}
+}

@@ -108,10 +108,35 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	if id == uuid.Nil {
+	// Republishing an existing package (2026-10-23, user decision): the caller
+	// sends the existing id so the row is UPDATED instead of a second package
+	// appearing under a new handle.
+	//
+	// The lookup is owner-scoped (`GetResource` filters on owner_user_id), which
+	// is the point: without it, sending someone else's id would let an expert
+	// overwrite another expert's package content while the row — and therefore
+	// the publication — stayed owned by the victim. Upsert itself does NOT touch
+	// owner_user_id, so this check is the only thing standing between the two
+	// tenants.
+	var existing *ResourceRecord
+	if id != uuid.Nil {
+		existing, err = s.store.GetResource(ctx, userID, id.String())
+		if err != nil {
+			return nil, err
+		}
+		if existing == nil {
+			return nil, errors.New("resource not found or not owned by this account")
+		}
+	} else {
 		id = uuid.New()
 	}
 	handle := strings.TrimSpace(in.Metadata["handle"])
+	if handle == "" && existing != nil {
+		// Keep the published handle stable across republication: a new generated
+		// handle would orphan the publication row keyed by the old one, and
+		// enterprise references already point at it.
+		handle = existing.Handle
+	}
 	if handle == "" {
 		handle = "platform_resource_" + id.String()
 	}

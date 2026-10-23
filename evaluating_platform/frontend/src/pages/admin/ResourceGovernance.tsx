@@ -17,9 +17,10 @@ const { Text, Title } = Typography
 export function ResourceGovernance() {
   const [items, setItems] = useState<AdminMaclawResource[]>([])
   const [loading, setLoading] = useState(false)
-  // 'all' | 'pf_plugin' —— U10：默认聚焦自定义插件，因为它是唯一「会被引擎执行」
-  // 的资源类别，治理风险最高。
-  const [scope, setScope] = useState<'all' | 'pf_plugin'>('pf_plugin')
+  // 默认聚焦自定义包，因为它们是「会被引擎执行」的资源类别，治理风险最高。
+  // 2026-10-23：策略包（pf_strategy）与插件包同权 —— 它同样会被引擎加载执行，
+  // 之前只能通过 API 停用。
+  const [scope, setScope] = useState<'all' | 'pf_plugin' | 'pf_strategy'>('pf_plugin')
 
   const load = async () => {
     setLoading(true)
@@ -36,7 +37,7 @@ export function ResourceGovernance() {
   }, [])
 
   const visible = useMemo(
-    () => (scope === 'all' ? items : items.filter((row) => row.kind === 'pf_plugin')),
+    () => (scope === 'all' ? items : items.filter((row) => row.kind === scope)),
     [items, scope],
   )
 
@@ -74,9 +75,10 @@ export function ResourceGovernance() {
         <Space>
           <Segmented
             value={scope}
-            onChange={(value) => setScope(value as 'all' | 'pf_plugin')}
+            onChange={(value) => setScope(value as 'all' | 'pf_plugin' | 'pf_strategy')}
             options={[
               { label: '自定义插件', value: 'pf_plugin' },
+              { label: '自定义策略', value: 'pf_strategy' },
               { label: '全部', value: 'all' },
             ]}
           />
@@ -97,18 +99,20 @@ export function ResourceGovernance() {
             render: (value) => (
               // U10：把「会被引擎执行」的资源类别标出来，避免管理员把自定义插件
               // 当成普通样本看待而忽略其治理含义。
-              <Tag color={value === 'pf_plugin' ? 'orange' : undefined}>{value}</Tag>
+              <Tag color={value === 'pf_plugin' || value === 'pf_strategy' ? 'orange' : undefined}>{value}</Tag>
             ),
           },
-          // U10：插件 id 是报告里显示的名字，也是与内置目录冲突的唯一依据，
-          // 所以治理视图要能看到（无需解密正文即可展示）。
+          // 包 id 是报告里显示的名字，也是与内置目录冲突的唯一依据，所以治理视图
+          // 要能看到（无需解密正文即可展示）。插件与策略各用各的 metadata 键。
           ...(scope === 'all'
             ? []
             : [{
-                title: '插件 id',
-                dataIndex: ['metadata', 'pf_plugin_id'],
+                title: scope === 'pf_strategy' ? '策略标识' : '插件 id',
+                dataIndex: ['metadata', scope === 'pf_strategy' ? 'pf_strategy_id' : 'pf_plugin_id'],
                 render: (_: unknown, row: AdminMaclawResource) => (
-                  <Text type="secondary">{row.metadata?.pf_plugin_id || '未声明'}</Text>
+                  <Text type="secondary">
+                    {(scope === 'pf_strategy' ? row.metadata?.pf_strategy_id : row.metadata?.pf_plugin_id) || '未声明'}
+                  </Text>
                 ),
               }]),
           { title: '版本', dataIndex: 'source_version' },

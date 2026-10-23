@@ -65,7 +65,23 @@ export function PromptfooPluginPublisher() {
   const [open, setOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [rejection, setRejection] = useState<{ code: string; message: string } | null>(null)
+  // Republishing (2026-10-23): carries the existing id + handle so the backend
+  // updates the same package. Without them every publish minted a new id and a
+  // new handle, so 「递增版本」 produced a second package instead of a new
+  // version — measured on the field report.
+  const [republishOf, setRepublishOf] = useState<PromptfooPluginSummary | null>(null)
   const [form] = Form.useForm()
+
+  const openPublish = (row?: PromptfooPluginSummary) => {
+    setRejection(null)
+    setRepublishOf(row ?? null)
+    form.resetFields()
+    form.setFieldsValue({ payload: TEMPLATE })
+    if (row) {
+      form.setFieldsValue({ name: row.name, summary: row.summary, version: row.version })
+    }
+    setOpen(true)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -100,6 +116,7 @@ export function PromptfooPluginPublisher() {
     setSubmitting(true)
     try {
       const input: PromptfooPluginPublishInput = {
+        ...(republishOf ? { id: republishOf.id } : {}),
         name: values.name,
         kind: 'pf_plugin',
         status: 'published',
@@ -111,12 +128,14 @@ export function PromptfooPluginPublisher() {
           // 固定 yaml：首期只有 YAML 形态。后端仍独立校验，前端声明只是让形态
           // 问题得到清楚提示。
           pf_plugin_form: 'yaml',
+          ...(republishOf ? { handle: republishOf.handle } : {}),
           ...(values.dependsOn?.trim() ? { pf_plugin_depends_on: values.dependsOn.trim() } : {}),
         },
       }
       await expertService.publishPromptfooPlugin(input)
-      message.success('插件已发布。管理员可随时停用或下架，停用即时生效。')
+      message.success(republishOf ? '插件已更新为新版本。' : '插件已发布。管理员可随时停用或下架，停用即时生效。')
       setOpen(false)
+      setRepublishOf(null)
       form.resetFields()
       void load()
     } catch (error) {
@@ -149,7 +168,7 @@ export function PromptfooPluginPublisher() {
           <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             刷新
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openPublish()}>
             发布插件
           </Button>
         </Space>
@@ -204,16 +223,26 @@ export function PromptfooPluginPublisher() {
               width: 160,
               render: (value?: string) => (value ? formatDate(value) : '-'),
             },
+            {
+              title: '操作',
+              width: 100,
+              render: (_: unknown, row: PromptfooPluginSummary) => (
+                <Button type="link" size="small" onClick={() => openPublish(row)}>
+                  重新发布
+                </Button>
+              ),
+            },
           ]}
         />
       )}
 
       <Modal
-        title="发布自定义评测插件（YAML）"
+        title={republishOf ? '重新发布自定义评测插件（YAML）' : '发布自定义评测插件（YAML）'}
         open={open}
         onCancel={() => {
           setOpen(false)
           setRejection(null)
+          setRepublishOf(null)
           form.resetFields()
         }}
         onOk={() => void publish()}
@@ -221,6 +250,15 @@ export function PromptfooPluginPublisher() {
         okText="发布"
         width={720}
       >
+        {republishOf && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`将更新「${republishOf.name}」这个包（不会新增一个）`}
+            description="包正文不会回显到浏览器（安全边界），请重新粘贴 YAML；建议同时递增版本，便于追溯报告用的是哪一版。"
+          />
+        )}
         {rejection && (
           <Alert
             type="error"

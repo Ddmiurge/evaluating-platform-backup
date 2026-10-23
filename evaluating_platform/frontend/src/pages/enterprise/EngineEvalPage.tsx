@@ -18,7 +18,7 @@ import {
   retiredEnginePluginGuidance, retiredEngineStrategyGuidance,
   toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
-import type { EngineRun, EngineRunResult } from '../../services/engineEval'
+import type { EngineRun, EngineRunResult, EngineSelectOption } from '../../services/engineEval'
 
 /**
  * 插件选项按风险类别分组（与后端 catalog 的 category 对齐）。
@@ -249,6 +249,50 @@ export function EngineEvalPage() {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const pollRef = useRef<number | null>(null)
 
+  // Expert-published packages (2026-10-23). Loaded, not baked into the static
+  // catalog: an expert publishes while the deployment is running, and a picker
+  // that only knows the built-ins makes the package unusable without an API
+  // call. The ref form is `pf_plugin:<handle>` / `pf_strategy:<handle>` — that
+  // is what the engine's resolver switches on, so the value must be built here.
+  const [expertPackages, setExpertPackages] = useState<{ plugins: EngineSelectOption[]; strategies: EngineSelectOption[] }>({
+    plugins: [],
+    strategies: [],
+  })
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const [plugins, strategies] = await Promise.all([
+          engineEvalService.listPublishedPackages('pf_plugin'),
+          engineEvalService.listPublishedPackages('pf_strategy'),
+        ])
+        if (cancelled) return
+        setExpertPackages({
+          plugins: plugins.map((item) => ({ value: `pf_plugin:${item.handle}`, label: `${item.name}（专家发布）`, disabled: false })),
+          strategies: strategies.map((item) => ({ value: `pf_strategy:${item.handle}`, label: `${item.name}（专家发布）`, disabled: false })),
+        })
+      } catch {
+        // A catalogue failure must not block the form: the built-ins still work,
+        // and hiding the errors would be worse than showing fewer options.
+        if (!cancelled) setExpertPackages({ plugins: [], strategies: [] })
+      }
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [])
+  const pluginSelectOptions = useMemo(
+    () => (expertPackages.plugins.length > 0
+      ? [...ENGINE_PLUGIN_GROUPS, { label: '专家发布', options: expertPackages.plugins }]
+      : ENGINE_PLUGIN_GROUPS),
+    [expertPackages.plugins],
+  )
+  const strategySelectOptions = useMemo(
+    () => (expertPackages.strategies.length > 0
+      ? [...ENGINE_STRATEGY_SELECT_OPTIONS, { label: '专家发布', options: expertPackages.strategies }]
+      : ENGINE_STRATEGY_SELECT_OPTIONS),
+    [expertPackages.strategies],
+  )
+
   // U6：置灰项数量（供下方 Alert 说明，不隐藏任何条目）。
   const gatedPluginCount = useMemo(
     () => ENGINE_PLUGIN_OPTIONS.filter((p) => p.requires_remote_generation).length,
@@ -462,12 +506,12 @@ export function EngineEvalPage() {
               </Form.Item>
               <Form.Item name="plugins" label="攻击插件" rules={[{ required: true, message: '至少选择一个插件' }]}>
                 <Select mode="multiple" placeholder="选择攻击类别"
-                  options={ENGINE_PLUGIN_GROUPS}
+                  options={pluginSelectOptions}
                   optionRender={(option) => renderDisabledOption(option.data)} />
               </Form.Item>
               <Form.Item name="strategies" label="攻击策略">
                 <Select mode="multiple" placeholder="默认直接攻击"
-                  options={ENGINE_STRATEGY_SELECT_OPTIONS}
+                  options={strategySelectOptions}
                   optionRender={(option) => renderDisabledOption(option.data)} />
               </Form.Item>
               {/* P2-1：缺配置的插件是「能选，但本次跑不出用例」，与置灰的远程

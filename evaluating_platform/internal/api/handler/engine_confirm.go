@@ -79,6 +79,11 @@ func promptfooEnginePlanSelectionFromContent(content string) (promptfooEnginePla
 
 	pluginPrefix := maclaw.CapabilitySourcePromptfooPlugin + ":"
 	strategyPrefix := maclaw.CapabilitySourcePromptfooStrategy + ":"
+	// Expert-published packages arrive as their own ref form, and the resolver
+	// switches on that prefix — so for these the id collected here IS the whole
+	// ref, not the part after a prefix (2026-10-23).
+	customPluginPrefix := maclaw.CustomPluginRefPrefix
+	customStrategyPrefix := maclaw.CustomStrategyRefPrefix
 
 	// addRef splits one capability ref by axis. A ref whose id is empty is
 	// counted but not collected — the caller needs to know the plan *meant* to
@@ -99,6 +104,15 @@ func promptfooEnginePlanSelectionFromContent(content string) (promptfooEnginePla
 			if id := strings.TrimSpace(ref[len(strategyPrefix):]); id != "" {
 				strategies[id] = true
 			}
+		case strings.HasPrefix(lower, customPluginPrefix):
+			// An expert package. Before this branch existed the ref was simply
+			// dropped, so a plan that selected only a published plugin reached
+			// the confirm gate as 「计划里没有插件」 — the package was usable by
+			// the engine and unreachable from the product.
+			plugins[ref] = true
+		case strings.HasPrefix(lower, customStrategyPrefix):
+			declaredStrategies++
+			strategies[ref] = true
 		}
 	}
 	addID := func(set map[string]bool, value any) {
@@ -109,8 +123,16 @@ func promptfooEnginePlanSelectionFromContent(content string) (promptfooEnginePla
 
 	if raw, ok := body["selected_capability_refs"].([]any); ok {
 		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				addRef(s)
+			switch typed := item.(type) {
+			case string:
+				addRef(typed)
+			case map[string]any:
+				// The frontend has always rendered object entries from this array
+				// (`source_ref` / `ref` / `id`), and maclaw writes them — but the
+				// confirm path only read strings, so an object-form selection
+				// showed on the card and vanished at confirm. Same class as the
+				// strategy refs dropped in §12: selected, displayed, not executed.
+				addRef(firstAny(typed["source_ref"], typed["ref"], typed["capability_ref"], typed["id"]))
 			}
 		}
 	}
@@ -121,10 +143,21 @@ func promptfooEnginePlanSelectionFromContent(content string) (promptfooEnginePla
 				continue
 			}
 			sourceType := strings.ToLower(strings.TrimSpace(fmtAnyString(firstAny(m["source_type"], m["type"]))))
-			if sourceType != maclaw.CapabilitySourcePromptfooPlugin && sourceType != maclaw.CapabilitySourcePromptfooStrategy {
+			ref := firstAny(m["source_ref"], m["ref"], m["capability_ref"], m["id"])
+			lowerRef := strings.ToLower(strings.TrimSpace(fmtAnyString(ref)))
+			// Either the source_type says it is an engine capability, or the ref
+			// itself carries an engine prefix. The second half matters because a
+			// published package may arrive typed as a platform resource while its
+			// ref is `pf_plugin:<handle>` — the ref, not the label, is what the
+			// engine switches on.
+			engineRef := strings.HasPrefix(lowerRef, pluginPrefix) ||
+				strings.HasPrefix(lowerRef, strategyPrefix) ||
+				strings.HasPrefix(lowerRef, customPluginPrefix) ||
+				strings.HasPrefix(lowerRef, customStrategyPrefix)
+			if sourceType != maclaw.CapabilitySourcePromptfooPlugin && sourceType != maclaw.CapabilitySourcePromptfooStrategy && !engineRef {
 				continue
 			}
-			addRef(firstAny(m["source_ref"], m["ref"], m["capability_ref"], m["id"]))
+			addRef(ref)
 		}
 	}
 	// Top-level plugins/strategies arrays written by MaClaw's plan cards.
@@ -184,14 +217,17 @@ func (s promptfooEnginePlanSelection) withoutRemovedRefs(removed map[string]bool
 	out.Strategies = nil
 	pluginPrefix := maclaw.CapabilitySourcePromptfooPlugin + ":"
 	strategyPrefix := maclaw.CapabilitySourcePromptfooStrategy + ":"
+	// `removed[id]` covers expert packages, whose id is already the ref
+	// (`pf_plugin:<handle>`); `removed[prefix+id]` covers built-ins, whose id is
+	// the bare catalog id. One rule for the card, two shapes underneath.
 	for _, id := range s.Plugins {
-		if removed[pluginPrefix+id] {
+		if removed[id] || removed[pluginPrefix+id] {
 			continue
 		}
 		out.Plugins = append(out.Plugins, id)
 	}
 	for _, id := range s.Strategies {
-		if removed[strategyPrefix+id] {
+		if removed[id] || removed[strategyPrefix+id] {
 			continue
 		}
 		out.Strategies = append(out.Strategies, id)

@@ -16,6 +16,7 @@ import { EngineManager } from './EngineManager'
 import { MaclawSkillManager } from './MaclawSkillManager'
 import { MaclawMCPServerManager } from './MaclawMCPServerManager'
 import { PromptfooPluginPublisher } from './PromptfooPluginPublisher'
+import { PromptfooStrategyPublisher } from './PromptfooStrategyPublisher'
 import { useAuth } from '../../context/AuthContext'
 import { billingService } from '../../services/billing'
 import appLogoUrl from '../../assets/qianxin-ai-security-logo.png'
@@ -31,6 +32,9 @@ const menuItems = [
   // U10：专家自定义插件。放在 Skill 之后、MCP 之前——它是「可执行的评测能力」
   // 的一种，与 Skill 同族，但与平台连接器（MCP）不是一回事。
   { key: '/expert/plugins', icon: <BlockOutlined />, label: '评测插件' },
+  // 2026-10-23：策略包与插件包是同一条发布链路的两种包，紧挨着放；分开太远
+  // 会让专家以为它们是两套流程。
+  { key: '/expert/strategies', icon: <BlockOutlined />, label: '评测策略' },
 ]
 
 export function ExpertPortal() {
@@ -178,6 +182,7 @@ export function ExpertPortal() {
             <Route path="skills" element={<MaclawSkillManager />} />
             <Route path="mcp" element={<MaclawMCPServerManager />} />
             <Route path="plugins" element={<PromptfooPluginPublisher />} />
+            <Route path="strategies" element={<PromptfooStrategyPublisher />} />
             <Route path="*" element={<SampleManager />} />
           </Routes>
         </Content>

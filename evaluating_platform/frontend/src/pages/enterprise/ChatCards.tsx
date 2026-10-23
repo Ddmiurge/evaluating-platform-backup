@@ -145,6 +145,10 @@ function capabilityVisual(item: WelcomeCapability) {
 /** promptfoo capability ref prefixes — same values as `maclaw.CapabilitySource*`. */
 const PROMPTFOO_PLUGIN_REF_PREFIX = 'promptfoo_plugin:'
 const PROMPTFOO_STRATEGY_REF_PREFIX = 'promptfoo_strategy:'
+// Expert-published packages. Mirrors maclaw.CustomPluginRefPrefix /
+// CustomStrategyRefPrefix — the engine's resolver switches on exactly these.
+const PF_PLUGIN_REF_PREFIX = 'pf_plugin:'
+const PF_STRATEGY_REF_PREFIX = 'pf_strategy:'
 
 const ENGINE_PLUGIN_LABELS = new Map(ENGINE_PLUGIN_OPTIONS.map((option) => [option.id, option.name]))
 const ENGINE_STRATEGY_LABELS = new Map(ENGINE_STRATEGY_OPTIONS.map((option) => [option.id, option.name]))
@@ -196,6 +200,18 @@ export function planRefGroups(plan: PlanInfo): PlanRefGroups {
     if (lower.startsWith(PROMPTFOO_STRATEGY_REF_PREFIX)) {
       const id = ref.slice(PROMPTFOO_STRATEGY_REF_PREFIX.length).trim()
       push(groups.strategies, { ref, label: ENGINE_STRATEGY_LABELS.get(id) || id })
+      continue
+    }
+    // Expert-published packages (2026-10-23). They belong on the same axes as
+    // the built-ins — a reader should not have to know that one of the two
+    // "attack strategies" happens to come from an expert package. The suffix
+    // says where it came from without moving it to a different row.
+    if (lower.startsWith(PF_PLUGIN_REF_PREFIX)) {
+      push(groups.plugins, { ref, label: `${ref.slice(PF_PLUGIN_REF_PREFIX.length)}（专家发布）` })
+      continue
+    }
+    if (lower.startsWith(PF_STRATEGY_REF_PREFIX)) {
+      push(groups.strategies, { ref, label: `${ref.slice(PF_STRATEGY_REF_PREFIX.length)}（专家发布）` })
       continue
     }
     const label = displayCapabilityName(ref)

@@ -1505,3 +1505,96 @@ promptfoo 自己把"没有回答"记成 failure（空输出通过它的 rubric�
 5. 企业侧投影：发布后进入企业评测的策略选择（与插件包的投影规则一致）。
 
 **插件侧**：入口已存在（U10），主理人尚未测试 —— 等实测症状再定是发布链路还是投影链路的问题。
+
+---
+
+## 25. 专家自定义插件/策略：把"能执行"接成"能用"（2026-10-23）
+
+### 25.1 结论：后端两条链路早就在，断在"发布之后"
+
+| 环节 | 插件 | 策略 |
+|---|---|---|
+| 发布（`POST /maclaw/evaluation/resources?kind=…`） | ✅ 已有 | ✅ 已有（同一个 write 出口校验） |
+| 校验（YAML-only、禁可执行引用/外链、大小、依赖、variant 冲突） | ✅ | ✅ |
+| 执行侧解析（`pf_plugin:` / `pf_strategy:`） | ✅ | ✅ |
+| 专家门户页面 | ✅ | ❌ 没有 |
+| 企业侧"选得到" | ❌ | ❌ |
+| 对话确认路径认这两种 ref | ❌ | ❌ |
+
+也就是说：一个专家发布的包，**只能在 API 层手工拼请求才能跑**。
+
+### 25.2 四处接线（本批）
+
+1. **确认路径认 `pf_` 引用**（`engine_confirm.go`）：`addRef` 增加两支，且自定义包的 **id 就是整个 ref**
+   （解析器按前缀分流，不能只取冒号后那段）。`withoutRemovedRefs` 同时按 `removed[id]`（自定义）与
+   `removed[prefix+id]`（内置）判断 —— 一张卡片一条规则，底下两种形态。
+2. **`selected_capability_refs` 里的对象形态**：前端一直在渲染 `{source_ref: …}` 这种条目，
+   并由此支持了别名形态，但 **Go 侧只读字符串** —— 对象形态在卡片上显示、在确认时消失
+   （与 §12「策略被静默丢弃」同一形状）。现在两种形态都读；`selected_capabilities` 里即使
+   `source_type` 写的是平台资源，只要 ref 带引擎前缀也承认（**ref 才是执行依据，标签不是**）。
+3. **能力卡的 ref**：`resourceCapabilityCard` 对 `pf_plugin` / `pf_strategy` 输出
+   `pf_plugin:<handle>` / `pf_strategy:<handle>`，`source_type` 用引擎的两条轴。
+   原来是裸 handle —— 规划器把卡转成计划 ref 时，下游没有任何东西认得。
+4. **企业侧选择器**：向导的插件/策略下拉并入"专家发布"分组，value 为 `pf_*:<handle>`；
+   自定义策略同样计入"探针数 × 策略个数"的提示。
+
+以及**专家门户新增「评测策略」页**（与插件页同形：列表 / 发布抽屉 / YAML / 版本 / 拒收原因）。
+
+### 25.3 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestPromptfooEnginePlanSelectionReadsExpertPackages`（两种形态 + 移除 + DeclaredStrategies） | 摘掉 `pf_` 分支 → 红（插件/策略都丢） |
+| `TestResourceCapabilityCardGivesPackagesTheirEngineRef`（三种 kind） | 退回裸 handle → 红 |
+| 前端 `planRefGroups — expert packages` | 摘掉前缀分支 → 落到「使用能力」→ 红 |
+
+### 25.4 边界
+
+- **自定义策略不能从计划卡"追加"**：卡片的追加下拉仍只列内置策略（服务端追加闸也只放行内置 id）。
+  自定义策略通过计划卡 / 向导选择。要做需要"追加时按目录校验发布包"，另开。
+- 同名处理：执行按 handle 解析，不会串号；界面用"（专家发布）"标记来源。
+- 自定义包的探针数展开：`fanout` 对未知 id 视为 1（与内置单插件一致），策略仍按个数相乘。
+
+---
+
+## 26. 重复发布改为更新同一个包；管理员可治理策略包（2026-10-23）
+
+### 26.1 缺陷：重复发布 = 多出一个包
+
+每次发布都由后端新生成资源 id 与 handle，于是"再发布一次同名包"得到**两条记录、两个 handle**：
+列表出现两个同名包、企业下拉两项，页面承诺的「递增版本便于追溯」实际做不到。
+
+**修法（主理人选 A：更新同一个包）**
+
+- 前端两个发布页新增「重新发布」入口：带已有 `id` 与 `handle`；
+- 存储侧按 id **更新同一行**（`UpsertResource` 本来就是按 id UPSERT，出版物也按 resource id 更新），
+  并在请求没带 handle 时**沿用原 handle** —— 否则会新造一个 handle，让按旧 handle 建立的引用失效；
+- `GetPublishedByHandle` 补 `ORDER BY updated_at DESC`：历史上同一 handle 可能真有多行，
+  没有排序时解析到哪一行不确定（可能一直加载旧版本）。
+
+**顺带堵住一个跨租户写入洞**：`UpsertResource` 不重写 `owner_user_id`，但也没有归属校验 ——
+带上别人的资源 id 就能覆盖对方的包内容（归属仍是受害者的）。现在写入前用**按 owner 过滤的**
+`GetResource` 校验，不属于当前账号的 id 直接拒绝。这条是「重新发布」功能成立的前提，
+不是可选项：没有它，新入口等于把越权写变成正常路径。
+
+### 26.2 缺陷：管理员门户管不了策略包
+
+资源治理页的范围只有「自定义插件（`pf_plugin`）」，`pf_strategy` 没有治理入口 ——
+"管理员可随时停用/下架"这句承诺对策略只能靠 API 兑现。
+
+**修法**：范围增加「自定义策略」，类型标签同样高亮，id 列按 kind 显示
+`pf_strategy_id` / `pf_plugin_id`。
+
+### 26.3 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestRepublishingUpdatesTheSamePackage`（同 id / handle 稳定 / 只一行 / 他人带同 id 被拒） | 去掉归属校验 → 「another account updated a package it does not own」；去掉 handle 复用 → handle 变成 `platform_resource_<uuid>` |
+
+> 反证的第二个用例最初是**绿的**：测试里第一次发布用的是自动 handle（`platform_resource_<id>`），
+> 它与重新发布时生成的恰好相同，掩盖了复用规则。改成自定义 handle 后才真正验到。
+
+### 26.4 边界
+
+- 包正文不回显（安全边界）：重新发布时只回填名称/说明/版本，YAML 需重新粘贴；
+- 历史数据里可能已有同 handle 的多行：排序保证解析取最新，列表仍会显示多行，需要手工归档旧的。

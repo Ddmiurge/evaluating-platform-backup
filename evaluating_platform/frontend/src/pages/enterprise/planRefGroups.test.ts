@@ -63,3 +63,21 @@ describe('planRefGroups', () => {
     expect(groups.strategies.length).toBe(1)
   })
 })
+
+describe('planRefGroups — expert packages', () => {
+  // A published package belongs on the same axis as the built-ins: a reader
+  // should not have to know that one of the two "attack strategies" came from
+  // an expert. Before 2026-10-23 these refs fell into 使用能力, so the card
+  // showed a strategy that was not on the strategy row — and the confirm path
+  // dropped it entirely.
+  it('puts a published plugin and strategy on their own axes, marked by origin', () => {
+    const groups = planRefGroups(plan({
+      selected_capability_refs: ['pf_plugin:acme-generator', 'pf_strategy:progressive-probe'],
+    }))
+    expect(groups.plugins.map((chip) => chip.ref)).toEqual(['pf_plugin:acme-generator'])
+    expect(groups.plugins[0].label).toBe('acme-generator（专家发布）')
+    expect(groups.strategies.map((chip) => chip.ref)).toEqual(['pf_strategy:progressive-probe'])
+    expect(groups.strategies[0].label).toBe('progressive-probe（专家发布）')
+    expect(groups.others).toEqual([])
+  })
+})

@@ -904,3 +904,43 @@ promptfoo 把「没有回答」记成 failure（空输出通过它的 rubric）�
 
 **边界**：`BatchSafetyScore` / `BatchRiskLevel` / `BatchSummary` 函数本身未改，改的是引擎路径传入的
 分母与计数；平台 Judge 链路的「无回答」另有语义，本次不动。
+
+## 专家自定义插件/策略：从"能执行"到"能用"（2026-10-23）
+
+发布与执行早就存在（加密资源存储 + `pf_plugin:` / `pf_strategy:` 解析），缺的是中间三处接线：
+
+| 断点 | 现象 | 修法 |
+|---|---|---|
+| 计划卡抽取器只认 `promptfoo_*` 前缀 | 计划里只有自定义包时被拒为「计划里没有插件」 | `addRef` 增加 `pf_` 两支；自定义包的 id 就是整个 ref |
+| `selected_capability_refs` 对象形态被 Go 侧忽略 | 卡片显示、确认时消失 | 字符串与对象两种形态都读；`selected_capabilities` 里 ref 带引擎前缀即承认 |
+| 能力卡用的是裸 handle | 规划器转出的 ref 下游不认 | `resourceCapabilityCard` 对 pf 两种 kind 输出 `pf_plugin:<handle>` / `pf_strategy:<handle>` |
+| 向导下拉只有内置目录 | 企业选不到 | 并入「专家发布」分组，value 为 `pf_*:<handle>` |
+
+专家门户新增「评测策略」页（与插件页同形）。**规则：ref 决定执行什么，`source_type` 标签不决定。**
+
+守卫：`TestPromptfooEnginePlanSelectionReadsExpertPackages`、`TestResourceCapabilityCardGivesPackagesTheirEngineRef`、
+前端 `planRefGroups — expert packages`；反证分别是摘掉前缀分支、退回裸 handle、摘掉分组分支。
+
+边界：自定义策略不能从计划卡追加（卡片追加仍只放行内置 id）；同名按 handle 解析不串号，
+界面以「（专家发布）」标注来源。
+
+## 专家包的身份与治理（2026-10-23）
+
+### 重复发布 = 更新，不是新增
+
+发布请求带已有 `id` + `metadata.handle`：存储按 id UPDATE 同一行，出版物按 resource id 跟随。
+请求未带 handle 时沿用原 handle（新造 handle 会让按旧 handle 建立的引用失效）。
+
+两条不可或缺的规则：
+
+1. **写入前按 owner 校验 id**（`GetResource` 按 `owner_user_id` 过滤）。`UpsertResource` 不重写
+   owner，但也不校验 —— 没有这一步，带别人的 id 就能覆盖对方包内容（归属仍是受害者）。
+2. **`GetPublishedByHandle` 按 `updated_at DESC`**：历史数据可能同 handle 多行，无排序时解析
+   到哪一行不确定。
+
+### 管理员治理
+
+资源治理页范围含 `pf_plugin` 与 `pf_strategy`；id 列按 kind 显示 `pf_plugin_id` / `pf_strategy_id`。
+
+守卫：`TestRepublishingUpdatesTheSamePackage`（同 id / handle 稳定 / 只一行 / 他人被拒），
+反证为去掉归属校验与去掉 handle 复用。

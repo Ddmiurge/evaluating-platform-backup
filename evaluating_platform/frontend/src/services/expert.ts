@@ -160,6 +160,19 @@ export const expertService = {
         params: { kind: 'pf_plugin', ...params },
       })
       .then((r) => r.data),
+
+  // ── 专家自定义策略（与插件同一条发布链路，kind=pf_strategy）──────────────
+  // 执行侧一直支持策略包（pf_strategy: 解析、拒收提示），缺的只是发布入口；
+  // 2026-10-23 补上。校验、规范化、加密存储全部复用同一个 write 出口。
+  publishPromptfooStrategy: (data: PromptfooStrategyPublishInput) =>
+    api.post<PromptfooStrategySummary>('/maclaw/evaluation/resources', data).then((r) => r.data),
+
+  listPromptfooStrategies: (params?: { include_inactive?: boolean; limit?: number }) =>
+    api
+      .get<{ items: PromptfooStrategySummary[] }>('/maclaw/evaluation/resources', {
+        params: { kind: 'pf_strategy', ...params },
+      })
+      .then((r) => r.data),
 }
 
 /** U10 · 一条已发布的自定义插件（只含安全摘要，不含插件正文）。 */
@@ -187,6 +200,8 @@ export interface PromptfooPluginSummary {
  * 一条清楚的提示，而不是一条 schema 报错。
  */
 export interface PromptfooPluginPublishInput {
+  /** 重新发布时带上已有包 id：后端按 id 更新同一行，不会生成第二个包。 */
+  id?: string
   name: string
   description?: string
   kind: 'pf_plugin'
@@ -199,8 +214,58 @@ export interface PromptfooPluginPublishInput {
   payload: string
   metadata: {
     pf_plugin_form: 'yaml'
+    /** 重新发布时带上已有 handle，保证引用稳定。 */
+    handle?: string
     /** 逗号分隔的依赖插件 id；命中远程生成清单时后端会拒绝发布。 */
     pf_plugin_depends_on?: string
+    [key: string]: string | undefined
+  }
+}
+/** 一条已发布的专家自定义策略（只含安全摘要，不含策略正文）。 */
+export interface PromptfooStrategySummary {
+  id: string
+  handle: string
+  name: string
+  description?: string
+  kind: string
+  version?: string
+  status: string
+  enabled: boolean
+  summary?: string
+  tags?: string[]
+  metadata?: Record<string, string>
+  created_at?: string
+  updated_at?: string
+}
+
+/**
+ * 发布请求。
+ *
+ * `strategyText` 是**攻击模型的指令**，会被 promptfoo 拼进生成提示词驱动多轮
+ * 攻击，不是发给被测目标的载荷。`pf_strategy_form` 固定 yaml；`pf_strategy_variant`
+ * 可覆盖由 handle 推导出的 `custom:<variant>`，发布后执行侧按它加载。
+ */
+export interface PromptfooStrategyPublishInput {
+  /** 重新发布时带上已有包 id：后端按 id 更新同一行，不会生成第二个包。 */
+  id?: string
+  name: string
+  description?: string
+  kind: 'pf_strategy'
+  version?: string
+  status: 'published'
+  enabled: boolean
+  summary?: string
+  tags?: string[]
+  /** 策略包正文（YAML：strategyText 必填，可选 maxTurns 等）。 */
+  payload: string
+  metadata: {
+    pf_strategy_form: 'yaml'
+    /** 重新发布时带上已有 handle，保证引用稳定。 */
+    handle?: string
+    /** 逗号分隔的依赖插件 id；命中远程生成清单时后端会拒绝发布。 */
+    pf_strategy_depends_on?: string
+    /** 可选：覆盖 custom:<variant> 的 variant。 */
+    pf_strategy_variant?: string
     [key: string]: string | undefined
   }
 }

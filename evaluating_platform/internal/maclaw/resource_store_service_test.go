@@ -145,3 +145,92 @@ func (s *fakeResourceStore) GetResource(_ context.Context, userID uuid.UUID, idO
 	}
 	return &item, nil
 }
+
+// Republishing a package must UPDATE it, not create a second one — and the
+// update must not cross the expert boundary.
+//
+// Measured 2026-10-23: every publish generated a fresh id and handle, so
+// republishing produced a second package, the expert's list showed both, and
+// the enterprise picker offered both. The page had been promising versioning,
+// which only works if the identity is stable. Sending the existing id makes the
+// store update the row and the publication follows it (keyed by resource id).
+//
+// The owner check is what makes that safe: UpsertResource never rewrites
+// owner_user_id, so without the owner-scoped lookup an expert could replace
+// another expert's package content while the publication stayed owned by the
+// victim.
+func TestRepublishingUpdatesTheSamePackage(t *testing.T) {
+	store := newFakeResourceStore()
+	service := NewResourceStoreService(store, agentTestKeyStore(t))
+	ctx := context.Background()
+	owner := uuid.New()
+
+	// A custom handle on purpose: a generated one is `platform_resource_<id>`
+	// and would coincide across republication, hiding the reuse rule entirely.
+	const stableHandle = "expert_sample_1"
+	first, err := service.SaveResource(ctx, owner, "tenant-1", EvaluationResourceInput{
+		Name:     "我的样本",
+		Kind:     EvaluationResourceKindSample,
+		Status:   EvaluationResourceStatusPublished,
+		Enabled:  true,
+		Payload:  "第一版",
+		Metadata: map[string]string{"handle": stableHandle},
+	})
+	if err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+
+	second, err := service.SaveResource(ctx, owner, "tenant-1", EvaluationResourceInput{
+		ID:      first.ID,
+		Name:    "我的样本 v2",
+		Kind:    EvaluationResourceKindSample,
+		Status:  EvaluationResourceStatusPublished,
+		Enabled: true,
+		Payload: "第二版",
+	})
+	if err != nil {
+		t.Fatalf("republish: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Errorf("id = %s, want the same id %s (a new id means a second package)", second.ID, first.ID)
+	}
+	if second.Handle != stableHandle {
+		t.Errorf("handle = %q, want the original %q — the republish sent no handle and must not mint a new one", second.Handle, stableHandle)
+	}
+	distinct := map[string]bool{}
+	for key, item := range store.items {
+		if key == item.ID.String() {
+			distinct[item.ID.String()] = true
+		}
+	}
+	if len(distinct) != 1 {
+		t.Errorf("stored packages = %d, want 1", len(distinct))
+	}
+
+	// Another account naming the same id must be refused, and the owner's row
+	// must be untouched.
+	if _, err := service.SaveResource(ctx, uuid.New(), "tenant-2", EvaluationResourceInput{
+		ID:      first.ID,
+		Name:    "被劫持",
+		Kind:    EvaluationResourceKindSample,
+		Status:  EvaluationResourceStatusPublished,
+		Enabled: true,
+		Payload: "恶意内容",
+	}); err == nil {
+		t.Fatal("another account updated a package it does not own")
+	}
+	kept, err := service.SaveResource(ctx, owner, "tenant-1", EvaluationResourceInput{
+		ID:      first.ID,
+		Name:    "我的样本 v3",
+		Kind:    EvaluationResourceKindSample,
+		Status:  EvaluationResourceStatusPublished,
+		Enabled: true,
+		Payload: "第三版",
+	})
+	if err != nil {
+		t.Fatalf("owner republish after the rejected attempt: %v", err)
+	}
+	if kept.Name != "我的样本 v3" {
+		t.Errorf("name = %q, want the owner's own update to still work", kept.Name)
+	}
+}
