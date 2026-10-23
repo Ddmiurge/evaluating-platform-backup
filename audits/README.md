@@ -8,5 +8,6 @@
 | `audit-2026-10-13-attack-generation-architecture.md` | 攻击生成架构 |
 | `audit-2026-10-13-engine-job-link-failure.md` | 引擎 run 与 job 未关联 |
 | `audit-2026-10-13-report-detail-boundary.md` | 报告细节（原文）的边界决策依据 |
+| `code-audit-redundancy-review-2026-10-12.md` | 冗余架构与代码审计（gstack 交付物，原在 `deliverables/`） |
 
 上机验证结果在 `../records/`；阶段计划与决策在 `../audit-2026-10-09/`。
