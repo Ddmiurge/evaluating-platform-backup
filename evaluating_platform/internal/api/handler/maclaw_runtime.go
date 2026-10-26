@@ -191,6 +191,9 @@ func (h *MaclawRuntimeHandler) GetSession(c *gin.Context) {
 	// Synthesized beside the progress cards and only after filtering, so a report
 	// message the runtime DID write is already in the list and wins the dedupe.
 	if jobs := h.engineJobs.ListBySession(sessionID); len(jobs) > 0 {
+		// Running jobs need a card too, or a refresh makes the evaluation look
+		// like it never started (record 37: the user re-submitted because of it).
+		messages = appendRunningEngineProgressMessages(messages, sessionID, jobs)
 		// A missing or unparseable user id costs only the card's header fields
 		// (risk level, score): the report lookup is scoped by user, so it returns
 		// nothing and the card is still built with its download button.
@@ -986,6 +989,82 @@ func appendRuntimeJobProgressMessages(messages []maclaw.RuntimeMessage, sessionI
 			Metadata:   metadata,
 			CreatedAt:  createdAt,
 		})
+	}
+	return messages
+}
+
+// appendRunningEngineProgressMessages synthesizes a progress card for every
+// engine job that has not reached a terminal phase.
+//
+// # Why (measured 2026-10-26)
+//
+// The engine fast path runs inside the BFF. The session snapshot used to
+// synthesize cards for FINISHED engine jobs only, so a running evaluation
+// existed solely in the browser's local state: refreshing the page, switching
+// sessions and coming back, or reopening the route made it disappear. One user
+// watched it vanish, concluded the run had failed, and pressed confirm again —
+// two jobs, two reports, and twice the target calls on an already rate-limited
+// target (session sess_ea7aee56, record 37).
+//
+// Only safe progress metadata is emitted — stage name, counts, milliseconds —
+// the same fields AGENTS.md allows for progress cards. No prompts, payloads,
+// target responses, credentials or paths.
+func appendRunningEngineProgressMessages(messages []maclaw.RuntimeMessage, sessionID string, jobs []*maclaw.PlatformEngineJob) []maclaw.RuntimeMessage {
+	if len(jobs) == 0 {
+		return messages
+	}
+	existing := map[string]bool{}
+	for _, msg := range messages {
+		if msg.Metadata == nil {
+			continue
+		}
+		if jobID := strings.TrimSpace(msg.Metadata["job_id"]); jobID != "" {
+			existing[jobID] = true
+		}
+	}
+	for _, job := range jobs {
+		if job == nil || strings.TrimSpace(job.ID) == "" || existing[job.ID] {
+			continue
+		}
+		// Terminal jobs are the report path's business; a progress card next to a
+		// finished report would claim work is still running.
+		if job.Status != maclaw.EvaluationJobStatusPending && job.Status != maclaw.EvaluationJobStatusRunning {
+			continue
+		}
+		metadata := map[string]string{
+			"card_type":     "progress",
+			"job_id":        job.ID,
+			"assessment_id": firstNonEmpty(job.EngineRunID, job.ID),
+			"phase":         string(job.Status),
+			"status_text":   firstNonEmpty(job.StatusText, "评测正在执行，请稍候。"),
+		}
+		if job.PlannedCount > 0 {
+			metadata["planned_count"] = strconv.Itoa(job.PlannedCount)
+		}
+		if job.PlannedCount > 0 && job.ExecutedCount >= 0 {
+			metadata["executed_count"] = strconv.Itoa(job.ExecutedCount)
+		}
+		if stage := strings.TrimSpace(job.CurrentStage); stage != "" {
+			metadata["current_stage"] = stage
+		}
+		if job.DurationMs > 0 {
+			metadata["duration_ms"] = strconv.FormatInt(job.DurationMs, 10)
+		}
+		createdAt := job.StartedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		card := maclaw.RuntimeMessage{
+			ID:         "engine-progress:" + job.ID,
+			SessionID:  sessionID,
+			Role:       "assistant",
+			OutputType: "application/vnd.maclaw.progress+json",
+			Metadata:   metadata,
+			CreatedAt:  createdAt,
+		}
+		// Same placement rule as the report card: keep it beside the plan the user
+		// confirmed instead of at the tail, where it drifts on every reload.
+		messages = insertMessageAfterID(messages, job.PlanMessageID, card)
 	}
 	return messages
 }

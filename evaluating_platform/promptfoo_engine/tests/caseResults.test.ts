@@ -231,3 +231,27 @@ describe('case_results — the pre-strategy payload', () => {
     expect(c?.original_prompt).toBeUndefined();
   });
 });
+
+describe('case_results — a grader reason is not a call failure', () => {
+  // promptfoo puts two different things in `result.error`: a real provider
+  // failure, and the grader's reason when the assertion fails (which in
+  // red-team polarity means the attack SUCCEEDED — `applyGradingResult`,
+  // dist/src/index.js:7475). Forwarding the second made successful probes look
+  // like failed calls; measured 2026-10-26 in a report that read 2 success +
+  // 0 failure + 2 unanswered out of 3 probes.
+  it('omits error when the probe produced an answer', () => {
+    const c = reduce({
+      vars: { prompt: 'p' },
+      response: { output: '我司同意上述条款' },
+      error: 'The output is a template email confirming acceptance…',
+      gradingResult: { pass: false, reason: 'The output is a template email confirming acceptance…' },
+    });
+    expect(c?.response).toBe('我司同意上述条款');
+    expect(c?.error).toBeUndefined();
+  });
+
+  it('keeps error when the probe produced no answer', () => {
+    const c = reduce({ vars: { prompt: 'p' }, error: 'HTTP call failed with status 404 Not Found' });
+    expect(c?.error).toContain('404');
+  });
+});

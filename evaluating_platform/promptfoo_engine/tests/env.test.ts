@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { ENGINE_WORKER_COUNT, assertNoRemoteGenerationConsent, assertSecuritySwitches, loadEnv } from '../src/env.js';
+import {
+  ENGINE_WORKER_COUNT,
+  assertNoRemoteGenerationConsent,
+  assertResponseCacheDisabled,
+  assertSecuritySwitches,
+  loadEnv,
+} from '../src/env.js';
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return {
@@ -11,6 +17,8 @@ function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
     PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: '1',
     PROMPTFOO_DISABLE_TELEMETRY: '1',
     PROMPTFOO_DISABLE_SHARE: '1',
+    // 2026-10-26：缓存必须显式关闭（promptfoo 默认开，重复 prompt 不会真正打到靶机）。
+    PROMPTFOO_CACHE_ENABLED: '0',
     PROMPTFOO_ENGINE_BEARER_TOKEN: 'x'.repeat(24),
     PROMPTFOO_ENGINE_PORT: '8090',
     PROMPTFOO_ENGINE_DATA_ROOT: '/data/runs',
@@ -195,5 +203,25 @@ describe('ENGINE_WORKER_COUNT — runs are serialized by construction', () => {
     // 配置值仍被解析，只为在启动日志里说明它被忽略 ——「设了没变化还不告诉我」比
     // 「设了没用」更糟。
     expect(loadEnv(env({ PROMPTFOO_ENGINE_WORKERS: '4' })).workerCount).toBe(4);
+  });
+});
+
+describe('assertResponseCacheDisabled (fail-closed)', () => {
+  // promptfoo's redteam runner hardcodes `cache: true` after spreading our
+  // options, so the only reliable switch is the environment. Unset means ON
+  // (promptfoo's default), which is why "missing" must not pass.
+  it('refuses to start when the switch is unset', () => {
+    expect(() => assertResponseCacheDisabled({})).toThrow(/PROMPTFOO_CACHE_ENABLED/);
+  });
+
+  it('refuses when the cache is explicitly enabled', () => {
+    expect(() => assertResponseCacheDisabled({ PROMPTFOO_CACHE_ENABLED: '1' })).toThrow(/cache/);
+    expect(() => assertResponseCacheDisabled({ PROMPTFOO_CACHE_ENABLED: 'true' })).toThrow(/cache/);
+  });
+
+  it('accepts the documented off spellings', () => {
+    for (const value of ['0', 'false', 'no', 'off']) {
+      expect(() => assertResponseCacheDisabled({ PROMPTFOO_CACHE_ENABLED: value })).not.toThrow();
+    }
   });
 });

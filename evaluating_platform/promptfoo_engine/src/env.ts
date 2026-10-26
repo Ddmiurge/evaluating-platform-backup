@@ -74,8 +74,41 @@ export function assertSecuritySwitches(env: NodeJS.ProcessEnv = process.env): vo
   }
 }
 
+/**
+ * The response cache must be OFF.
+ *
+ * # Why this is a boot requirement, not a per-run option (measured 2026-10-26)
+ *
+ * promptfoo's redteam runner hardcodes `cache: true` in `doEval`
+ * (`dist/src/index.js:18998`) *after* spreading the options we hand it, so the
+ * `cache: false` the engine passes is ignored. With caching on, two runs of the
+ * same prompt share the first response: the target never receives the second
+ * probe, yet the report counts it as measured and judged. A field report showed
+ * exactly that — two runs, six probes, five messages at the target, two
+ * byte-identical 190-character answers.
+ *
+ * The switch is read once, when promptfoo's cache module loads, so the only
+ * reliable place to set it is the process environment. Treating it as
+ * fail-closed means a deployment cannot silently reintroduce cross-run reuse by
+ * forgetting one variable.
+ *
+ * Note the polarity: promptfoo's default is `true`, so "unset" is NOT
+ * "disabled" — only an explicit false value passes.
+ */
+export function assertResponseCacheDisabled(env: NodeJS.ProcessEnv = process.env): void {
+  const raw = (env.PROMPTFOO_CACHE_ENABLED ?? '').trim();
+  const explicitlyOff = raw !== '' && parseBool(raw) === false;
+  if (explicitlyOff) return;
+  throw new Error(
+    '[FATAL] promptfoo-engine refuses to start: the response cache is not disabled. ' +
+      'With caching on, a repeated prompt never reaches the target and the report still counts it as measured. ' +
+      'Set PROMPTFOO_CACHE_ENABLED=0.',
+  );
+}
+
 export function loadEnv(env: NodeJS.ProcessEnv = process.env): EngineEnv {
   assertSecuritySwitches(env);
+  assertResponseCacheDisabled(env);
   assertNoRemoteGenerationConsent(env);
 
   const bearerToken = env.PROMPTFOO_ENGINE_BEARER_TOKEN ?? '';

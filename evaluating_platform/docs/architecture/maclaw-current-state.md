@@ -976,3 +976,36 @@ promptfoo 把「没有回答」记成 failure（空输出通过它的 rubric）�
 
 `ArchiveResource` 是 `EvaluationGateway` 合约的一部分：`gateway_contract_test.go` 有登记，
 `client_routes.json` 快照含 `POST /api/v1/evaluation/resources/{resource_id}/archive`。
+
+## 报告读数、缓存、进度卡与超时（P13，2026-10-26）
+
+### `case_results[].error` 的语义
+
+promptfoo 把**判分理由**也写进 `result.error`（`applyGradingResult`，`pass === false` 时），
+而红队极性下 pass=false = 攻击成功。引擎曾原样搬运，BFF 又"error 非空即缺失"，
+于是成功项显示成「未取得回答」、三数之和超过总数、成功率 200%。
+
+现在：引擎只在**没有回答文本**时写 error；BFF 只看 `Response == ""`；
+`engineMeasuredCounts` 让 success 与 unanswered 互斥，failure 由差值推导（不钳位），
+成功率封顶 100%。
+
+### 缓存必须关闭（启动期要求）
+
+`doEval` 硬写 `cache: true`，覆盖引擎的 `cache: false`；缓存开着时重复 prompt 不打靶机，
+报告仍算"已测"。`PROMPTFOO_CACHE_ENABLED=0` 由 compose 下发，`env.ts` fail-closed
+（未设置＝默认开启＝拒绝启动）。
+
+### 超时的真实通道
+
+http provider 只读 `REQUEST_TIMEOUT_MS`（默认 300s），**不读** `config.timeoutMs`；
+原先下发的 `timeout` 无人读取。现在 compose 设 `REQUEST_TIMEOUT_MS=180000`，
+目标 provider `maxRetries: 0`，单探针有界；`abortSignal` 已传给 `redteam.run`。
+
+### 运行中的评测可见
+
+`GetSession` 对非终态引擎 job 合成 `card_type=progress` 卡（安全进度字段，按 job_id 去重，
+插在计划卡之后）。终态走报告卡。此前运行中的评测只存在于浏览器本地状态，刷新即消失。
+
+守卫：`caseResults` 引擎用例、`EngineCaseFindingsRender…/grader reason`、
+`MeasuredCounts*`、`AppendRunningEngineProgressMessages*`、`GetSessionSynthesizesRunningEngineProgressCard`、
+`assertResponseCacheDisabled`；反证均跑红。

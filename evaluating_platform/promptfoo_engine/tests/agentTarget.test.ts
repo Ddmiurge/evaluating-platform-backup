@@ -68,12 +68,18 @@ describe('buildTargetProvider (agent targets)', () => {
     expect(config.transformResponse).toBe('json.choices[0].message.content');
   });
 
-  it('forwards the timeout to the http provider config', () => {
+  it('bounds retries and does not pretend to set a per-provider timeout', () => {
+    // Measured 2026-10-26: we used to pass `timeout`, and before that `timeoutMs`
+    // — promptfoo's http provider reads NEITHER. Its bound is the process-level
+    // `REQUEST_TIMEOUT_MS` (fetch-*.js:47). A config key nobody reads is worse
+    // than no key: it made the 15-minute hang look configured.
     const provider = buildTargetProvider(
       targetCreds({ agent_endpoint: 'https://agent.example.com/chat', timeout_seconds: 12 }),
     );
     const config = provider.config as Record<string, any>;
-    expect(config.timeout).toBe(12000);
+    expect(config.timeout).toBeUndefined();
+    expect(config.timeoutMs).toBeUndefined();
+    expect(config.maxRetries).toBe(0);
   });
 });
 

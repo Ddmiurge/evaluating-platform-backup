@@ -200,3 +200,11 @@ npm run build
 cd C:\Users\wangboyang\Desktop\evaluating_platform
 git diff --check
 ```
+
+## 运维动作（2026-10-26 实测补充）
+
+- **重启引擎容器必须用 `docker compose up -d --force-recreate promptfoo-engine`**。
+  `docker restart` 会让引擎进入重启循环：`/home/node/.promptfoo` 是 tmpfs，重启后 libsql
+  打不开数据库（`SQLITE_CANTOPEN`），进程 fatal exit，健康检查一直 unhealthy。
+- 部署后确认引擎环境里有 `PROMPTFOO_CACHE_ENABLED=0` 与 `REQUEST_TIMEOUT_MS=180000`：
+  前者是启动期 fail-closed 要求（缺失会拒绝启动），后者是所有外发调用的统一上限。

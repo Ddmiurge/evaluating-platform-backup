@@ -1651,3 +1651,85 @@ promptfoo 自己把"没有回答"记成 failure（空输出通过它的 rubric�
 - 本轮没有服务器验证；需要重建 **engine + backend**（引擎与后端都改了），前端仅一处提示文案。
 - 包名含中文时派生 id 会折成一串连字符（`custom:p13-----------v2`）：发布页「策略标识」的说明已补提示，
   建议显式填写。
+
+---
+
+## 28. P13：报告读数、缓存、进度卡、超时（2026-10-26，36/37 号记录的修复）
+
+### 28.1 P1-1 成功项被显示成「未取得回答」
+
+**根因（已核到 promptfoo 内部）**：`applyGradingResult`（`dist/src/index.js:7475`）
+在 `checkResult.pass === false` 时把**判分理由**写进 `row.error`。红队极性下 pass=false
+意味着**攻击成功**。引擎的 `caseCallError` 原样搬进 `case_results[].error`，
+BFF 的 `probeAnswerMissing` 又"error 非空即视为没回答"——同一条探针既算成功又算未取得回答。
+
+**修法（两侧，互为纵深）**
+- 引擎：`caseCallError` 只在**没有回答文本**时返回错误；有回答时一律不写（理由已在 `judge_reason`）；
+- BFF：`probeAnswerMissing` 只看 `Response == ""`。即使引擎镜像旧了，报告也不会再被污染。
+
+### 28.2 P1-2 200% 成功率
+
+**根因**：`success` 取引擎计数、`unanswered` 取被污染的 error，二者不互斥；
+`failure = measured - success` 被钳到 0，三数之和 > 总数。
+
+**修法**：`engineMeasuredCounts` 保证**三分区**——`success` 与 `unanswered` 互斥，
+`failure` 由 `total - success - unanswered` **推导**而不是钳位；成功率封顶 100%。
+反证用一个"自相矛盾"的引擎结果（成功但没有回答）验证：分区断言在正常输入下永远成立，
+只有这种输入能证明它在做事。
+
+### 28.3 P2-1 promptfoo 缓存：探针没打到靶机
+
+**核实**：`doEval` 在 `...evalOptions` **之后**硬写 `cache: true`（`index.js:18998`），
+覆盖引擎的 `cache: false`。记录 37 说"清理清单没有 cache/"——**这条不准确**：
+`promptfooRunArtifactPaths` 已经追加了 `cache`（`promptfooStateCleanup.ts:127`）。
+但清理只在终态跑，运行中断/僵尸 worker 时缓存会跨 run 存活。
+
+**修法**：`PROMPTFOO_CACHE_ENABLED=0` 由 compose 下发，并在 `env.ts` **fail-closed** 校验
+（未设置 = promptfoo 默认开启 = 拒绝启动）。缓存模块在加载时读该变量，所以只能走环境。
+
+### 28.4 P2-2 运行中的评测刷新即消失
+
+**根因**：`GetSession` 只给「maclaw runtime 的运行中 job」和「已完成的引擎 job」合成卡片；
+引擎快速路径的运行中 job 只存在于浏览器本地状态。
+
+**修法**：新增 `appendRunningEngineProgressMessages`，对**非终态**引擎 job 合成
+`card_type=progress` 卡（`job_id` / `phase` / `current_stage` / `planned_count` /
+`executed_count` / `duration_ms` / `status_text`），插在计划卡之后，按 `job_id` 去重。
+只发安全进度字段。终态 job 仍走报告卡路径，避免"已完成还显示正在进行"。
+
+### 28.5 P2-3 目标调用无超时 —— 记录 37 的建议需要更正
+
+记录 37 建议"下发 `config.timeoutMs`"。**实测代码不是这样**：promptfoo 的 http provider
+只读 `getRequestTimeoutMs()`（`REQUEST_TIMEOUT_MS`，默认 300s），`config.timeoutMs`
+只有 A2A / browser provider 使用。我们原来下发的 `timeout` 更是无人读取——**看起来配了
+超时，实际没有**。
+
+**修法**
+- 去掉两个 provider 分支里无效的 `timeout` 键（留注释说明真正生效的通道）；
+- compose 下发 `REQUEST_TIMEOUT_MS=180000`，作为所有外发调用的统一上限；
+- 目标 provider `maxRetries: 0`：一次 429/挂起不再乘上重试预算，保证单探针有界。
+- cancel：`abortSignal` 本来就已传给 `promptfoo.redteam.run`（`nativeRedteam.ts:1382`），
+  配合上述上限，僵尸 worker 的最长占用从"无限"变为"一次超时"。
+
+### 28.6 OPS
+
+`docker restart` 引擎容器会因 tmpfs 上的 SQLite 打不开而重启循环，必须
+`docker compose up -d --force-recreate promptfoo-engine`。已写入上线清单。
+
+### 28.7 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| 引擎 `caseResults`：grader reason 不得写成 error | 去掉"有回答就不写" → 红 |
+| `TestEngineCaseFindingsRenderAMissingAnswer/grader reason…` | BFF 恢复"error 非空即缺失" → 红 |
+| `TestMeasuredCountsStayWithinTotal`、`TestMeasuredCountsClampAContradictoryEngineResult` | 去掉分区夹紧 → 红（`unanswered = 1`） |
+| `TestAppendRunningEngineProgressMessagesAddsASafeCard`（安全字段白名单 / 终态过滤 / 去重） | 去掉终态过滤 → 红 |
+| `TestGetSessionSynthesizesRunningEngineProgressCard`（接线） | 摘掉 GetSession 里的调用 → 红 |
+| `assertResponseCacheDisabled`（未设置也必须拒绝） | 删除断言 → 用例红；env 基础 fixture 已带 `PROMPTFOO_CACHE_ENABLED=0` |
+| `agentTarget`：provider 不再声称配置了无效的 `timeout` | 恢复 `timeout` 键 → 红 |
+
+### 28.8 边界
+
+- 历史报告不回填：已经落库的错误读数保持原样（记录在案的证据），新 run 生效。
+- 缓存开关是**启动期**要求：漏配会拒绝启动，不是静默降级。
+- 混合场景（部分探针未取得回答）仍待上机；本轮修复让该场景的读数第一次有断言保护。

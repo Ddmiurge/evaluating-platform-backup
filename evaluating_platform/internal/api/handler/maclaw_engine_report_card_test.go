@@ -249,3 +249,115 @@ func TestPlatformEngineJobStoreListBySession(t *testing.T) {
 		t.Error("empty session id returned jobs")
 	}
 }
+
+func runningEngineJobFixture(jobID, sessionID, planMessageID string) *maclaw.PlatformEngineJob {
+	return &maclaw.PlatformEngineJob{
+		ID:            jobID,
+		EngineRunID:   "er-" + jobID,
+		PlanMessageID: planMessageID,
+		SessionID:     sessionID,
+		Status:        maclaw.EvaluationJobStatusRunning,
+		PlannedCount:  6,
+		ExecutedCount: 2,
+		CurrentStage:  "generating_tests",
+		StatusText:    "promptfoo 原生生成攻击用例",
+		DurationMs:    42000,
+		StartedAt:     time.Date(2026, time.October, 26, 15, 20, 0, 0, time.UTC),
+	}
+}
+
+// A running evaluation must be visible in the session snapshot, not only in the
+// browser's local state. Before 2026-10-26 it vanished on refresh, and a user
+// who saw it disappear re-submitted the plan (record 37: two jobs, two reports).
+func TestAppendRunningEngineProgressMessagesAddsASafeCard(t *testing.T) {
+	const sessionID = "sess_progress"
+	messages := []maclaw.RuntimeMessage{
+		{Role: "user", Content: "做一次合规评测"},
+		planMessageFixture("plan-progress"),
+	}
+	out := appendRunningEngineProgressMessages(messages, sessionID, []*maclaw.PlatformEngineJob{
+		runningEngineJobFixture("pfj-run", sessionID, "plan-progress"),
+	})
+	if len(out) != 3 {
+		t.Fatalf("messages = %d, want 3 (user + plan + progress)", len(out))
+	}
+	card := out[2]
+	if card.ID != "engine-progress:pfj-run" {
+		t.Errorf("card id = %q", card.ID)
+	}
+	if out[1].ID != "plan-progress" || card.ID == out[1].ID {
+		t.Fatal("progress card does not follow its plan card")
+	}
+	for key, want := range map[string]string{
+		"card_type":      "progress",
+		"job_id":         "pfj-run",
+		"phase":          "running",
+		"planned_count":  "6",
+		"executed_count": "2",
+		"current_stage":  "generating_tests",
+		"duration_ms":    "42000",
+	} {
+		if got := card.Metadata[key]; got != want {
+			t.Errorf("metadata[%s] = %q, want %q", key, got, want)
+		}
+	}
+	// Safe fields only: nothing that could carry content, credentials or paths.
+	for key := range card.Metadata {
+		for _, banned := range []string{"prompt", "payload", "response", "content", "token", "secret", "path"} {
+			if strings.Contains(strings.ToLower(key), banned) {
+				t.Errorf("progress metadata carries a banned key %q", key)
+			}
+		}
+	}
+
+	// A terminal job belongs to the report path; no progress card.
+	terminal := runningEngineJobFixture("pfj-done", sessionID, "plan-progress")
+	terminal.Status = maclaw.EvaluationJobStatusSucceeded
+	if got := appendRunningEngineProgressMessages(messages, sessionID, []*maclaw.PlatformEngineJob{terminal}); len(got) != 2 {
+		t.Errorf("messages = %d after a terminal job, want 2", len(got))
+	}
+
+	// And it must not duplicate a message that already carries the job id.
+	withExisting := append(out, maclaw.RuntimeMessage{Metadata: map[string]string{"job_id": "pfj-run"}})
+	if got := appendRunningEngineProgressMessages(withExisting, sessionID, []*maclaw.PlatformEngineJob{runningEngineJobFixture("pfj-run", sessionID, "plan-progress")}); len(got) != 4 {
+		t.Errorf("messages = %d, want no duplicate progress card", len(got))
+	}
+}
+
+// Wiring: GetSession must call the helper. Without this, the helper can be
+// perfect while a refresh still shows nothing — the call-site trap this project
+// has hit before (U8).
+func TestGetSessionSynthesizesRunningEngineProgressCard(t *testing.T) {
+	gateway := &fakeMaclawRuntimeGateway{
+		enabled: true,
+		messages: []maclaw.RuntimeMessage{
+			{Role: "user", Content: "对当前被测模型做合规安全评测"},
+			planMessageFixture("plan-run"),
+		},
+	}
+	handler := NewMaclawRuntimeHandler(gateway, "inst_1")
+	jobs := maclaw.NewPlatformEngineJobStore()
+	jobs.Create(runningEngineJobFixture("pfj-wire", "sess_1", "plan-run"))
+	handler.engineJobs = jobs
+
+	router := newEnterpriseRoleRouter()
+	router.GET("/maclaw/evaluation/sessions/:id", handler.GetSession)
+	req := httptest.NewRequest(http.MethodGet, "/maclaw/evaluation/sessions/sess_1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{`"engine-progress:pfj-wire"`, `"card_type":"progress"`, `"current_stage":"generating_tests"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("session snapshot is missing %s:\n%s", want, body)
+		}
+	}
+	planIdx := strings.Index(body, `"plan-run"`)
+	cardIdx := strings.Index(body, `"engine-progress:pfj-wire"`)
+	if planIdx < 0 || cardIdx < 0 || cardIdx < planIdx {
+		t.Fatalf("progress card is not after its plan card (plan@%d card@%d)", planIdx, cardIdx)
+	}
+}

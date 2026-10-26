@@ -225,6 +225,14 @@ services:
       PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: "1"
       PROMPTFOO_DISABLE_TELEMETRY: "1"
       PROMPTFOO_DISABLE_SHARE: "1"
+      # 2026-10-26：重复 prompt 不得复用上一次的靶机回答。promptfoo 的 redteam
+      # runner 把 `cache: true` 硬写在 doEval 里（dist/src/index.js:18998），覆盖
+      # 我们传的 cache:false，所以只能在进程环境里关掉；env.ts 会 fail-closed 校验。
+      PROMPTFOO_CACHE_ENABLED: "0"
+      # 每次外发 HTTP 调用的超时。promptfoo 的 http provider 只认这个变量
+      # （getRequestTimeoutMs 默认 300s），不认 config.timeoutMs。180s 覆盖正常
+      # 生成/判分/靶机调用，同时保证一条挂住的探针不会永久占住唯一的 worker。
+      REQUEST_TIMEOUT_MS: "180000"
       # ── U7 · 阶段一：打开 promptfoo 原生生成（Plan C）─────────────────────────
       #
       # 这是**阶段一的全部改动** —— 一个环境变量，零代码改动。它选择的是

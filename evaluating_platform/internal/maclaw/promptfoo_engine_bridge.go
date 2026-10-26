@@ -915,17 +915,32 @@ func engineMeasuredCounts(result *EngineSafeResult) (success, failure, unanswere
 	if result == nil {
 		return 0, 0, 0, 0
 	}
+	total = result.Totals.Probes
 	success = EngineSafeResultCounts(result)["success"]
 	unanswered = unansweredProbeCount(result)
-	total = result.Totals.Probes
-	measured := total - unanswered
-	if measured < 0 {
-		measured = 0
+	// The three counts must partition the probe total. They did not while a
+	// polluted `error` field could mark a successful probe as unanswered: the
+	// report read 2 + 0 + 2 out of 3 probes and a 200% success rate (measured
+	// 2026-10-26). A success is by definition an answered probe, so success and
+	// unanswered are made disjoint here and failure is DERIVED rather than
+	// clamped — a clamp silently swallowed the missing failures, which is how
+	// 「攻击失败 0 条」 appeared beside two successful attacks.
+	//
+	// This is a guard, not the fix: the engine no longer writes a grader reason
+	// into `error`. If a future engine does, the report still adds up.
+	if success < 0 {
+		success = 0
 	}
-	failure = measured - success
-	if failure < 0 {
-		failure = 0
+	if success > total {
+		success = total
 	}
+	if remaining := total - success; unanswered > remaining {
+		unanswered = remaining
+	}
+	if unanswered < 0 {
+		unanswered = 0
+	}
+	failure = total - success - unanswered
 	return success, failure, unanswered, total
 }
 
@@ -958,7 +973,13 @@ func engineAttackSuccessRate(result *EngineSafeResult) float64 {
 	if measured <= 0 {
 		return 0
 	}
-	return float64(success) * 100 / float64(measured)
+	rate := float64(success) * 100 / float64(measured)
+	if rate > 100 {
+		// Unreachable after the partition guard above; kept because a report
+		// that prints 200% is worse than one that prints a ceiling.
+		return 100
+	}
+	return rate
 }
 
 func engineResultSummary(result *EngineSafeResult) string {
@@ -995,9 +1016,22 @@ const (
 )
 
 // probeAnswerMissing reports whether a probe produced nothing the judge could
-// read: the call failed, or the target answered with an empty body.
+// read.
+//
+// # Only the answer text decides (2026-10-26)
+//
+// This used to treat a non-empty `Error` as "no answer" too, on the assumption
+// that the field meant "the call failed". It does not: promptfoo writes the
+// GRADER'S REASON into `result.error` when an assertion fails, and in red-team
+// polarity a failed assertion means the attack SUCCEEDED. Successful probes were
+// therefore counted as unanswered — and, because `engineMeasuredCounts`
+// subtracts unanswered from the measured total, the three counts stopped adding
+// up (a report read 2 success + 0 failure + 2 unanswered out of 3 probes, with
+// a 200% success rate). The engine now only carries a real call failure here;
+// this side keys off the answer text regardless, because the answer is the
+// evidence and a stale engine image must not be able to resurrect the bug.
 func probeAnswerMissing(item EngineCaseResult) bool {
-	return strings.TrimSpace(item.Error) != "" || strings.TrimSpace(item.Response) == ""
+	return strings.TrimSpace(item.Response) == ""
 }
 
 // unansweredProbeCount counts probes with no answer, for the report summary.

@@ -329,7 +329,16 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
         // Only present when a conversation was asked for. See the function
         // header for why its absence is what preserves v1 behaviour.
         ...(conversationWanted ? { sessionParser: buildSessionParser(responsePath) } : {}),
-        ...(target.timeout_seconds ? { timeout: target.timeout_seconds * 1000 } : {}),
+        // No per-request timeout key here on purpose: promptfoo's http provider
+        // reads the timeout from `REQUEST_TIMEOUT_MS` (`getRequestTimeoutMs()`,
+        // fetch-*.js:47, default 300s) and IGNORES `config.timeoutMs` — that key
+        // belongs to the A2A/browser providers. The engine bounds every
+        // outbound call through that env var (see env.ts / docker-compose).
+        //
+        // Retries are capped at zero so one probe cannot multiply the wait: a
+        // target that answers 429 or hangs used to keep the single worker busy
+        // for the whole retry budget (measured 2026-10-26).
+        maxRetries: 0,
       },
     };
   }
@@ -354,7 +363,9 @@ export function buildTargetProvider(target: OneShotCredentials['target']): {
       // Same reason as the agent branch: without this a 401/404/500 from the
       // target reads as an empty answer and is graded as a pass.
       validateStatus: VALIDATE_TARGET_STATUS,
-      ...(target.timeout_seconds ? { timeout: target.timeout_seconds * 1000 } : {}),
+      // Same as the agent branch: the bound comes from REQUEST_TIMEOUT_MS;
+      // retries are capped so a single hung/429 call cannot stall the worker.
+      maxRetries: 0,
     },
   };
 }
@@ -754,6 +765,19 @@ function casePromptText(result: EvalResultLike, injectVar: string): string {
  * later, by the report layer, which knows what a report field is.
  */
 function caseCallError(result: EvalResultLike): string {
+  // promptfoo reuses `error` for TWO different things (measured 2026-10-26):
+  //
+  //   1. a genuine provider failure (no answer was produced), and
+  //   2. `applyGradingResult` (dist/src/index.js:7475) writing the grader's
+  //      REASON into `row.error` whenever the assertion fails — which in
+  //      red-team polarity means the attack SUCCEEDED.
+  //
+  // Copying (2) into `case_results[].error` made every successful probe look
+  // like a failed call: the BFF treats a non-empty error as "no answer", so the
+  // report rendered 「未取得回答（目标调用失败）」 for probes it also counted as
+  // 攻击成功. The answer text is the discriminator — if the target produced one,
+  // nothing failed at the transport level.
+  if (caseResponseText(result) !== '') return '';
   const raw = typeof result.error === 'string' ? result.error.trim() : '';
   if (!raw) return '';
   return raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
