@@ -21,6 +21,10 @@ type ResourceStore interface {
 	UpsertResource(context.Context, ResourceRecord) (*ResourceRecord, error)
 	ListResources(context.Context, uuid.UUID, EvaluationResourceQuery) ([]ResourceRecord, error)
 	GetResource(context.Context, uuid.UUID, string) (*ResourceRecord, error)
+	// SetGovernance updates enabled/status by id. Callers are responsible for
+	// authorisation: ArchiveResource reads the row owner-scoped first, the admin
+	// endpoint is role-gated.
+	SetGovernance(context.Context, string, *bool, string) error
 }
 
 // ErrResourceNotOwned is returned when a write names an id the caller does not
@@ -178,6 +182,45 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 	return resourceSummaryFromRecord(saved), nil
 }
 
+// ArchiveResource takes one of the caller's own resources out of circulation.
+//
+// # Why this is not a delete (2026-10-26, user decision)
+//
+// A published package is referenced by handle from run records and plan cards;
+// a physical delete would leave those references pointing at nothing and make an
+// old report unexplainable. Archiving hides the package from the enterprise
+// catalogue and makes the resolver refuse it, while the history stays readable.
+//
+// # Why the row is updated rather than only the publication
+//
+// Admin governance used to update the publication alone, so an archived package
+// still showed 「published」 in the expert's own list. Both paths now write the
+// row; the publication follows through RecordExpertResource
+// (MarkPublicationUnavailable) in the handler.
+func (s *ResourceStoreService) ArchiveResource(ctx context.Context, userID uuid.UUID, idOrHandle string) (*EvaluationResourceSummary, error) {
+	if !s.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	userID, err := normalizeUserID(userID)
+	if err != nil {
+		return nil, err
+	}
+	record, err := s.store.GetResource(ctx, userID, strings.TrimSpace(idOrHandle))
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, ErrResourceNotOwned
+	}
+	enabled := false
+	if err := s.store.SetGovernance(ctx, record.ID.String(), &enabled, string(EvaluationResourceStatusArchived)); err != nil {
+		return nil, err
+	}
+	record.Enabled = false
+	record.Status = string(EvaluationResourceStatusArchived)
+	return resourceSummaryFromRecord(record), nil
+}
+
 func (s *ResourceStoreService) ListResources(ctx context.Context, userID uuid.UUID, q EvaluationResourceQuery) ([]EvaluationResourceSummary, error) {
 	if !s.Enabled() {
 		return nil, ErrNotConfigured
@@ -275,6 +318,13 @@ func (g *PlatformResourceGateway) SearchEvaluationResources(ctx context.Context,
 		return g.resources.ListResources(ctx, g.userID, q)
 	}
 	return g.GatewayClient.SearchEvaluationResources(ctx, q)
+}
+
+func (g *PlatformResourceGateway) ArchiveResource(ctx context.Context, idOrHandle string) (*EvaluationResourceSummary, error) {
+	if g != nil && g.resources != nil && g.resources.Enabled() {
+		return g.resources.ArchiveResource(ctx, g.userID, idOrHandle)
+	}
+	return g.GatewayClient.ArchiveResource(ctx, idOrHandle)
 }
 
 func (g *PlatformResourceGateway) SaveEvaluationResource(ctx context.Context, in EvaluationResourceInput) (*EvaluationResourceSummary, error) {

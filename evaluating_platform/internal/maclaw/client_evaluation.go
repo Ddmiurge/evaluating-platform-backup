@@ -426,6 +426,27 @@ func (c *Client) SearchEvaluationResources(ctx context.Context, q EvaluationReso
 	return out.Items, nil
 }
 
+// ArchiveResource archives a resource on the runtime.
+//
+// The legacy runtime is retired, but this method is part of the gateway contract
+// and the route snapshot describes it like every other one. maClawSrv mode does
+// not reach this implementation: PlatformResourceGateway serves the call from
+// the platform resource store (owner-scoped).
+func (c *Client) ArchiveResource(ctx context.Context, resourceID string) (*EvaluationResourceSummary, error) {
+	if !c.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	resourceID = strings.TrimSpace(resourceID)
+	if resourceID == "" {
+		return nil, errors.New("resource id is required")
+	}
+	var out EvaluationResourceSummary
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/evaluation/resources/"+url.PathEscape(resourceID)+"/archive", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) SaveEvaluationResource(ctx context.Context, in EvaluationResourceInput) (*EvaluationResourceSummary, error) {
 	if !c.Enabled() {
 		return nil, ErrNotConfigured

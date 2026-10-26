@@ -2,6 +2,7 @@ package maclaw
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -138,6 +139,26 @@ func (s *fakeResourceStore) ListResources(_ context.Context, userID uuid.UUID, q
 	return out, nil
 }
 
+func (s *fakeResourceStore) SetGovernance(_ context.Context, id string, enabled *bool, status string) error {
+	row, ok := s.items[strings.TrimSpace(id)]
+	if !ok {
+		return nil
+	}
+	if enabled != nil {
+		row.Enabled = *enabled
+	}
+	if trimmed := strings.TrimSpace(status); trimmed != "" {
+		row.Status = trimmed
+	}
+	// The fake indexes each row twice (by id and by handle); update both.
+	for key, item := range s.items {
+		if item.ID == row.ID {
+			s.items[key] = row
+		}
+	}
+	return nil
+}
+
 func (s *fakeResourceStore) GetResource(_ context.Context, userID uuid.UUID, idOrHandle string) (*model.MaclawResourceRecord, error) {
 	item, ok := s.items[strings.TrimSpace(idOrHandle)]
 	if !ok || item.OwnerUserID != userID {
@@ -232,5 +253,58 @@ func TestRepublishingUpdatesTheSamePackage(t *testing.T) {
 	}
 	if kept.Name != "我的样本 v3" {
 		t.Errorf("name = %q, want the owner's own update to still work", kept.Name)
+	}
+}
+
+// Archiving is the "下架" path: the owner's own row must change, and nobody else
+// may archive it.
+//
+// The row mattered because admin governance used to update only the publication,
+// leaving the expert portal showing 「published」 for a package no enterprise could
+// use (2026-10-26). Owner scoping is what keeps "下架" from becoming a way to take
+// down another expert's package.
+func TestArchiveResourceMarksTheOwnersRow(t *testing.T) {
+	store := newFakeResourceStore()
+	service := NewResourceStoreService(store, agentTestKeyStore(t))
+	ctx := context.Background()
+	owner := uuid.New()
+
+	saved, err := service.SaveResource(ctx, owner, "tenant-1", EvaluationResourceInput{
+		Name:     "我的插件",
+		Kind:     EvaluationResourceKindSample,
+		Status:   EvaluationResourceStatusPublished,
+		Enabled:  true,
+		Payload:  "内容",
+		Metadata: map[string]string{"handle": "expert_pkg_1"},
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	archived, err := service.ArchiveResource(ctx, owner, "expert_pkg_1")
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if archived.ID != saved.ID {
+		t.Errorf("id = %s, want %s", archived.ID, saved.ID)
+	}
+	if archived.Enabled {
+		t.Error("enabled = true, want false")
+	}
+	if archived.Status != EvaluationResourceStatusArchived {
+		t.Errorf("status = %q, want archived", archived.Status)
+	}
+	// The stored row — what the expert list reads — must agree.
+	row, err := store.GetResource(ctx, owner, saved.ID)
+	if err != nil || row == nil {
+		t.Fatalf("row after archive: %v / %v", err, row)
+	}
+	if row.Enabled || row.Status != string(EvaluationResourceStatusArchived) {
+		t.Errorf("stored row = enabled:%v status:%q, want archived+disabled", row.Enabled, row.Status)
+	}
+
+	// Another account cannot archive it, and the row is untouched by the attempt.
+	if _, err := service.ArchiveResource(ctx, uuid.New(), "expert_pkg_1"); !errors.Is(err, ErrResourceNotOwned) {
+		t.Fatalf("other account archive error = %v, want ErrResourceNotOwned", err)
 	}
 }

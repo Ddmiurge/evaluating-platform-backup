@@ -20,10 +20,14 @@ type AdminMaclawHandler struct {
 	mappingRepo     *repository.MaclawAccountMappingRepository
 	publicationRepo *repository.MaclawResourcePublicationRepository
 	shadowRepo      *repository.MaclawResourceShadowRepository
-	provider        maclaw.GatewayProvider
-	configService   *maclaw.RuntimeConfigService
-	hubService      *maclaw.MaclawHubConfigService
-	runtimeMode     string
+	// resourceRepo lets governance reach the expert's own row. Archiving only
+	// the publication left the expert list showing 「published」 for a package no
+	// enterprise could use (2026-10-26).
+	resourceRepo  *repository.MaclawResourceRecordRepository
+	provider      maclaw.GatewayProvider
+	configService *maclaw.RuntimeConfigService
+	hubService    *maclaw.MaclawHubConfigService
+	runtimeMode   string
 }
 
 func NewAdminMaclawHandler(
@@ -31,6 +35,7 @@ func NewAdminMaclawHandler(
 	mappingRepo *repository.MaclawAccountMappingRepository,
 	publicationRepo *repository.MaclawResourcePublicationRepository,
 	shadowRepo *repository.MaclawResourceShadowRepository,
+	resourceRepo *repository.MaclawResourceRecordRepository,
 	provider maclaw.GatewayProvider,
 	configService *maclaw.RuntimeConfigService,
 	hubService *maclaw.MaclawHubConfigService,
@@ -45,6 +50,7 @@ func NewAdminMaclawHandler(
 		mappingRepo:     mappingRepo,
 		publicationRepo: publicationRepo,
 		shadowRepo:      shadowRepo,
+		resourceRepo:    resourceRepo,
 		provider:        provider,
 		configService:   configService,
 		hubService:      hubService,
@@ -409,6 +415,15 @@ func (h *AdminMaclawHandler) UpdateResourceGovernance(c *gin.Context) {
 	if item == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "resource publication not found"})
 		return
+	}
+	// The expert's own row follows the publication. Before this, an archived
+	// package still read 「published」 in the expert portal — two views of one
+	// fact disagreeing, with the admin's action invisible to the owner.
+	if h.resourceRepo != nil {
+		if err := h.resourceRepo.SetGovernance(c.Request.Context(), c.Param("sourceResourceId"), in.Enabled, status); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update maclaw resource row"})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, item)
 }

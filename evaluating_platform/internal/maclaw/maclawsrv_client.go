@@ -442,6 +442,10 @@ func (c *MaclawSrvClient) SearchEvaluationResources(context.Context, EvaluationR
 	return nil, ErrUnsupported
 }
 
+func (c *MaclawSrvClient) ArchiveResource(context.Context, string) (*EvaluationResourceSummary, error) {
+	return nil, ErrUnsupported
+}
+
 func (c *MaclawSrvClient) SaveEvaluationResource(context.Context, EvaluationResourceInput) (*EvaluationResourceSummary, error) {
 	return nil, ErrUnsupported
 }

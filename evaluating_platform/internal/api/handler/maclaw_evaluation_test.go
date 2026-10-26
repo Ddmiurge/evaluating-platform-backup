@@ -19,6 +19,7 @@ type fakeMaclawGateway struct {
 	evidenceInstance  string
 	lastQuery         maclaw.EvaluationResourceQuery
 	lastCreated       maclaw.EvaluationResourceInput
+	archived          bool
 	lastTargetQuery   maclaw.EvaluationTargetQuery
 	lastTargetCreated maclaw.EvaluationTargetInput
 	lastProbeTargetID string
@@ -43,6 +44,11 @@ func (f *fakeMaclawGateway) SearchEvaluationResources(ctx context.Context, q mac
 	return []maclaw.EvaluationResourceSummary{
 		{ID: "res_1", Handle: "evalres_handle", Name: "Prompt sample", Kind: maclaw.EvaluationResourceKindSample, Summary: "safe summary"},
 	}, nil
+}
+
+func (f *fakeMaclawGateway) ArchiveResource(context.Context, string) (*maclaw.EvaluationResourceSummary, error) {
+	f.archived = true
+	return &maclaw.EvaluationResourceSummary{ID: "res_1", Handle: "evalres_handle", Status: maclaw.EvaluationResourceStatusArchived, Enabled: false}, nil
 }
 
 func (f *fakeMaclawGateway) SaveEvaluationResource(ctx context.Context, in maclaw.EvaluationResourceInput) (*maclaw.EvaluationResourceSummary, error) {
@@ -829,5 +835,26 @@ func TestMaclawEvaluationHandlerMapsUpstreamErrorsSafely(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "sk-secret") || strings.Contains(w.Body.String(), "/api/v1/evaluation/targets/target_1") {
 		t.Fatalf("response leaked upstream secret or internal path: %s", w.Body.String())
+	}
+}
+
+// The archive route must actually reach the gateway with the path parameter the
+// handler reads. A route wired as `:resource_id` while the handler reads `:id`
+// would 400 on every call, and no service test would notice.
+func TestMaclawEvaluationHandlerArchiveResource(t *testing.T) {
+	gateway := &fakeMaclawGateway{enabled: true}
+	h := NewMaclawEvaluationHandler(gateway)
+	router := gin.New()
+	router.POST("/maclaw/evaluation/resources/:id/archive", h.ArchiveResource)
+
+	w := doJSON(router, http.MethodPost, "/maclaw/evaluation/resources/res_1/archive", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if !gateway.archived {
+		t.Error("gateway.ArchiveResource was not called")
+	}
+	if !strings.Contains(w.Body.String(), `"archived"`) {
+		t.Errorf("response does not carry the archived status: %s", w.Body.String())
 	}
 }

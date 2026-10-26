@@ -963,3 +963,16 @@ promptfoo 把「没有回答」记成 failure（空输出通过它的 rubric）�
 守卫：引擎 `customStrategyRun.e2e`（跑通 + 包文本到达生成模型）、
 `TestEngineRunHandlerResolvesExpertPackages`、`TestClassifyMaclawErrorResourceNotOwned`；
 反证分别为「校验回到 apply 之前」「丢 config」「摘掉向导解析」「删 403 分支」。
+
+## 下架与归档：没有物理删除（2026-10-26）
+
+| 动作 | 谁 | 实现 | 效果 |
+|---|---|---|---|
+| 下架 | 专家（仅本人） | `POST /maclaw/evaluation/resources/:id/archive` → `ArchiveResource`（owner 校验） | 资源行归档 + 停用；发布记录标记不可用 |
+| 停用 / 归档 | 管理员 | `PATCH /admin/maclaw/resources/:id` | 同时更新**资源行与发布记录**（此前只改发布记录，专家列表仍显示 `published`） |
+
+**为什么不物理删除**：历史 run 与计划卡按 handle 引用包；删除会让引用指向空、旧报告无法解释。
+归档在企业侧效果相同（目录消失、解析器拒绝，`pf_*_ref_unavailable`），但历史仍可追溯。
+
+`ArchiveResource` 是 `EvaluationGateway` 合约的一部分：`gateway_contract_test.go` 有登记，
+`client_routes.json` 快照含 `POST /api/v1/evaluation/resources/{resource_id}/archive`。

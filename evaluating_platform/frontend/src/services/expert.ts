@@ -167,6 +167,19 @@ export const expertService = {
   publishPromptfooStrategy: (data: PromptfooStrategyPublishInput) =>
     api.post<PromptfooStrategySummary>('/maclaw/evaluation/resources', data).then((r) => r.data),
 
+  /**
+   * 下架自己的包（归档，不删除）。
+   *
+   * 历史 run 与计划卡按 handle 引用它，物理删除会让那些引用指向空；归档让企业侧
+   * 立即不可见、解析器拒绝，同时历史仍可解释（2026-10-26 决定）。
+   */
+  archiveEvaluationResource: (idOrHandle: string) =>
+    api
+      .post<{ id: string; status: string; enabled: boolean }>(
+        `/maclaw/evaluation/resources/${encodeURIComponent(idOrHandle)}/archive`,
+      )
+      .then((r) => r.data),
+
   listPromptfooStrategies: (params?: { include_inactive?: boolean; limit?: number }) =>
     api
       .get<{ items: PromptfooStrategySummary[] }>('/maclaw/evaluation/resources', {

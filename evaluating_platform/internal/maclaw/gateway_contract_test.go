@@ -33,6 +33,7 @@ var evaluationGatewayRoutes = map[string]string{
 	"Enabled":                   "exempt: pure local configuration check (no I/O)",
 	"SearchEvaluationResources": "GET /api/v1/evaluation/resources",
 	"SaveEvaluationResource":    "POST /api/v1/evaluation/resources",
+	"ArchiveResource":           "POST /api/v1/evaluation/resources/{resource_id}/archive",
 	"PreviewEvaluationResource": "GET /api/v1/evaluation/resources/{resource_id}/preview",
 	"SearchEvaluationTargets":   "GET /api/v1/evaluation/targets",
 	"SaveEvaluationTarget":      "POST /api/v1/evaluation/targets",

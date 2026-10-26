@@ -77,6 +77,7 @@ type EvaluationGateway interface {
 	Enabled() bool
 	SearchEvaluationResources(context.Context, EvaluationResourceQuery) ([]EvaluationResourceSummary, error)
 	SaveEvaluationResource(context.Context, EvaluationResourceInput) (*EvaluationResourceSummary, error)
+	ArchiveResource(context.Context, string) (*EvaluationResourceSummary, error)
 	PreviewEvaluationResource(context.Context, string) (*EvaluationResourcePreview, error)
 	SearchEvaluationTargets(context.Context, EvaluationTargetQuery) ([]EvaluationTargetSummary, error)
 	SaveEvaluationTarget(context.Context, EvaluationTargetInput) (*EvaluationTargetSummary, error)

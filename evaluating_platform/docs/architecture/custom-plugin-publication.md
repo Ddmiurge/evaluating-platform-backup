@@ -114,8 +114,10 @@ cd evaluating_platform
 设计文档取消「管理员审核」作为发布前置门，治理全部发生在**发布之后**。
 
 - 管理员在 `资源治理` 页启停 / 归档（`PATCH /admin/maclaw/resources/:id`），范围含 `pf_plugin` 与 `pf_strategy`；
-- ⚠️ 治理只更新**发布记录**（`maclaw_resource_publications`），不更新专家自己的资源行 ——
-  因此归档后企业侧立即不可见，但**专家列表仍显示 `published`**。这是已知不一致，未修；
+- 治理同时更新**发布记录**与**专家自己的资源行**（2026-10-26 修复：只改发布记录时，
+  专家列表仍显示 `published`，同一个事实两个视图互相矛盾）；
+- 专家可在门户「下架」自己的包（`POST /maclaw/evaluation/resources/:id/archive`，仅本人）；
+  下架 = 归档，**不是删除**；
 - `CustomPluginResolver` 在**每次 run 准备时**重查发布表（`GetPublishedByHandle` 过滤 `enabled = true AND status = 'published'`），**不缓存**；
 - 因此停用 → 下一次 run 引用该插件即被拒，**无重启窗口、无同步延迟**；
 - 被停用的包在引擎侧**从不解密**（fail-closed 顺序：先治理后解密，有测试钉住）。
@@ -126,8 +128,9 @@ cd evaluating_platform
 
 1. **沙箱两项未实测**：本机无 Docker，`verify_u10_sandbox.sh` 返回 2（SKIP）。只读根与无外网需要在 CI 或具备 Docker 的环境跑一次。
 2. **自定义插件仅 Plan C 可执行**：Plan A 让平台 LLM 合成攻击提示，从不调用 promptfoo 的插件机制，包的 `generator` 会被静默丢弃。因此 Plan A 对携带包的请求**直接拒绝**（`custom_plugin_requires_native_generation`），而不是跑出一份绿色报告。
-3. **没有删除**：只有启停 / 归档。归档隐藏发布记录但保留加密正文；没有物理删除接口，
-   专家侧也没有下架入口。历史 run 与计划卡引用依赖 handle 的可解释性，因此建议只做归档（待产品定）。
+3. **没有物理删除**（2026-10-26 决定）：专家可「下架」、管理员可停用/归档，正文与 handle 保留。
+   历史 run 与计划卡按 handle 引用它，删除会让引用指向空、旧报告无法解释。归档的效果与删除在
+   **使用面**上等价（企业不可见、解析器拒绝），差别只在可追溯性。
 4. **重新发布 = 更新同一个包**（P10）：请求带已有 `id` + `handle`；未带 handle 时沿用原 handle。
    每次发布都新生成 id 的旧行为会产生同名第二个包，已废弃。
 5. **两条入口同一解析器**（P11）：向导与计划卡都经 `RedteamToolBridge.ResolveEngineCapabilities`；

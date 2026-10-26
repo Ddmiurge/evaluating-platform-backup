@@ -132,6 +132,46 @@ func (h *MaclawEvaluationHandler) CreateResource(c *gin.Context) {
 	c.JSON(http.StatusCreated, out)
 }
 
+// ArchiveResource takes one of the caller's own resources out of circulation.
+//
+// # Why archive rather than delete (2026-10-26, user decision)
+//
+// Published packages are referenced by handle from run records and plan cards; a
+// physical delete would leave those references pointing at nothing and make an
+// old report unexplainable. Archiving hides the package from the enterprise
+// catalogue and makes the resolver refuse it, while the history stays readable.
+//
+// The publication follows the resource through RecordExpertResource, which marks
+// it unavailable for an expert identity — one rule shared with the create path,
+// so an archived package cannot stay visible to enterprises by accident.
+func (h *MaclawEvaluationHandler) ArchiveResource(c *gin.Context) {
+	gateway, ok := h.evaluationGateway(c)
+	if !ok {
+		return
+	}
+	idOrHandle := strings.TrimSpace(firstNonEmpty(c.Param("id"), c.Param("resource_id")))
+	if idOrHandle == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "resource id is required"})
+		return
+	}
+	out, err := gateway.ArchiveResource(c.Request.Context(), idOrHandle)
+	if err != nil {
+		writeMaclawError(c, err)
+		return
+	}
+	if h.resourceProjection != nil && h.provider != nil {
+		session, ok := resolveMaclawGatewaySession(c, h.provider)
+		if !ok {
+			return
+		}
+		if err := h.resourceProjection.RecordExpertResource(c.Request.Context(), maclawRuntimeIdentity(c), session, out); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw resource publication update failed", "code": "maclaw_resource_projection_failed"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *MaclawEvaluationHandler) ListTargets(c *gin.Context) {
 	if !requireEnterpriseMaclawExecutionRole(c) {
 		return

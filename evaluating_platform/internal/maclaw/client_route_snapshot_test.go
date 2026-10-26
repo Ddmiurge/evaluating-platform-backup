@@ -230,6 +230,14 @@ func routeProbes() []routeProbe {
 			},
 		},
 		{
+			Method:   "ArchiveResource",
+			WireCall: true,
+			Invoke: func(ctx context.Context, c *Client) error {
+				_, err := c.ArchiveResource(ctx, sentinelResourceID)
+				return err
+			},
+		},
+		{
 			Method:   "PreviewEvaluationResource",
 			WireCall: true,
 			Invoke: func(ctx context.Context, c *Client) error {

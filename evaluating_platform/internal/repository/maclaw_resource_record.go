@@ -135,6 +135,32 @@ func (r *MaclawResourceRecordRepository) ListResources(ctx context.Context, user
 	return scanMaclawResourceRecords(rows)
 }
 
+// SetGovernance updates one resource row's enabled/status by id.
+//
+// No owner filter, deliberately: the two callers are the owner-scoped archive in
+// ResourceStoreService (which reads the row through GetResource first) and the
+// ADMIN governance endpoint (authorised by role). Keeping the filter out of this
+// method is what lets an admin archive reach the expert's row — the previous
+// behaviour updated only the publication, so the expert's own list kept showing
+// 「published」 for a package no enterprise could use (2026-10-26).
+func (r *MaclawResourceRecordRepository) SetGovernance(ctx context.Context, id string, enabled *bool, status string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("resource id is required")
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE maclaw_resources
+		SET enabled = COALESCE($2, enabled),
+		    status = COALESCE(NULLIF($3, ''), status),
+		    updated_at = NOW()
+		WHERE id = $1
+	`, id, enabled, strings.TrimSpace(status))
+	if err != nil {
+		return fmt.Errorf("update maclaw resource governance: %w", err)
+	}
+	return nil
+}
+
 func (r *MaclawResourceRecordRepository) GetResource(ctx context.Context, userID uuid.UUID, idOrHandle string) (*model.MaclawResourceRecord, error) {
 	idOrHandle = strings.TrimSpace(idOrHandle)
 	if idOrHandle == "" {

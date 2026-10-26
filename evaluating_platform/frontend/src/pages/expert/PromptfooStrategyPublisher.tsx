@@ -7,6 +7,7 @@ import {
   Form,
   Input,
   Modal,
+  Popconfirm,
   Space,
   Table,
   Tag,
@@ -147,6 +148,16 @@ export function PromptfooStrategyPublisher() {
     }
   }
 
+  const archive = async (row: PromptfooStrategySummary) => {
+    try {
+      await expertService.archiveEvaluationResource(row.id)
+      message.success('已下架。企业侧立即不可见、评测无法再选用；已跑过的报告不受影响。需要恢复时由管理员重新启用。')
+      void load()
+    } catch (error) {
+      message.error((error as Error).message || '下架失败')
+    }
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -219,11 +230,25 @@ export function PromptfooStrategyPublisher() {
             },
             {
               title: '操作',
-              width: 100,
+              width: 150,
               render: (_: unknown, row: PromptfooStrategySummary) => (
-                <Button type="link" size="small" onClick={() => openPublish(row)}>
-                  重新发布
-                </Button>
+                <Space size={0}>
+                  <Button type="link" size="small" onClick={() => openPublish(row)}>
+                    重新发布
+                  </Button>
+                  <Popconfirm
+                    title="下架这个包？"
+                    description="下架后企业侧立即不可见、评测无法再选用；已跑过的报告不受影响。由管理员可重新启用。"
+                    okText="下架"
+                    cancelText="取消"
+                    onConfirm={() => void archive(row)}
+                    disabled={row.status === 'archived'}
+                  >
+                    <Button type="link" size="small" danger disabled={row.status === 'archived'}>
+                      下架
+                    </Button>
+                  </Popconfirm>
+                </Space>
               ),
             },
           ]}

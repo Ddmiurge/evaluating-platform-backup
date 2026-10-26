@@ -209,6 +209,7 @@ func main() {
 		maclawAccountMappingRepo,
 		maclawResourcePublicationRepo,
 		maclawResourceShadowRepo,
+		maclawResourceRecordRepo,
 		maclawProvider,
 		maclawRuntimeConfigService,
 		maclawHubConfigService,
@@ -387,6 +388,7 @@ func main() {
 			expert.GET("/external-mcp-servers/:id/tools", legacyGone)
 
 			expert.POST("/maclaw/evaluation/resources", maclawEvaluationHandler.CreateResource)
+			expert.POST("/maclaw/evaluation/resources/:id/archive", maclawEvaluationHandler.ArchiveResource)
 			expert.POST("/maclaw/skills/import", maclawSkillHandler.Import)
 			expert.POST("/maclaw/skills/install", maclawSkillHandler.Install)
 
