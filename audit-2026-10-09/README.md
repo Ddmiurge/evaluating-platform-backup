@@ -2,6 +2,7 @@
 
 这一组是**计划与决策**，回答「为什么这么做」。上机结果在 `../records/`（回答「这次跑成了什么」），
 一次性故障调查在 `../audits/`。
+**「现在到哪一步了」看 `../evaluating_platform/docs/architecture/development-status.md`** —— 它把 P3–P11 的批次、能力面和未完成项汇总成一页。
 
 | 编号 | 文件 | 性质 |
 |---|---|---|

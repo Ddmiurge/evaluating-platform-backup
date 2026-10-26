@@ -1,13 +1,21 @@
-# 专家自定义插件发布链路（U10）
+# 专家自定义插件 / 策略发布链路（U10 → P10/P11）
 
-> 状态：已实现（首期仅 YAML 形态）
+> 状态：**插件与策略均已实现并上机验证**（YAML 形态；策略自 P11 起两条入口都能执行）
+> 最近验证：`records/34-…-20261023.md`（发布端）、`records/35-…-20261023.md`（执行链路）
 > 承接：`14-Phase2实施计划.md` §2 U10；`06` D-03（取消「管理员审核」作为发布前置门 → 管理员**事后**治理）；`03` R-3（沙箱边界）
 
 ---
 
 ## 1. 这条链路解决什么
 
-专家在**专家门户直接发布**插件/策略，**管理员事后治理**（启停 / 下架 / 归档 / 查看使用情况）。首期**仅 YAML 形态**。
+专家在**专家门户直接发布**插件/策略，**管理员事后治理**（启停 / 归档 / 查看使用情况）。**仅 YAML 形态**。
+
+两种包共用一条链路（同一个加密存储出口、同一套校验与治理），区别只在 `resource_kind`：
+
+| kind | 专家页 | 包内容 | 执行侧 |
+|---|---|---|---|
+| `pf_plugin` | 评测插件 | `generator` + `grader` | `resolveCustomPlugins` → 写入 per-run workdir |
+| `pf_strategy` | 评测策略 | `strategyText` + `maxTurns` 等 | `resolveCustomStrategies` → 内联为 `custom:<variant>` |
 
 与既有资源（样本 / 模板 / 组合攻击）的关系：**不另建一套存储与分发**。插件包复用 `maclaw_resources`（加密 payload）+ `maclaw_resource_publications` 分发，只新增一个 `resource_kind='pf_plugin'`。
 
@@ -105,7 +113,9 @@ cd evaluating_platform
 
 设计文档取消「管理员审核」作为发布前置门，治理全部发生在**发布之后**。
 
-- 管理员在 `资源治理` 页启停 / 归档（`PATCH /admin/maclaw/resources/:id`）；
+- 管理员在 `资源治理` 页启停 / 归档（`PATCH /admin/maclaw/resources/:id`），范围含 `pf_plugin` 与 `pf_strategy`；
+- ⚠️ 治理只更新**发布记录**（`maclaw_resource_publications`），不更新专家自己的资源行 ——
+  因此归档后企业侧立即不可见，但**专家列表仍显示 `published`**。这是已知不一致，未修；
 - `CustomPluginResolver` 在**每次 run 准备时**重查发布表（`GetPublishedByHandle` 过滤 `enabled = true AND status = 'published'`），**不缓存**；
 - 因此停用 → 下一次 run 引用该插件即被拒，**无重启窗口、无同步延迟**；
 - 被停用的包在引擎侧**从不解密**（fail-closed 顺序：先治理后解密，有测试钉住）。
@@ -116,20 +126,27 @@ cd evaluating_platform
 
 1. **沙箱两项未实测**：本机无 Docker，`verify_u10_sandbox.sh` 返回 2（SKIP）。只读根与无外网需要在 CI 或具备 Docker 的环境跑一次。
 2. **自定义插件仅 Plan C 可执行**：Plan A 让平台 LLM 合成攻击提示，从不调用 promptfoo 的插件机制，包的 `generator` 会被静默丢弃。因此 Plan A 对携带包的请求**直接拒绝**（`custom_plugin_requires_native_generation`），而不是跑出一份绿色报告。
-3. **策略（strategy）形态未做**：首期只做插件。策略的自定义需要另一套 promptfoo 加载契约。
-4. **`file://` 等可执行引用的文本检查是纵深防御**：在 promptfoo 0.123.0 上，插件定义的**字段值**本身不经文件加载器，所以这不是已证实的利用路径。它存在是因为上游一旦改变，这个 payload 就变成任意文件读取原语，而这是唯一在存储前看到原文的地方。
-5. **归档的插件不自动从企业侧影子副本清除**：`maclaw_resource_shadows` 的清理沿用既有资源治理语义，未在 U10 扩展。
+3. **没有删除**：只有启停 / 归档。归档隐藏发布记录但保留加密正文；没有物理删除接口，
+   专家侧也没有下架入口。历史 run 与计划卡引用依赖 handle 的可解释性，因此建议只做归档（待产品定）。
+4. **重新发布 = 更新同一个包**（P10）：请求带已有 `id` + `handle`；未带 handle 时沿用原 handle。
+   每次发布都新生成 id 的旧行为会产生同名第二个包，已废弃。
+5. **两条入口同一解析器**（P11）：向导与计划卡都经 `RedteamToolBridge.ResolveEngineCapabilities`；
+   引擎侧先内联包再校验策略词汇表，且自定义策略保留 `config`（内置策略仍丢弃，U9 钉着不透传）。
+6. **`file://` 等可执行引用的文本检查是纵深防御**：在 promptfoo 0.123.0 上，插件定义的**字段值**本身不经文件加载器，所以这不是已证实的利用路径。它存在是因为上游一旦改变，这个 payload 就变成任意文件读取原语，而这是唯一在存储前看到原文的地方。
+7. **归档的包不自动从企业侧影子副本清除**：`maclaw_resource_shadows` 的清理沿用既有资源治理语义，未在 U10 扩展。
 
 ---
 
 ## 7. 相关文件
 
 **BFF**
-- `internal/maclaw/promptfoo_custom_plugin.go` — 形态 / 文本 / schema / id / 远程依赖五道校验 + 规范化序列化
-- `internal/maclaw/promptfoo_custom_plugin_resolver.go` — `pf_plugin:` 引用解析 + 治理生效点
-- `internal/maclaw/resource_store_service.go` — 存储出口接线（护栏落点）
-- `internal/maclaw/promptfoo_engine_bridge.go` — `PreparePromptfooEngineRun` 接线 + 引擎/记录双 id 列表
-- `internal/api/handler/maclaw_errors.go` — 拒绝码 → 400 / 409（不是 500）
+- `internal/maclaw/promptfoo_custom_plugin.go` — 插件形态 / 文本 / schema / id / 远程依赖五道校验 + 规范化序列化
+- `internal/maclaw/promptfoo_custom_strategy.go` — 策略包的同一套校验（`custom:<variant>`、`strategyText` 必填）
+- `internal/maclaw/promptfoo_custom_plugin_resolver.go` / `promptfoo_custom_strategy_resolver.go` — 引用解析 + 治理生效点
+- `internal/maclaw/resource_store_service.go` — 存储出口接线（护栏落点；重发布归属校验在此）
+- `internal/maclaw/promptfoo_engine_bridge.go` — `ResolveEngineCapabilities`（两条入口共用）+ `PreparePromptfooEngineRun` 接线
+- `internal/api/handler/engine_run.go` — 向导路径调用同一个解析器
+- `internal/api/handler/maclaw_errors.go` — 拒绝码 → 400 / 403 / 409（不是 500/503）
 - `cmd/server/main.go` — resolver 装配
 
 **引擎**
@@ -140,7 +157,9 @@ cd evaluating_platform
 
 **前端**
 - `frontend/src/pages/expert/PromptfooPluginPublisher.tsx` + `promptfooPluginRejectionHints.ts`
-- `frontend/src/pages/admin/ResourceGovernance.tsx` — 插件治理视图
+- `frontend/src/pages/expert/PromptfooStrategyPublisher.tsx` + `promptfooStrategyRejectionHints.ts`
+- `frontend/src/pages/admin/ResourceGovernance.tsx` — 插件 / 策略治理视图
+- `frontend/src/pages/enterprise/EngineEvalPage.tsx` — 向导下拉的「专家发布」分组
 
 **脚本**
 - `scripts/verify_u10_sandbox.sh` — 沙箱反证（0/1/2 三态退出码）

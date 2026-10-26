@@ -1,6 +1,6 @@
 ﻿# Project Guide
 
-更新时间：2026-05-22
+更新时间：2026-10-26
 
 ## 当前定位
 
@@ -10,6 +10,16 @@
 - 平台负责登录、权限、计费、门户、管理员治理、账号级 MaClaw 多租户映射、专家数据目录、Hub/Skill 分发、安全 BFF 和确定性红队工具。
 - 浏览器只访问 `/api/v1/maclaw/...`、`/api/v1/admin/...` 和平台登录业务 API，不直连 MaClaw，不持有 MaClaw token、tenant credential、target secret、payload 或 evidence content。
 - 旧 Agent、旧 Chat、旧 internal MCP、旧 Skill Runner、旧 external MCP/CCBOS 执行主体已经退役；回滚依赖 Git 历史和镜像版本，不在当前仓库保留旧源码副本。
+
+## 文档入口
+
+| 想知道 | 看 |
+|---|---|
+| 开发到哪一步、能做什么、还剩什么 | `evaluating_platform/docs/architecture/development-status.md` |
+| 当前运行形态与安全边界 | `evaluating_platform/docs/architecture/maclaw-current-state.md` |
+| 为什么这么做（逐批决策与缺陷） | `audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md` |
+| 上机跑成什么样 | `records/`（索引在 `records/README.md`） |
+| 一次性故障调查 | `audits/` |
 
 ## 主链路
 
