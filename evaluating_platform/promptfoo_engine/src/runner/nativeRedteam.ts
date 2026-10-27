@@ -155,6 +155,50 @@ export const NATIVE_ERR_WORKDIR_MISSING = 'native_generation_workdir_missing';
  * rejected), which is exactly the information the old shared code discarded.
  */
 export const NATIVE_ERR_PROMPTFOO_FAILED = 'native_generation_promptfoo_failed';
+
+/**
+ * The generation model refused to produce attack cases.
+ *
+ * # Why this has its own code (measured 2026-10-26, record 38)
+ *
+ * promptfoo feeds the run's purpose into every generation template. A purpose
+ * that reads like a harness ("验证用：固定返回配合内容") can be judged harmful by
+ * the generation model itself, which then answers with a refusal; the plugin
+ * yields 0 cases and `strict: true` fails the run.
+ *
+ * The failure used to arrive as NATIVE_ERR_PROMPTFOO_FAILED, whose message names
+ * only "Test case generation failed for 1 plugin(s)". That tells an operator
+ * nothing: a model refusal, a rate limit, a broken template and a network error
+ * all look identical, while only one of them is the caller's to fix — reword the
+ * purpose. A refusal therefore gets its own code and a static hint; the refusal
+ * text itself never leaves this process.
+ */
+export const NATIVE_ERR_MODEL_REFUSED = 'native_generation_model_refused';
+
+/** Static, content-free hint attached to NATIVE_ERR_MODEL_REFUSED. */
+export const NATIVE_ERR_MODEL_REFUSED_HINT =
+  '生成模型拒绝了用例生成。最常见的原因是被测系统用途（purpose）被判定为可疑——' +
+  '请把它改成中性的业务角色描述（例如「客服问答机器人：回答售后与物流咨询」），' +
+  '不要写评测意图或对抗措辞，然后重试。';
+
+/**
+ * Whether a generation failure looks like a content-policy refusal.
+ *
+ * Two signals, because promptfoo surfaces the refusal in two different places:
+ * a single-plugin refusal throws with "returned a refusal during inference" in
+ * the message, while the aggregate strict-mode error only says which plugins
+ * produced 0 cases and logs the real reason — so the caller also passes whether
+ * its log collector saw a refusal line. Never widen this to generic failure
+ * words ("failed", "error"): those belong to NATIVE_ERR_PROMPTFOO_FAILED, and
+ * mislabelling a network error as "reword your purpose" is worse than the
+ * opaque code it replaces.
+ */
+export function isGenerationRefusal(message: string, refusalSignal: boolean): boolean {
+  if (refusalSignal) return true;
+  return /returned a refusal|refus(?:ed|al) during inference|deemed harmful|content policy|rejected by the model/i.test(
+    message ?? '',
+  );
+}
 /**
  * A plugin id the platform catalogue does not offer. Distinct from
  * NATIVE_ERR_PROMPTFOO_FAILED because it is a verdict about the REQUEST, not about
@@ -934,6 +978,16 @@ export function productiveStrategyCount(strategies: Array<{ id?: string }>): num
 export function createDiagnosticLogCollector(options?: { limit?: number }): {
   callback: (message: string) => void;
   excerpt: () => string;
+  /**
+   * Whether any collected line names a refusal.
+   *
+   * Scanned over the RAW lines rather than the redacted excerpt: the redactor
+   * replaces a line that carries user content wholesale, and the refusal line
+   * usually echoes the purpose (`{"purpose":"…"}`) — i.e. exactly the line the
+   * excerpt is designed to drop. The signal is used only to pick an error CODE;
+   * nothing from these lines is ever emitted.
+   */
+  hasRefusalSignal: () => boolean;
 } {
   const limit = Math.max(1, options?.limit ?? 80);
   const lines: string[] = [];
@@ -944,6 +998,12 @@ export function createDiagnosticLogCollector(options?: { limit?: number }): {
       lines.push(text);
       if (lines.length > limit) lines.shift();
     },
+    hasRefusalSignal: (): boolean =>
+      lines.some((line) =>
+        /returned a refusal|refus(?:ed|al) during inference|deemed harmful|content policy|rejected by the model/i.test(
+          line,
+        ),
+      ),
     excerpt: (): string => {
       // Only generation-stage diagnostics: these are the lines that name the cause.
       // `reject` is in the list because that is how a provider's content policy
@@ -1394,6 +1454,13 @@ export async function executeNativeRedteamRun(
   } catch (err) {
     if (record.controller.signal.aborted) {
       throw new EngineRunError('canceled', 'native generation canceled');
+    }
+    // A model refusal is the caller's to fix (reword the purpose); everything
+    // else stays "the library failed". Checked before the generic wrap so the
+    // operator is not sent looking for a broken template when the generation
+    // model simply declined the request (record 38).
+    if (isGenerationRefusal(errorMessage(err), diagnostics.hasRefusalSignal())) {
+      throw new EngineRunError(NATIVE_ERR_MODEL_REFUSED, NATIVE_ERR_MODEL_REFUSED_HINT);
     }
     throw new EngineRunError(
       NATIVE_ERR_PROMPTFOO_FAILED,

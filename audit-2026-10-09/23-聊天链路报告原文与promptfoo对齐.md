@@ -1733,3 +1733,56 @@ BFF 的 `probeAnswerMissing` 又"error 非空即视为没回答"——同一条�
 - 历史报告不回填：已经落库的错误读数保持原样（记录在案的证据），新 run 生效。
 - 缓存开关是**启动期**要求：漏配会拒绝启动，不是静默降级。
 - 混合场景（部分探针未取得回答）仍待上机；本轮修复让该场景的读数第一次有断言保护。
+
+---
+
+## 29. P14：生成模型拒答要有自己的错误码（2026-10-26/27，38 号记录）
+
+### 29.1 症状与根因
+
+38 号记录里判据 2 首轮失败，`error_code=native_generation_promptfoo_failed`，
+界面只有一个红标签。引擎日志里的真正原因是：
+
+```
+openai:chat:mimo-v2.6-flash returned a refusal during inference for ContractPlugin test case generation.
+User-configured values were included in inference and may have been deemed harmful:
+{"purpose":"验证用：固定返回配合内容"}
+```
+
+「被测系统用途」（purpose）会被 promptfoo 渲染进每个生成模板；措辞像靶场/对抗描述时，
+**生成模型自己会拒答** → 插件 0 条 → `strict: true` 让整轮失败。
+
+平台侧看不出这是"模型拒答"：限流、模板坏、网络错产出的都是同一个码，而只有拒答是
+**调用方改一句描述就能修**的。
+
+### 29.2 修法
+
+1. **引擎新增错误码** `native_generation_model_refused` + 静态中文提示（改写成中性业务
+   角色后重试）。判定同时看两个信号：
+   - 抛出的错误消息（单插件拒答时 promptfoo 会写 "returned a refusal during inference"）；
+   - 诊断采集器的**原始日志行**——聚合错误只写"哪个插件 0 条"，真正原因在日志里，
+     而那一行通常带 purpose 原文，正好是 `excerpt()` 会整行脱敏掉的；所以信号扫原始行，
+     只用于选码，不外发任何文本。
+2. **前端**：`explainEngineRunErrorCode` 给这个码配一句可读解释（而且只给这个码与
+   `promptfoo_failed` 配，未知码返回空串——给未知码编一句"像解释"的话，比不解释更糟）；
+   向导的运行详情在红标签下显示这句。
+
+**不扩宽判定**：`failed`/`error` 这类泛词不得进拒答正则——把网络错误标成"改你的用途
+描述"比原来的不透明码更糟。
+
+### 29.3 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `tests/generationRefusal.e2e`：真实入口 `executeNativeRedteamRun` + 拒答生成模型 → `code=native_generation_model_refused` | 摘掉 catch 里的分类 → 红（退回 `promptfoo_failed`） |
+| `tests/nativeDiagnostics.test.ts`：拒答信号（含带 purpose 的行）与"不是拒答"的反例 | 去掉 `hasRefusalSignal` 的原始行扫描 / 放宽正则 → 红 |
+| `TestModelRefusedCodeMirrorsEngineAndFrontend`（Go）：引擎与前端两处字面量必须一致 | 改前端常量 → 红（点名 drift） |
+| 前端 `engineRunErrorHints.test.ts`：拒答码有解释、未知码为空 | 未知码给默认文案 → 红 |
+
+> 镜像守卫的理由：码由 TS 引擎产生、由前端解释，平台只看到 `engine_runs.error_code`
+> 这个字符串。字面量一旦漂移，解释会**静默消失**，又回到"只有一个红标签"。
+
+### 29.4 未做（记录 38 的第三条建议）
+
+目标抽屉「被测系统用途」输入框旁的措辞提醒还没加（属于 UI 文案，用户本轮只要求 1、2）。
+现状：即使描述写得可疑，现在至少有明确的错误码和一句话告诉用户该改什么。

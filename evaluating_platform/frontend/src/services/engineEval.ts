@@ -366,6 +366,35 @@ export const REMOTE_GENERATION_UNAVAILABLE_REASON =
 export const PLUGIN_REQUIRES_CONFIG_REASON =
   '需先提供策略文档 · 已支持该插件，但平台尚未收集 config.policy 文本，选中它本次会生成 0 条用例'
 
+/**
+ * 引擎在「生成模型拒答」时返回的 error_code（与
+ * `promptfoo_engine/src/runner/nativeRedteam.ts` 的 `NATIVE_ERR_MODEL_REFUSED`
+ * 逐字一致）。
+ *
+ * 为什么单独成码：生成失败以前只有 `native_generation_promptfoo_failed`，界面只看到
+ * 一个红色标签。模型拒答是**调用方自己可以修**的（改写「被测系统用途」），与模板坏了、
+ * 限流、网络错误不是同一类问题（2026-10-26，38 号记录）。
+ */
+export const ENGINE_RUN_ERROR_MODEL_REFUSED = 'native_generation_model_refused'
+
+/**
+ * 运行期错误码 → 可读解释。
+ *
+ * 未收录的码返回空串：界面只显示码本身，不猜原因。给每个码配一句"看起来像解释"
+ * 的话，比不解释更糟——它会让读者停止追查。
+ */
+const ENGINE_RUN_ERROR_HINTS: Record<string, string> = {
+  [ENGINE_RUN_ERROR_MODEL_REFUSED]:
+    '生成模型拒绝了用例生成。最常见的原因是被测系统用途被判为可疑 —— 请改成中性的业务角色描述（例如「客服问答机器人：回答售后与物流咨询」），不要写评测意图或对抗措辞，然后重试。',
+  native_generation_promptfoo_failed:
+    '引擎在生成阶段失败。若是模型或靶机限流、网络问题，请稍后重试；连续失败请查看运行详情里的错误摘要。',
+}
+
+export function explainEngineRunErrorCode(code: string | undefined | null): string {
+  const key = String(code ?? '').trim()
+  return key === '' ? '' : ENGINE_RUN_ERROR_HINTS[key] ?? ''
+}
+
 /** 引擎在请求含被标记项时返回的 error_code（与后端常量一致）。 */
 export const REMOTE_GENERATION_ERROR_CODES = {
   plugin: 'plugin_requires_remote_generation',

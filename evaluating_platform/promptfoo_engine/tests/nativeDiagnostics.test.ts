@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { createDiagnosticLogCollector } from '../src/runner/nativeRedteam.js';
+import { createDiagnosticLogCollector, isGenerationRefusal } from '../src/runner/nativeRedteam.js';
 
 function collect(lines: string[], limit?: number): string {
   const collector = createDiagnosticLogCollector(limit === undefined ? undefined : { limit });
@@ -90,5 +90,43 @@ describe('logCallback wiring', () => {
     ) as string;
     expect(source).toContain("NonNullable<Parameters<typeof promptfoo.redteam.run>[0]>['logCallback']");
     expect(source).toContain('logCallback: diagnosticLogCallback');
+  });
+});
+
+/**
+ * 拒答信号（2026-10-26，38 号记录）。
+ *
+ * 生成模型自己拒答时，promptfoo 的聚合错误只写"哪个插件 0 条"，真正原因在日志行里
+ * ——而且那一行通常带着 purpose 原文，正好是摘录会整行抹掉的内容。所以信号扫的是
+ * **原始行**，只用来选错误码，不外发任何文本。
+ */
+describe('refusal signal', () => {
+  function refusalSignal(lines: string[]): boolean {
+    const collector = createDiagnosticLogCollector();
+    for (const line of lines) collector.callback(line);
+    return collector.hasRefusalSignal();
+  }
+
+  it('sees a refusal even when the line echoes the purpose', () => {
+    const line =
+      '[Language Processing] Error generating tests for contracts: openai:chat:mimo returned a refusal ' +
+      'during inference for ContractPlugin test case generation. User-configured values were included in ' +
+      'inference and may have been deemed harmful: {"purpose":"验证用：固定返回配合内容"}.';
+    expect(refusalSignal([line])).toBe(true);
+    // The excerpt is allowed to drop it (it contains user content); the signal is not.
+    expect(collect([line])).not.toContain('验证用');
+  });
+
+  it('does not mistake ordinary failures for refusals', () => {
+    expect(refusalSignal(['Error from API provider, skipping generation for ContractPlugin: HTTP 500'])).toBe(false);
+    expect(refusalSignal([])).toBe(false);
+  });
+
+  it('classifies from the message as well as the signal', () => {
+    expect(isGenerationRefusal('openai returned a refusal during inference for X', false)).toBe(true);
+    expect(isGenerationRefusal('whatever', true)).toBe(true);
+    // The aggregate strict-mode message names no cause — it must NOT become a refusal.
+    expect(isGenerationRefusal('Test case generation failed for 1 plugin(s): contracts (0/3 tests)', false)).toBe(false);
+    expect(isGenerationRefusal('Error from API provider, skipping generation: HTTP 429', false)).toBe(false);
   });
 });

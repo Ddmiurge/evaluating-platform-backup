@@ -16,7 +16,7 @@ import {
   explainPluginConfigRejection, explainPluginIDRejection, explainRemoteGenerationRejection,
   isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, isStrategyRetired,
   retiredEnginePluginGuidance, retiredEngineStrategyGuidance,
-  toEngineSelectOption, totalPluginFanout,
+  explainEngineRunErrorCode, toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
 import type { EngineRun, EngineRunResult, EngineSelectOption } from '../../services/engineEval'
 
@@ -604,7 +604,18 @@ export function EngineEvalPage() {
                     {activeRun.planned_count > 0 ? ` · ${activeRun.executed_count}/${activeRun.planned_count}` : ''}
                     {activeRun.duration_ms > 0 ? ` · ${(activeRun.duration_ms / 1000).toFixed(1)}s` : ''}
                   </Text>
-                  {activeRun.error_code ? <div><Tag color="red">{activeRun.error_code}</Tag></div> : null}
+                  {activeRun.error_code ? (
+                    <div>
+                      <Tag color="red">{activeRun.error_code}</Tag>
+                      {explainEngineRunErrorCode(activeRun.error_code) && (
+                        <div style={{ marginTop: 4, maxWidth: 560 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {explainEngineRunErrorCode(activeRun.error_code)}
+                          </Text>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
 
                 {result ? (
