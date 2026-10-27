@@ -210,6 +210,7 @@ func newEngineRunRouter(handler *EngineRunHandler, role string) *gin.Engine {
 	r.POST("/maclaw/engine/runs", handler.CreateRun)
 	r.GET("/maclaw/engine/runs", handler.ListRuns)
 	r.GET("/maclaw/engine/runs/:id", handler.GetRun)
+	r.GET("/maclaw/engine/runs/:id/report", handler.GetRunReport)
 	r.POST("/maclaw/engine/runs/:id/cancel", handler.CancelRun)
 	return r
 }
@@ -860,4 +861,76 @@ type fakeCapabilityResolver struct {
 
 func (r *fakeCapabilityResolver) ResolveEngineCapabilities(context.Context, uuid.UUID, []maclaw.EngineCapabilityRef, []maclaw.EngineCapabilityRef) (*maclaw.ResolvedEngineCapabilities, error) {
 	return r.caps, r.err
+}
+
+type fakeEngineReportLookup struct {
+	report *maclaw.EvaluationReport
+	err    error
+}
+
+func (f *fakeEngineReportLookup) GetReportByRunID(context.Context, uuid.UUID, string) (*maclaw.EvaluationReport, error) {
+	return f.report, f.err
+}
+
+// The history row's one-click download: run id in, report id out.
+func TestEngineRunHandlerGetRunReport(t *testing.T) {
+	store := newFakeRunStore()
+	svc := maclaw.NewEngineRunService(store)
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	saved, err := svc.Save(context.Background(), svc.NewRun(userID, "", "sess-1", "wizard", "p", maclaw.EngineJudgeAuto, 3, "t1", []maclaw.EngineCapabilityRef{{ID: "contracts"}}, nil))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	newHandler := func(lookup engineReportLookup) *EngineRunHandler {
+		h := newEngineRunHandler(newEnabledFakeEngine(), svc, nil, nil)
+		if lookup != nil {
+			h.SetEngineReportLookup(lookup)
+		}
+		return h
+	}
+
+	t.Run("resolves the report id", func(t *testing.T) {
+		h := newHandler(&fakeEngineReportLookup{report: &maclaw.EvaluationReport{ID: "redteam_report_x"}})
+		r := newEngineRunRouter(h, "enterprise")
+		w := doJSON(r, http.MethodGet, "/maclaw/engine/runs/"+saved.ID+"/report", "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		for _, want := range []string{`"report_id":"redteam_report_x"`, `"downloadable":true`, `"download_format":"pdf"`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("response missing %s: %s", want, body)
+			}
+		}
+	})
+
+	t.Run("no report yet", func(t *testing.T) {
+		h := newHandler(&fakeEngineReportLookup{})
+		r := newEngineRunRouter(h, "enterprise")
+		w := doJSON(r, http.MethodGet, "/maclaw/engine/runs/"+saved.ID+"/report", "")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "engine_report_not_ready") {
+			t.Errorf("response carries no ready code: %s", w.Body.String())
+		}
+	})
+
+	t.Run("report store not wired", func(t *testing.T) {
+		h := newHandler(nil)
+		r := newEngineRunRouter(h, "enterprise")
+		w := doJSON(r, http.MethodGet, "/maclaw/engine/runs/"+saved.ID+"/report", "")
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("unknown run", func(t *testing.T) {
+		h := newHandler(&fakeEngineReportLookup{report: &maclaw.EvaluationReport{ID: "x"}})
+		r := newEngineRunRouter(h, "enterprise")
+		if w := doJSON(r, http.MethodGet, "/maclaw/engine/runs/er-nope/report", ""); w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d", w.Code)
+		}
+	})
 }

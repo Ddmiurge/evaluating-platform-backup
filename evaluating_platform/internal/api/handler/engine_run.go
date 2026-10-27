@@ -71,13 +71,34 @@ type engineCapabilityResolver interface {
 	ResolveEngineCapabilities(ctx context.Context, userID uuid.UUID, plugins, strategies []maclaw.EngineCapabilityRef) (*maclaw.ResolvedEngineCapabilities, error)
 }
 
+// engineReportLookup finds a run's compiled report. Implemented by
+// *maclaw.RedteamArtifactService.
+type engineReportLookup interface {
+	GetReportByRunID(ctx context.Context, userID uuid.UUID, runID string) (*maclaw.EvaluationReport, error)
+}
+
 type EngineRunHandler struct {
 	engine             engineClient
 	runs               *maclaw.EngineRunService
 	targetConfig       engineTargetProvider
 	generationProvider maclaw.EngineGenerationProvider
 	capabilities       engineCapabilityResolver
+	reports            engineReportLookup
 	enabled            bool
+}
+
+// SetEngineReportLookup wires the report store into the run history so one row
+// can offer a one-click download.
+//
+// The history lists RUNS (er-…), and the browser never receives a report id on
+// that path: reports are reached through the chat card, which only exists while
+// the job registry does. Resolving run → newest report here keeps that mapping
+// server-side and owner-scoped (2026-10-27).
+func (h *EngineRunHandler) SetEngineReportLookup(lookup engineReportLookup) {
+	if h == nil {
+		return
+	}
+	h.reports = lookup
 }
 
 // SetEngineCapabilityResolver wires the published-package resolver into the
@@ -593,6 +614,47 @@ func (h *EngineRunHandler) GetRun(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, engineRunResponse(record, nil))
+}
+
+// GetRunReport resolves the newest report compiled for one run.
+//
+// The reply carries the report id and the download contract, not the report:
+// the browser already has an export endpoint for a report id, so this adds one
+// lookup instead of a second rendering path. Ownership is enforced by loadRun
+// (the run row is owner-scoped), and the report lookup is owner-scoped too — a
+// crafted run id from another account gets the same 404 as a nonexistent one.
+func (h *EngineRunHandler) GetRunReport(c *gin.Context) {
+	userID, ok := h.requireEngineContext(c)
+	if !ok {
+		return
+	}
+	_, runID, ok := h.loadRun(c, userID)
+	if !ok {
+		return
+	}
+	if h.reports == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "report store is not configured", "code": "engine_report_unavailable"})
+		return
+	}
+	report, err := h.reports.GetReportByRunID(c.Request.Context(), userID, runID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load engine report"})
+		return
+	}
+	reportID := ""
+	if report != nil {
+		reportID = strings.TrimSpace(report.ID)
+	}
+	if reportID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "this run has no report yet", "code": "engine_report_not_ready"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"run_id":          runID,
+		"report_id":       reportID,
+		"downloadable":    true,
+		"download_format": "pdf",
+	})
 }
 
 // CancelRun cancels an in-flight engine run.

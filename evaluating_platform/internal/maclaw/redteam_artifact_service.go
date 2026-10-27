@@ -66,6 +66,13 @@ type RedteamArtifactStore interface {
 	GetEvidence(context.Context, uuid.UUID, string) (*RedteamEvidenceRecord, error)
 	SaveReport(context.Context, RedteamReportRecord) (*RedteamReportRecord, error)
 	GetReport(context.Context, uuid.UUID, string) (*RedteamReportRecord, error)
+	// GetReportByRunID finds the newest report compiled for one engine run.
+	//
+	// The run detail lists runs, not reports; without this the one-click download
+	// would need the browser to know a report id it never receives (2026-10-27).
+	// Newest wins because recompiling a run overwrites its report in place today,
+	// and a later re-compile should never hand back an older snapshot.
+	GetReportByRunID(context.Context, uuid.UUID, string) (*RedteamReportRecord, error)
 }
 
 type RedteamArtifactService struct {
@@ -240,6 +247,27 @@ func (s *RedteamArtifactService) GetReport(ctx context.Context, userID uuid.UUID
 		return nil, errors.New("platform user id is required")
 	}
 	record, err := s.store.GetReport(ctx, userID, strings.TrimSpace(reportID))
+	if err != nil || record == nil {
+		return nil, err
+	}
+	report := reportFromRecord(record)
+	return &report, nil
+}
+
+// GetReportByRunID returns the newest report for one run, or nil when the run has
+// not produced one (still running, failed, or from before reports were compiled).
+func (s *RedteamArtifactService) GetReportByRunID(ctx context.Context, userID uuid.UUID, runID string) (*EvaluationReport, error) {
+	if !s.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	if userID == uuid.Nil {
+		return nil, errors.New("platform user id is required")
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, nil
+	}
+	record, err := s.store.GetReportByRunID(ctx, userID, runID)
 	if err != nil || record == nil {
 		return nil, err
 	}

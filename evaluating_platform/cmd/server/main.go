@@ -194,6 +194,8 @@ func main() {
 	// path uses (2026-10-23). Wired after the resolver so a package is resolved
 	// with governance applied on both doors.
 	engineRunHandler.SetEngineCapabilityResolver(redteamToolBridge)
+	// History rows are runs, not reports; this is how a row finds its PDF.
+	engineRunHandler.SetEngineReportLookup(maclawRedteamArtifactService)
 	// Phase 1 confirm fast path: shared platform engine job store.
 	platformEngineJobs := maclawpkg.NewPlatformEngineJobStore()
 	maclawRuntimeHandler.SetPromptfooEngine(redteamToolBridge, platformEngineJobs, engineRunService)
@@ -332,6 +334,8 @@ func main() {
 			maclawEngine.POST("/maclaw/engine/runs", engineRunHandler.CreateRun)
 			maclawEngine.GET("/maclaw/engine/runs", engineRunHandler.ListRuns)
 			maclawEngine.GET("/maclaw/engine/runs/:id", engineRunHandler.GetRun)
+			// 评测历史的一键下载：按 run 解析它最新的一份报告（owner 作用域）。
+			maclawEngine.GET("/maclaw/engine/runs/:id/report", engineRunHandler.GetRunReport)
 			maclawEngine.POST("/maclaw/engine/runs/:id/cancel", engineRunHandler.CancelRun)
 			maclawEngine.GET("/maclaw/engine/runs/:id/events", engineRunHandler.StreamRunEvents)
 		}

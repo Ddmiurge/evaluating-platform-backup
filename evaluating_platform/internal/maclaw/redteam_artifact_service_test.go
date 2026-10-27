@@ -67,6 +67,21 @@ func (s *memoryArtifactStore) SaveReport(_ context.Context, record RedteamReport
 	return &copy, nil
 }
 
+func (s *memoryArtifactStore) GetReportByRunID(_ context.Context, userID uuid.UUID, runID string) (*RedteamReportRecord, error) {
+	var newest *RedteamReportRecord
+	for i := range s.reports {
+		item := s.reports[i]
+		if item.PlatformUserID != userID || strings.TrimSpace(item.RunID) != strings.TrimSpace(runID) {
+			continue
+		}
+		if newest == nil || item.CreatedAt.After(newest.CreatedAt) {
+			copied := item
+			newest = &copied
+		}
+	}
+	return newest, nil
+}
+
 func (s *memoryArtifactStore) GetReport(_ context.Context, userID uuid.UUID, reportID string) (*RedteamReportRecord, error) {
 	for _, item := range s.reports {
 		if item.PlatformUserID == userID && (item.ID == reportID || item.Handle == reportID) {
@@ -707,5 +722,45 @@ func TestPlatformArtifactGatewayServesStoredArtifacts(t *testing.T) {
 	}
 	if got.ID != report.ID || got.Title != "Stored report" {
 		t.Fatalf("got = %#v", got)
+	}
+}
+
+// The run history's one-click download resolves a RUN id to its newest report.
+//
+// Recompiling a run overwrites its report in place today, so "newest" is the
+// only correct answer; returning an older snapshot would hand the reader a
+// report the platform has already replaced. And the lookup is owner-scoped: a
+// run id from another account must resolve to nothing.
+func TestGetReportByRunIDReturnsTheNewestForTheOwner(t *testing.T) {
+	store := &memoryArtifactStore{}
+	service := NewRedteamArtifactService(store)
+	owner := uuid.New()
+	other := uuid.New()
+	older := time.Now().Add(-time.Hour)
+	newer := time.Now()
+
+	store.reports = append(store.reports,
+		RedteamReportRecord{ID: "report_old", Handle: "h1", PlatformUserID: owner, RunID: "er-1", Title: "old", CreatedAt: older},
+		RedteamReportRecord{ID: "report_new", Handle: "h2", PlatformUserID: owner, RunID: "er-1", Title: "new", CreatedAt: newer},
+		RedteamReportRecord{ID: "report_other", Handle: "h3", PlatformUserID: other, RunID: "er-2", Title: "other", CreatedAt: newer},
+	)
+
+	report, err := service.GetReportByRunID(context.Background(), owner, "er-1")
+	if err != nil {
+		t.Fatalf("GetReportByRunID: %v", err)
+	}
+	if report == nil || report.ID != "report_new" {
+		t.Fatalf("report = %+v, want the newest one for this run", report)
+	}
+	if _, err := service.GetReportByRunID(context.Background(), other, "er-1"); err != nil {
+		t.Fatalf("other user lookup errored: %v", err)
+	} else if got, _ := service.GetReportByRunID(context.Background(), other, "er-1"); got != nil {
+		t.Errorf("a run owned by someone else resolved to %+v", got)
+	}
+	if got, _ := service.GetReportByRunID(context.Background(), owner, "er-missing"); got != nil {
+		t.Errorf("unknown run resolved to %+v", got)
+	}
+	if got, _ := service.GetReportByRunID(context.Background(), owner, "  "); got != nil {
+		t.Errorf("blank run id resolved to %+v", got)
 	}
 }

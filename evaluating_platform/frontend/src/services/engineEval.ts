@@ -36,6 +36,14 @@ export interface EngineRunResult {
   token_usage?: { generation: number; judging: number; target: number }
 }
 
+/** 一次运行对应的报告引用（评测历史一键下载）。 */
+export interface EngineRunReportRef {
+  run_id: string
+  report_id: string
+  downloadable: boolean
+  download_format: 'pdf'
+}
+
 export interface EngineRun {
   id: string
   purpose: string
@@ -94,6 +102,18 @@ export const engineEvalService = {
   },
   async getRun(id: string): Promise<EngineRun> {
     const res = await api.get<EngineRun>(`/maclaw/engine/runs/${encodeURIComponent(id)}`)
+    return res.data
+  },
+  /**
+   * Resolve the newest report compiled for one run.
+   *
+   * The history lists runs, not reports, and the browser never receives a report
+   * id on that path. This endpoint does the mapping server-side (owner-scoped);
+   * the download itself reuses the existing report export, so there is one
+   * rendering path, not two.
+   */
+  async getRunReport(runId: string): Promise<EngineRunReportRef> {
+    const res = await api.get<EngineRunReportRef>(`/maclaw/engine/runs/${encodeURIComponent(runId)}/report`)
     return res.data
   },
   async listRuns(limit = 20): Promise<EngineRun[]> {

@@ -1786,3 +1786,37 @@ User-configured values were included in inference and may have been deemed harmf
 
 目标抽屉「被测系统用途」输入框旁的措辞提醒还没加（属于 UI 文案，用户本轮只要求 1、2）。
 现状：即使描述写得可疑，现在至少有明确的错误码和一句话告诉用户该改什么。
+
+---
+
+## 30. P15：评测历史一键下载报告（2026-10-27）
+
+### 30.1 缺的是什么
+
+报告下载接口早就有（`GET /maclaw/evaluation/reports/:id/export`），但**评测历史列的是 run（`er-…`）**，
+浏览器在那条路径上拿不到 `report_id` —— 报告 id 只出现在聊天报告卡里，而卡片依赖内存 job 注册表。
+所以"下载报告"这个动作此前只能从对话里做。
+
+### 30.2 修法
+
+1. 仓储新增 `GetReportByRunID(userID, runID)`：`WHERE platform_user_id = $1 AND run_id = $2
+   ORDER BY created_at DESC LIMIT 1`。**归属写在 WHERE 里**而不是取回后再判断 ——
+   调用方给的是浏览器传来的 run id，别人的报告必须与不存在**无法区分**。
+   取最新一份：同一 run 重新编译会原地覆盖，返回旧快照等于给读者一份平台已经替换掉的报告。
+2. BFF 新增 `GET /api/v1/maclaw/engine/runs/:id/report` → `{run_id, report_id, downloadable, download_format}`。
+   run 归属由既有的 `loadRun` 保证；没有报告时 **404 `engine_report_not_ready`**，不返回空 id。
+3. 前端评测历史加「操作」列：`下载报告`（仅 `phase=succeeded` 可点，行内 loading，
+   同一时刻只允许一个下载）。下载复用报告卡的同一套 `downloadMaclawReport` +
+   `triggerBrowserDownload`，文件名同为 `maclaw-report-<report_id>.pdf` —— 不另写一条渲染/下载路径。
+
+### 30.3 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestGetReportByRunIDReturnsTheNewestForTheOwner`（同 run 多份取最新；他人/不存在/空 id 均为 nil） | 服务若传错 userID → 第一条断言即失败 |
+| `TestEngineRunHandlerGetRunReport`（200 带 report_id；无报告 404 `engine_report_not_ready`；未接线 503；未知 run 404） | 去掉"无报告"分支 → 200 + `report_id:""`，红 |
+
+### 30.4 边界
+
+- 历史里 P11 之前、或失败/取消的 run 没有报告 → 按钮置灰或点击后提示「这次运行还没有可下载的报告」；
+- 前端按钮本身是纯 UI，没有单测，需上机点一次。

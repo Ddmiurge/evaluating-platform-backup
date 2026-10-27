@@ -8,7 +8,7 @@ import { Link } from 'react-router-dom'
 import {
   Alert, Button, Card, Col, Collapse, Descriptions, Form, InputNumber, Progress, Row, Select, Space, Spin, Steps, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
-import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, DownloadOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   ENGINE_PLUGIN_CATEGORY_LABELS, ENGINE_PLUGIN_OPTIONS, ENGINE_STRATEGY_OPTIONS,
   REMOTE_GENERATION_UNAVAILABLE_REASON, RETIRED_ENGINE_PLUGINS, RETIRED_ENGINE_STRATEGIES, engineEvalService,
@@ -19,6 +19,7 @@ import {
   explainEngineRunErrorCode, toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
 import type { EngineRun, EngineRunResult, EngineSelectOption } from '../../services/engineEval'
+import { reportService, triggerBrowserDownload } from '../../services/report'
 
 /**
  * 插件选项按风险类别分组（与后端 catalog 的 category 对齐）。
@@ -247,6 +248,7 @@ export function EngineEvalPage() {
   const [activeRun, setActiveRun] = useState<EngineRun | null>(null)
   const [history, setHistory] = useState<EngineRun[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [downloadingRunId, setDownloadingRunId] = useState<string | null>(null)
   const pollRef = useRef<number | null>(null)
 
   // Expert-published packages (2026-10-23). Loaded, not baked into the static
@@ -339,6 +341,23 @@ export function EngineEvalPage() {
     () => watchedPlugins.filter((id) => isPluginConfigGated(id)),
     [watchedPlugins],
   )
+
+  // One click from a history row to its PDF. The row is a run id; the report id
+  // is resolved server-side (owner-scoped). Uses the same export + download
+  // helpers as the chat report card, so the two cannot drift.
+  const downloadHistoryReport = useCallback(async (row: EngineRun) => {
+    if (downloadingRunId) return
+    setDownloadingRunId(row.id)
+    try {
+      const ref = await engineEvalService.getRunReport(row.id)
+      const blob = await reportService.downloadMaclawReport(ref.report_id, 'pdf')
+      triggerBrowserDownload(blob, `maclaw-report-${ref.report_id}.pdf`, 'application/pdf')
+    } catch {
+      message.warning('这次运行还没有可下载的报告')
+    } finally {
+      setDownloadingRunId(null)
+    }
+  }, [downloadingRunId])
 
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
@@ -660,6 +679,19 @@ export function EngineEvalPage() {
               render: (_: unknown, r: EngineRun) => r.result?.totals.attack_success ?? '-' },
             { title: '插件', key: 'plugins', ellipsis: true,
               render: (_: unknown, r: EngineRun) => (r.plugins ?? []).join('、') },
+            { title: '操作', key: 'actions', width: 110,
+              render: (_: unknown, r: EngineRun) => (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  loading={downloadingRunId === r.id}
+                  disabled={r.phase !== 'succeeded' || (downloadingRunId !== null && downloadingRunId !== r.id)}
+                  onClick={() => void downloadHistoryReport(r)}
+                >
+                  下载报告
+                </Button>
+              ) },
           ]}
           expandable={{
             expandedRowRender: (r: EngineRun) => (

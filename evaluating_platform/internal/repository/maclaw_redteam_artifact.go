@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -151,6 +152,34 @@ func (r *MaclawRedteamArtifactRepository) SaveReport(ctx context.Context, record
 		metadata,
 	)
 	return scanRedteamReport(row)
+}
+
+// GetReportByRunID returns the newest report for one run, owner-scoped.
+//
+// Ownership is part of the WHERE clause rather than a post-check: the caller is a
+// run id from the browser, and a report belonging to another account must be
+// indistinguishable from one that does not exist.
+func (r *MaclawRedteamArtifactRepository) GetReportByRunID(ctx context.Context, userID uuid.UUID, runID string) (*maclaw.RedteamReportRecord, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, nil
+	}
+	const query = `
+		SELECT id, handle, platform_user_id, instance_id, session_id, run_id, title, summary, risk_level,
+			safety_score, findings, evidence_handles, metadata, created_at, updated_at
+		FROM maclaw_redteam_reports
+		WHERE platform_user_id = $1 AND run_id = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+	out, err := scanRedteamReport(r.pool.QueryRow(ctx, query, userID, runID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query maclaw redteam report by run: %w", err)
+	}
+	return out, nil
 }
 
 func (r *MaclawRedteamArtifactRepository) GetReport(ctx context.Context, userID uuid.UUID, reportID string) (*maclaw.RedteamReportRecord, error) {

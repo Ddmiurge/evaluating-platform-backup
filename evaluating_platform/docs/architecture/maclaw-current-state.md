@@ -1009,3 +1009,15 @@ http provider 只读 `REQUEST_TIMEOUT_MS`（默认 300s），**不读** `config.
 守卫：`caseResults` 引擎用例、`EngineCaseFindingsRender…/grader reason`、
 `MeasuredCounts*`、`AppendRunningEngineProgressMessages*`、`GetSessionSynthesizesRunningEngineProgressCard`、
 `assertResponseCacheDisabled`；反证均跑红。
+
+## 评测历史一键下载（2026-10-27）
+
+```
+GET /api/v1/maclaw/engine/runs/:id/report
+  → {run_id, report_id, downloadable, download_format:"pdf"}
+  → 404 engine_report_not_ready（运行未产出报告）
+前端：报告下载仍走 GET /maclaw/evaluation/reports/:id/export?format=pdf（同一条渲染路径）
+```
+
+- `GetReportByRunID` 的归属写在 SQL 里（`platform_user_id` + `run_id`），别人的 run 与不存在的 run 同答；
+- 同 run 多份取 `created_at DESC` 最新一份（重新编译原地覆盖，旧快照不得回给读者）。
