@@ -131,6 +131,10 @@ cd evaluating_platform
 3. **没有物理删除**（2026-10-26 决定）：专家可「下架」、管理员可停用/归档，正文与 handle 保留。
    历史 run 与计划卡按 handle 引用它，删除会让引用指向空、旧报告无法解释。归档的效果与删除在
    **使用面**上等价（企业不可见、解析器拒绝），差别只在可追溯性。
+3b. **代码策略（`form=js`）暂未开放**：promptfoo 支持 `file://` 策略模块（`import()` 执行），
+   但策略 `action` 在引擎主进程内被调用，而引擎当前是**全局唯一实例**且持有平台级生成模型 key。
+   开放前置条件是每租户引擎 + 租户级 key + 实例 token（与 Skill 同档），
+   设计见 `strategy-code-packages.md`。在此之前 **`file://` 等拦截继续保留**。
 4. **重新发布 = 更新同一个包**（P10）：请求带已有 `id` + `handle`；未带 handle 时沿用原 handle。
    每次发布都新生成 id 的旧行为会产生同名第二个包，已废弃。
 5. **两条入口同一解析器**（P11）：向导与计划卡都经 `RedteamToolBridge.ResolveEngineCapabilities`；
