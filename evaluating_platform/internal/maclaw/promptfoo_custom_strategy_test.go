@@ -118,7 +118,12 @@ func TestCustomStrategyPublicationRejectsEngineOwnedFields(t *testing.T) {
 // file-based strategy is not a restricted version of this feature, it is a
 // different and much more dangerous one: an `import()` of a module exporting
 // `id` and `action`, inside the process that holds the generation API key.
-func TestCustomStrategyPublicationRejectsJSForm(t *testing.T) {
+// The YAML parser refuses a package that declares a non-YAML form. `js` is now
+// a REAL form (design strategy-code-packages.md), but it must never reach this
+// parser: the store routes it to ValidateAndParseCustomStrategyCodePublication
+// first, and this branch is the backstop that turns a routing mistake into a
+// readable error instead of "expected strategyText".
+func TestCustomStrategyPublicationRejectsNonYAMLForm(t *testing.T) {
 	cases := map[string]map[string]string{
 		"declared javascript": {CustomStrategyMetadataFormKey: "javascript"},
 		"declared js":         {CustomStrategyMetadataFormKey: "js"},
@@ -131,8 +136,18 @@ func TestCustomStrategyPublicationRejectsJSForm(t *testing.T) {
 			continue
 		}
 		var verr *PromptfooCustomPluginValidationError
-		if !errors.As(err, &verr) || verr.Code != CustomStrategyErrFormUnsupported {
-			t.Errorf("%s: err = %v, want %s", label, err, CustomStrategyErrFormUnsupported)
+		if !errors.As(err, &verr) {
+			t.Errorf("%s: err = %v, want a validation error", label, err)
+			continue
+		}
+		// `js` has its own message now (it is a supported form that took the
+		// other branch); anything else stays a form error.
+		wantCode := CustomStrategyErrFormUnsupported
+		if metadata[CustomStrategyMetadataFormKey] == CustomStrategyFormJS {
+			wantCode = CustomStrategyErrCodeInvalid
+		}
+		if verr.Code != wantCode {
+			t.Errorf("%s: code = %s, want %s (err: %v)", label, verr.Code, wantCode, err)
 		}
 	}
 	// And a JS payload submitted while *claiming* to be YAML.

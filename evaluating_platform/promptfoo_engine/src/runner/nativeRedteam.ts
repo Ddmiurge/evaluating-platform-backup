@@ -110,6 +110,10 @@ import {
   type MaterializedCustomPlugin,
 } from './customPlugin.js';
 import { applyCustomStrategyRefs, isPromptfooCustomStrategyId, resolveCustomStrategies, type EngineCustomStrategy } from './customStrategy.js';
+import {
+  materializeCustomStrategyCode,
+  normalizeCodeStrategyIds,
+} from './customStrategyCode.js';
 
 type Emit = (event: RunProgressEvent) => void;
 
@@ -386,6 +390,12 @@ export function assertPluginIdsAreAccepted(
  */
 export function resolveNativeStrategies(
   strategies: Array<{ id: string; config?: Record<string, unknown> }>,
+  /**
+   * file:// refs THIS run materialized (code strategy packages). A file:// id
+   * outside this set is refused: it did not come from the package pipeline, and
+   * importing it would execute an arbitrary path inside the engine.
+   */
+  allowedFileRefs?: Set<string>,
 ): Array<{ id: string; config?: Record<string, unknown> }> {
   const available = new Set(promptfoo.redteam.Strategies.map((s) => s.id));
   const seen = new Set<string>();
@@ -394,6 +404,27 @@ export function resolveNativeStrategies(
   for (const ref of strategies ?? []) {
     const id = (ref?.id ?? '').trim();
     if (!id) continue;
+    // Step 0 (2026-10-28): promptfoo's own strategy schema accepts
+    // `file://…js|ts` as a code strategy, and `validateStrategies()` explicitly
+    // skips it (`if (strategy.id.startsWith("file://")) continue`), so a
+    // file:// ref is in neither vocabulary used below yet is perfectly legal.
+    //
+    // The engine still does not ACCEPT one from a caller: the path must point
+    // into this run's workdir, and only the package materializer produces such
+    // paths. Anything else is refused here rather than imported.
+    if (id.toLowerCase().startsWith('file://')) {
+      if (allowedFileRefs?.has(id)) {
+        if (!seen.has(id)) {
+          seen.add(id);
+          native.push({ id, ...(ref.config ? { config: ref.config } : {}) });
+        }
+        continue;
+      }
+      throw new EngineRunError(
+        NATIVE_ERR_STRATEGY_UNSUPPORTED,
+        '策略代码包只接受由发布链路物化的引用：请求里的 file:// 策略路径不在本次运行的工作目录中，拒绝加载。',
+      );
+    }
     // Phase 3 · 任务 2: `custom:<variant>` ids are minted per published package
     // and so cannot be enumerated in nativeStrategyMap.ts. They are promptfoo's
     // own custom-strategy hook — `isCustomStrategy()` accepts exactly this
@@ -1360,11 +1391,26 @@ export async function executeNativeRedteamRun(
   // shipped with the request and the BFF had recorded the resolved id (measured
   // in the P10 field verification). The replacement is idempotent, so the
   // builder's own call remains as a backstop for a marker that somehow survived.
-  const requestStrategies = applyCustomStrategyRefs(
-    request.strategies,
-    resolveCustomStrategies(request.custom_strategies ?? []),
+  // Code strategy packages (pf_strategy_form=js) are written into this run's
+  // workdir BEFORE the vocabulary check, because their file:// refs are what the
+  // check has to let through. Validation happens before any write, so a refused
+  // package leaves no file for a later run to import.
+  const materializedCodeStrategies = await materializeCustomStrategyCode(
+    request.custom_strategy_code ?? [],
+    workdir,
   );
-  const native = resolveNativeStrategies(requestStrategies);
+  // Only refs THIS run materialized are allowed through; a file:// id supplied
+  // by the caller is still refused in resolveNativeStrategies.
+  const allowedFileRefs = new Set(materializedCodeStrategies.map((item) => item.ref));
+
+  const requestStrategies = [
+    ...applyCustomStrategyRefs(
+      request.strategies,
+      resolveCustomStrategies(request.custom_strategies ?? []),
+    ),
+    ...materializedCodeStrategies.map((item) => ({ id: item.ref })),
+  ];
+  const native = resolveNativeStrategies(requestStrategies, allowedFileRefs);
 
   const injectVar = (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR;
   // P2-2 (S-4): the cap is 50 in three places — this clamp, the BFF's
@@ -1492,6 +1538,10 @@ export async function executeNativeRedteamRun(
   // paths"), and unreadable besides. Translate the paths back to the package's
   // own id before reducing.
   const remapped = remapCustomPluginIds(loaded, materialized);
+  // Step 0 (2026-10-28): promptfoo stamps the file:// PATH into
+  // metadata.strategyId for code strategies — same shape as the plugin case
+  // above, same rule: a local path must never reach the run record or report.
+  normalizeCodeStrategyIds(remapped, materializedCodeStrategies);
   // U8: plugins whose platform rubric could not be injected on this path are
   // judged by promptfoo's own grader; tell the reducer so the report says so
   // instead of crediting a platform standard that was never applied.

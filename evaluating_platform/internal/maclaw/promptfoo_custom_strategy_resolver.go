@@ -61,8 +61,12 @@ type EngineCustomStrategy struct {
 	// with the package so the report, the judge source and the config document
 	// all agree on one name.
 	StrategyID string `json:"strategy_id"`
-	// Definition is the canonical YAML document.
+	// Definition is the canonical YAML document (TEXT packages) or the ESM module
+	// source (CODE packages). Which one it is, is in Form.
 	Definition string `json:"definition"`
+	// Form is `yaml` (inlined as `custom:<variant>` + strategyText) or `js`
+	// (materialized to a file:// strategy and imported by promptfoo).
+	Form string `json:"form,omitempty"`
 	// SourceExpertUserID attributes the package in the run record without
 	// naming the expert in the browser-visible report.
 	SourceExpertUserID string `json:"source_expert_user_id,omitempty"`
@@ -135,10 +139,15 @@ func (r *CustomPluginResolver) resolveOneStrategy(ctx context.Context, userID uu
 		// publisher would have written.
 		strategyID = CustomStrategyVariantFor(handle, pub.Metadata)
 	}
+	form := CustomStrategyFormYAML
+	if IsCustomStrategyCodeForm(pub.Metadata) {
+		form = CustomStrategyFormJS
+	}
 	return &EngineCustomStrategy{
 		Handle:             handle,
 		StrategyID:         strategyID,
 		Definition:         materialized.Payload,
+		Form:               form,
 		SourceExpertUserID: pub.SourceExpertUserID.String(),
 		Version:            normalizeVersion(pub.SourceVersion),
 	}, nil
@@ -152,6 +161,7 @@ func (r *CustomPluginResolver) resolveCustomStrategies(ctx context.Context, user
 	recordIDs := make([]string, 0, len(refs))
 	engineRefs := make([]EngineCapabilityRef, 0, len(refs))
 	var packages []EngineCustomStrategy
+	var codePackages []EngineCustomStrategy
 	for _, ref := range refs {
 		if !IsCustomStrategyRef(ref.ID) {
 			recordIDs = append(recordIDs, ref.ID)
@@ -162,7 +172,15 @@ func (r *CustomPluginResolver) resolveCustomStrategies(ctx context.Context, user
 		if err != nil {
 			return nil, err
 		}
-		packages = append(packages, *pkg)
+		// Two dispatch channels, kept apart on purpose: a code package must never
+		// reach the `custom:<variant>` inliner, and a text package must never
+		// reach the file materializer (its "source" would be YAML, and promptfoo
+		// would import it).
+		if pkg.Form == CustomStrategyFormJS {
+			codePackages = append(codePackages, *pkg)
+		} else {
+			packages = append(packages, *pkg)
+		}
 		// The engine receives the `pf_strategy:` marker (it swaps it for
 		// `custom:<variant>` plus the inline config) …
 		engineRefs = append(engineRefs, EngineCapabilityRef{ID: CustomStrategyRef(pkg.Handle)})
@@ -171,7 +189,12 @@ func (r *CustomPluginResolver) resolveCustomStrategies(ctx context.Context, user
 		// user-facing output.
 		recordIDs = append(recordIDs, pkg.StrategyID)
 	}
-	return &customStrategyResolution{engineRefs: engineRefs, recordIDs: recordIDs, packages: packages}, nil
+	return &customStrategyResolution{
+		engineRefs:   engineRefs,
+		recordIDs:    recordIDs,
+		packages:     packages,
+		codePackages: codePackages,
+	}, nil
 }
 
 // customStrategyResolution is the outcome of resolving a run's strategy refs.
@@ -182,7 +205,10 @@ func (r *CustomPluginResolver) resolveCustomStrategies(ctx context.Context, user
 type customStrategyResolution struct {
 	engineRefs []EngineCapabilityRef
 	recordIDs  []string
-	packages   []EngineCustomStrategy
+	// packages are TEXT packages (inlined as custom:<variant> + strategyText).
+	packages []EngineCustomStrategy
+	// codePackages are CODE packages (ESM modules, materialized to file://).
+	codePackages []EngineCustomStrategy
 }
 
 // CustomStrategyErrRefUnavailable is the code for a strategy reference that

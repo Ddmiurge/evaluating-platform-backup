@@ -182,3 +182,12 @@ cd evaluating_platform
 | `verify_u3_coverage.sh` 退出码 | 0 | **0** |
 
 测试规模：引擎 17 files / 226 tests（基线 14 / 188）；前端 8 files / 39 tests（基线 7 / 33）；Go 全包全绿。
+### 6.8 策略包的两种形态（2026-10-28）
+
+| 形态 | `pf_strategy_form` | 内容 | promptfoo 怎么加载 | 报告里的策略 id |
+|---|---|---|---|---|
+| 文本 | `yaml` | `strategyText` + 可选 maxTurns 等 | 内联成 `custom:<variant>` + config | `custom:<variant>` |
+| 代码 | `js` | ESM 模块 `{ id, action }` | 写入 `<workdir>/custom-strategies/<variant>.js`，以 `file://` 引用被 `import()` | `custom:code:<variant>`（引擎归约前由路径换回） |
+
+代码形态必须有显式 `pf_strategy_variant`：promptfoo 记录的是**文件路径**，平台只能靠这个标识区分两个代码策略。
+执行前置条件（每租户引擎 / 租户级 key / 实例 token）与完整边界见 `strategy-code-packages.md`。

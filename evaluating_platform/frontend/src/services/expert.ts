@@ -272,7 +272,8 @@ export interface PromptfooStrategyPublishInput {
   /** 策略包正文（YAML：strategyText 必填，可选 maxTurns 等）。 */
   payload: string
   metadata: {
-    pf_strategy_form: 'yaml'
+    /** `yaml` = strategyText; `js` = an ESM module (code strategy package). */
+    pf_strategy_form: 'yaml' | 'js'
     /** 重新发布时带上已有 handle，保证引用稳定。 */
     handle?: string
     /** 逗号分隔的依赖插件 id；命中远程生成清单时后端会拒绝发布。 */

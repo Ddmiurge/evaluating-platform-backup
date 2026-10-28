@@ -83,7 +83,19 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 	// exit and for the same reason — the shadow-copy path re-saves a published
 	// package through this store with no handler in the path, so a guard in the
 	// HTTP handler alone would be defeated.
-	if in.Kind == EvaluationResourceKindPromptfooStrategy {
+	if in.Kind == EvaluationResourceKindPromptfooStrategy && IsCustomStrategyCodeForm(in.Metadata) {
+		// CODE package: the payload is an ESM module. Validation is split in two
+		// on purpose — this side (size, capability tokens, shape, id) is cheap and
+		// deterministic; whether the module actually LOADS is answered by the
+		// engine at publication time (design §6.1), because a module that fails
+		// mid-run fails after the user paid for the probes.
+		source, strategyID, err := ValidateAndParseCustomStrategyCodePublication(in)
+		if err != nil {
+			return nil, err
+		}
+		in.Payload = source
+		in.Metadata = CustomStrategyPublicationMetadata(strategyID, in.Metadata)
+	} else if in.Kind == EvaluationResourceKindPromptfooStrategy {
 		def, strategyID, err := ValidateAndParseCustomStrategyPublication(in)
 		if err != nil {
 			return nil, err

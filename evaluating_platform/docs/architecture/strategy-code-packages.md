@@ -288,17 +288,24 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 
 ---
 
-## 12. Step 0：实施前必须实测的五件事
+## 12. Step 0 实测结果（2026-10-28，已完成）
 
-这些不做完，设计里以下结论都只是**推断**：
+源码阅读给出的三条事实，并由 `promptfoo_engine/tests/strategyCodePackages.step0.test.ts` 实测确认：
 
-| # | 待测 | 影响 |
+| # | 待测 | 结果 |
 |---|---|---|
-| 1 | `redteam.run()` 下 `file://` 策略能否通过 `validateStrategies()` | 能否在不改 promptfoo 的前提下接入 |
-| 2 | `action` 的真实签名与返回值（同步/异步、是否允许返回 undefined） | §4.2 契约 |
-| 3 | 模块 `id` 是否进入 `testCase.metadata.strategyId` → `strategy_stats` | §3.3 的 id 规则与报告对账 |
-| 4 | 模块 id 以 `custom:` 开头时是否触发 `strategyText` 校验 | id 命名空间 |
-| 5 | 报告/日志里是否出现 `file://` 绝对路径 | §8.3 与 AGENTS 的"报告不含本地路径" |
+| 1 | `file://` 策略能否过 `validateStrategies()` / schema | ✅ 能。`validateStrategies()` 第 2419 行显式 `continue` 跳过 file://；`strategyIdSchema` 第二个分支接受 `file://…js\|ts` |
+| 2 | `action` 的真实签名 | ✅ `action(testCases, injectVar, config, strategyId, context)`，同步与异步都接受；返回值里 `null`/`undefined` 项会被过滤（`applyStrategies` 里 `filter(t => t != null)`） |
+| 3 | 模块 `id` 是否进 `strategy_stats` | ❌ **不进**。`applyStrategies` 写的是 `strategyId: t?.metadata?.strategyId \|\| strategy.id`，而 `strategy.id` 是 **file:// 路径**；模块导出的 `id` 从不被读取 |
+| 4 | `custom:` 前缀是否触发 `strategyText` 校验 | ✅ 不触发（file:// 在第 2419 行就跳过了），但模块 id 本来也不进这条链路 —— 见 #3 |
+| 5 | 报告里是否出现本地路径 | ❌ **会**。`case_results[].strategy_id` 与 `strategy_stats[].id` 都是 `file:///…/custom-strategies/probe.js` |
+
+#3/#5 是这一批最重要的发现，**推翻了原设计 §3.3 的假设**（"模块 id 会进 metadata"）。由此定下两条实现约束：
+
+1. **引擎必须在归约前把 file:// 路径换回公开 id**（`normalizeCodeStrategyIds`），否则报告会带本地路径 —— AGENTS.md 明令禁止；
+2. **代码包必须显式声明 variant**（`pf_strategy_variant`）：既然 promptfoo 记录的 id 是路径，"两个代码策略如何区分"只由平台这一侧决定；不填就会和历史句柄派生出同一个 `custom:strategy`。
+
+实施状态见 §15。
 
 ---
 
@@ -325,3 +332,43 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 | S-4 | 运行期执行 + 输出校验 + 超时 + 失败码 | S-3 |
 | S-5 | 治理与可见性（标签、报告标记、下架） | S-4 |
 | S-6 | 上机判据（§11.2） | S-5 |
+
+---
+
+## 15. 实施状态（2026-10-28）
+
+### 15.1 已完成（本地，未上机）
+
+| 层 | 内容 | 文件 |
+|---|---|---|
+| 形态 | `pf_strategy_form=js` 识别；发布元数据**携带**而非强制 `yaml` | `promptfoo_custom_strategy.go` |
+| 存储 | 代码包走独立的解析校验（大小 / 纯函数令牌 / shape / 显式 variant） | `promptfoo_custom_strategy_code.go` |
+| 解析 | 文本包与代码包**分流**成两个通道（`CustomStrategies` / `CustomStrategyCode`） | `promptfoo_custom_strategy_resolver.go`、`promptfoo_engine_bridge.go` |
+| 下发 | 引擎请求新增 `custom_strategy_code` | `promptfoo_engine_client.go` |
+| 引擎 | 物化到 `custom-strategies/<variant>.js`；只放行本次运行物化的 file:// ref；归约前把路径换回公开 id | `customStrategyCode.ts`、`nativeRedteam.ts` |
+| 引擎 | 调用方自带的 `file://` 一律拒绝（`native_generation_strategy_unsupported`） | `nativeRedteam.ts` |
+| 前端 | 策略发布页增加「文本策略 / 代码策略」切换，模板随形态切换；代码形态要求显式策略标识 | `PromptfooStrategyPublisher.tsx` |
+
+### 15.2 守卫与反证（全部已跑红）
+
+| 守卫 | 反证 |
+|---|---|
+| 引擎 `customStrategyCode.test.ts`：物化命名、路径穿越拒绝、纯函数令牌、同文件名冲突、id 归一化、端到端（公开 id + 无路径）、调用方 file:// 拒绝 | 去掉 id 归一化 → 报告里出现 `file://`；去掉令牌检查 → 接受 `process.env`；放行任意 file:// → 用例挂起（会真的去 import 任意路径） |
+| BFF `promptfoo_custom_strategy_code_test.go`：接受纯模块、拒绝能力令牌（逐个点名）、拒绝坏形状、两种形态互不串道、存储记录 form、解析分流、代码包必须显式 variant | 去掉附带 form 的改动 → 存成 `yaml`（文本包与代码包会串道）；去掉分流 → 代码包进了文本通道 |
+| `strategyCodePackages.step0.test.ts` | 记录 Step 0 的五条实测事实（含"模块 id 不被使用""报告带本地路径"两条反面事实） |
+
+### 15.3 尚未完成（上机前置与后续）
+
+| # | 项 | 状态 |
+|---|---|---|
+| S-2 | **G-1~G-3**：每租户引擎 / 租户级生成模型 key / 实例 token | **未做**。这是打开入口的硬前置（见 §2.2） |
+| S-3 | 发布期**引擎实测校验**（一次性子进程 import，只回判定）与总开关 `MACLAW_STRATEGY_CODE_PACKAGES`（默认 off） | **未做** |
+| S-4 | 运行期 wall-clock 超时（`Promise.race`，默认 20s）与输出 schema 校验（长度/字段/指纹） | **未做**（当前只做物化期的 shape 与令牌检查） |
+| S-5 | 报告标注"本次运行加载了专家代码策略"、目录「代码」标签、失败码 | **未做** |
+| S-6 | 上机判据（跨租户不可读、token 不通用、确定性、停用即拒绝） | 未做 |
+
+### 15.4 现在打开会发生什么（必须明确）
+
+- 开关尚未实现，因此**代码包可以发布、可以下发、可以执行**；
+- 但 **G-1~G-3 未做**：执行的引擎仍是全局唯一实例，进程内可达平台级生成模型 key 与所有 run 的靶机 key；
+- 结论：**在 S-2 完成前，不应在共享/生产部署上发布代码策略**。开发/单租户验证环境可以用，且应视为"执行专家代码"的完整信任敞口。

@@ -171,6 +171,10 @@ type ResolvedEngineCapabilities struct {
 	RecordStrategies []EngineCapabilityRef
 	CustomPlugins    []EngineCustomPlugin
 	CustomStrategies []EngineCustomStrategy
+	// CustomStrategyCode are CODE strategy packages. Kept separate from
+	// CustomStrategies because the engine loads them through a different
+	// promptfoo hook (a file:// module import, not the custom provider).
+	CustomStrategyCode []EngineCustomStrategy
 }
 
 // ResolveEngineCapabilities applies published-package resolution and admin
@@ -205,12 +209,13 @@ func (b *RedteamToolBridge) ResolveEngineCapabilities(ctx context.Context, userI
 		recordStrategies = append(recordStrategies, EngineCapabilityRef{ID: id})
 	}
 	return &ResolvedEngineCapabilities{
-		EnginePlugins:    pluginRes.engineRefs,
-		EngineStrategies: strategyRes.engineRefs,
-		RecordPlugins:    recordPlugins,
-		RecordStrategies: recordStrategies,
-		CustomPlugins:    pluginRes.packages,
-		CustomStrategies: strategyRes.packages,
+		EnginePlugins:      pluginRes.engineRefs,
+		EngineStrategies:   strategyRes.engineRefs,
+		RecordPlugins:      recordPlugins,
+		RecordStrategies:   recordStrategies,
+		CustomPlugins:      pluginRes.packages,
+		CustomStrategies:   strategyRes.packages,
+		CustomStrategyCode: strategyRes.codePackages,
 	}, nil
 }
 
@@ -312,6 +317,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	strategies = capabilities.EngineStrategies
 	customPlugins := capabilities.CustomPlugins
 	customStrategies := capabilities.CustomStrategies
+	customStrategyCode := capabilities.CustomStrategyCode
 	// Phase 3 · 任务 2: the same treatment for expert-published strategy
 	// packages. Placed at the same seam for the same reason — this is the one
 	// function every confirmed engine run passes through, so a strategy package
@@ -394,6 +400,10 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		// `custom:<variant>` plus its `strategyText`, which is the only form
 		// promptfoo accepts without executing code.
 		CustomStrategies: customStrategies,
+		// CODE packages go through their own request field: the engine writes each
+		// one into this run's workdir and appends a file:// ref, after validating
+		// it (design §5/§6.1).
+		CustomStrategyCode: customStrategyCode,
 	}
 	// U7: enrich the request with the application description promptfoo's own
 	// generation reads. Ignored while Plan A is selected, so this is safe to
@@ -490,6 +500,7 @@ func (b *RedteamToolBridge) resolveCustomStrategies(
 	recordIDs := make([]string, 0, len(refs))
 	engineRefs := make([]EngineCapabilityRef, 0, len(refs))
 	var packages []EngineCustomStrategy
+	var codePackages []EngineCustomStrategy
 	for _, ref := range refs {
 		if !IsCustomStrategyRef(ref.ID) {
 			recordIDs = append(recordIDs, ref.ID)
@@ -508,11 +519,23 @@ func (b *RedteamToolBridge) resolveCustomStrategies(
 		if err != nil {
 			return nil, err
 		}
-		packages = append(packages, *pkg)
+		// Two dispatch channels, kept apart: a CODE package must reach the file
+		// materializer, a TEXT package the `custom:<variant>` inliner. Conflating
+		// them would hand an ESM source to promptfoo as strategyText.
+		if pkg.Form == CustomStrategyFormJS {
+			codePackages = append(codePackages, *pkg)
+		} else {
+			packages = append(packages, *pkg)
+		}
 		recordIDs = append(recordIDs, pkg.StrategyID)
 		engineRefs = append(engineRefs, EngineCapabilityRef{ID: CustomStrategyRef(pkg.Handle)})
 	}
-	return &customStrategyResolution{engineRefs: engineRefs, recordIDs: recordIDs, packages: packages}, nil
+	return &customStrategyResolution{
+		engineRefs:   engineRefs,
+		recordIDs:    recordIDs,
+		packages:     packages,
+		codePackages: codePackages,
+	}, nil
 }
 
 // RunPromptfooRedteamEvaluation orchestrates one confirmed engine run:

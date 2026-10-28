@@ -162,6 +162,17 @@ type EngineRunRequest struct {
 	// arbitrary code execution inside the engine process. The yaml-native form
 	// removes that path entirely rather than guarding it.
 	CustomStrategies []EngineCustomStrategy `json:"custom_strategies,omitempty"`
+
+	// CustomStrategyCode carries CODE strategy packages (`pf_strategy_form=js`).
+	//
+	// Separate from CustomStrategies because promptfoo loads the two through
+	// different hooks: a text package is inlined as `custom:<variant>` +
+	// strategyText, while a code package becomes a `file://` ref that promptfoo
+	// imports. The engine writes each module into the per-run workdir under a
+	// name derived from the validated variant, validates it before writing, and
+	// normalises the file:// path back to a public id before anything reaches the
+	// run record or the report (Step 0, 2026-10-28).
+	CustomStrategyCode []EngineCustomStrategy `json:"custom_strategy_code,omitempty"`
 }
 
 type EngineCapabilityRef struct {

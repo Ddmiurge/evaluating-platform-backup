@@ -345,6 +345,12 @@ func ValidateAndParseCustomStrategyPublication(in EvaluationResourceInput) (*Pro
 	if in.Kind != EvaluationResourceKindPromptfooStrategy {
 		return nil, "", nil
 	}
+	// CODE packages take the other branch entirely: their payload is an ESM
+	// module, not the YAML the rest of this function parses.
+	if IsCustomStrategyCodeForm(in.Metadata) {
+		return nil, "", customStrategyValidationErrorf(CustomStrategyErrCodeInvalid,
+			"代码策略必须走 ValidateAndParseCustomStrategyCodePublication。")
+	}
 	payload := in.Payload
 	if len(payload) > CustomStrategyMaxPayloadBytes {
 		return nil, "", customStrategyValidationErrorf(CustomStrategyErrPayloadTooLarge,
@@ -474,7 +480,15 @@ func CustomStrategyPublicationMetadata(strategyID string, base map[string]string
 	for k, v := range base {
 		out[k] = v
 	}
-	out[CustomStrategyMetadataFormKey] = CustomStrategyFormYAML
+	// The form is CARRIED, not forced. It used to be written as yaml
+	// unconditionally; with CODE packages (`pf_strategy_form=js`) that would
+	// relabel a module as YAML at the storage exit, and the resolver would then
+	// hand an ESM source to the `custom:<variant>` inliner (design §3.1).
+	form := strings.ToLower(strings.TrimSpace(base[CustomStrategyMetadataFormKey]))
+	if form == "" {
+		form = CustomStrategyFormYAML
+	}
+	out[CustomStrategyMetadataFormKey] = form
 	out["pf_strategy_id"] = strategyID
 	return out
 }

@@ -130,6 +130,14 @@ export interface RunRequest {
    * machinery, so a package's `strategyText` would have been silently ignored.)
    */
   custom_strategies?: EngineCustomStrategy[];
+  /**
+   * Expert-published CODE strategy packages (`pf_strategy_form=js`).
+   *
+   * Separate from `custom_strategies` because the two load through different
+   * promptfoo hooks: `strategyText` is inlined into the `custom` provider, while
+   * a code package becomes a `file://` strategy ref that promptfoo imports.
+   */
+  custom_strategy_code?: EngineCustomStrategyCode[];
 }
 
 /**
@@ -143,6 +151,31 @@ export interface EngineCustomStrategy {
   handle: string;
   strategy_id: string;
   definition: string;
+  source_expert_user_id?: string;
+  version?: string;
+}
+
+/**
+ * A CODE strategy package (`pf_strategy_form=js`).
+ *
+ * `source` is an ESM module exporting `{ id, action }`. `public_id` is what the
+ * report must show: promptfoo records the `file://` PATH as the strategy id, so
+ * the engine normalises it back (`normalizeCodeStrategyIds`) before aggregating.
+ */
+export interface EngineCustomStrategyCode {
+  handle: string;
+  /** `custom:<variant>`; the variant also names the file in the run workdir. */
+  strategy_id: string;
+  /**
+   * ESM module source.
+   *
+   * Named `definition` on the wire because that is the field the Go side already
+   * carries for text packages — one transport field, two payload kinds, and the
+   * `form` decision is made by the BFF at publication.
+   */
+  definition: string;
+  /** The id the report shows. Defaults to `custom:code:<variant>` when absent. */
+  public_id?: string;
   source_expert_user_id?: string;
   version?: string;
 }
