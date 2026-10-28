@@ -560,6 +560,61 @@ func (c *PromptfooEngineClient) Health(ctx context.Context) error {
 	return nil
 }
 
+// CodeStrategyProbeResult is the verdict of the engine's publication-time check
+// for a CODE strategy module (design §6.1). It carries a code and one short
+// message — never the module's output, a stack, or a path.
+type CodeStrategyProbeResult struct {
+	OK      bool   `json:"ok"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// ValidateCodeStrategy asks the engine whether a module loads and transforms one
+// synthetic test case.
+//
+// # Why the BFF calls this before writing the publication record
+//
+// The BFF's own checks (size, capability tokens, shape) are cheap and
+// deterministic, but none of them can answer "does this module actually load".
+// Left to the run, a module that fails to load fails after the user has paid for
+// the probes, and reads as a mid-run engine failure. The probe moves that to
+// publish time.
+//
+// A disabled engine, an unreachable engine, or a disabled capability is returned
+// as an error so the caller can decide (the current policy: refuse the publish,
+// because accepting an unverified module would defeat the point of the check).
+func (c *PromptfooEngineClient) ValidateCodeStrategy(ctx context.Context, source string) (*CodeStrategyProbeResult, error) {
+	if !c.Enabled() {
+		return nil, ErrEngineUnavailable
+	}
+	body, err := json.Marshal(map[string]string{"source": source})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/strategy-packages/validate", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, ErrEngineUnavailable
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusUnprocessableEntity, http.StatusConflict:
+		var out CodeStrategyProbeResult
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("promptfoo_engine: decode strategy probe: %w", err)
+		}
+		return &out, nil
+	case http.StatusUnauthorized:
+		return nil, ErrEngineUnauthorized
+	default:
+		return nil, fmt.Errorf("promptfoo_engine: strategy probe failed with status %d", resp.StatusCode)
+	}
+}
+
 // CreateRun submits POST /runs.
 func (c *PromptfooEngineClient) CreateRun(ctx context.Context, run *EngineRunRequest) error {
 	if !c.Enabled() {

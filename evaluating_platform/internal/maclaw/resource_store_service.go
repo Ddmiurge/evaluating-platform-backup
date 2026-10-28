@@ -34,9 +34,28 @@ type ResourceStore interface {
 // instead of the generic 503 it used to produce.
 var ErrResourceNotOwned = errors.New("resource not found or not owned by this account")
 
+// CodeStrategyProber asks the engine whether a module loads (design §6.1).
+// Satisfied by *PromptfooEngineClient. Optional: a deployment without the engine
+// wired refuses code packages rather than publishing them unverified.
+type CodeStrategyProber interface {
+	Enabled() bool
+	ValidateCodeStrategy(ctx context.Context, source string) (*CodeStrategyProbeResult, error)
+}
+
 type ResourceStoreService struct {
 	store    ResourceStore
 	keyStore *appcrypto.KeyStore
+	prober   CodeStrategyProber
+}
+
+// SetCodeStrategyProber wires the engine-backed verification for CODE strategy
+// packages. Without it, publishing a code package is refused: accepting an
+// unverified module would defeat the purpose of the check.
+func (s *ResourceStoreService) SetCodeStrategyProber(prober CodeStrategyProber) {
+	if s == nil {
+		return
+	}
+	s.prober = prober
 }
 
 func NewResourceStoreService(store ResourceStore, keyStore *appcrypto.KeyStore) *ResourceStoreService {
@@ -92,6 +111,30 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 		source, strategyID, err := ValidateAndParseCustomStrategyCodePublication(in)
 		if err != nil {
 			return nil, err
+		}
+		// The engine is the only thing that can answer "does this module load".
+		// Refused before any write, so a bad package leaves no row and no file.
+		if s.prober == nil || !s.prober.Enabled() {
+			return nil, customStrategyValidationErrorf(CustomStrategyErrCodeInvalid,
+				"无法校验代码策略：评测引擎未接入。代码策略必须经过引擎实测校验后才能发布。")
+		}
+		verdict, probeErr := s.prober.ValidateCodeStrategy(ctx, source)
+		if probeErr != nil {
+			return nil, customStrategyValidationErrorf(CustomStrategyErrCodeInvalid,
+				"无法校验代码策略：评测引擎不可达（%s）。请稍后重试；代码策略必须经过实测校验后才能发布。", probeErr.Error())
+		}
+		if verdict == nil || !verdict.OK {
+			code := CustomStrategyErrCodeInvalid
+			message := "代码策略未通过引擎校验。"
+			if verdict != nil {
+				if verdict.Code != "" {
+					code = verdict.Code
+				}
+				if verdict.Message != "" {
+					message = verdict.Message
+				}
+			}
+			return nil, customStrategyValidationErrorf(code, "%s", message)
 		}
 		in.Payload = source
 		in.Metadata = CustomStrategyPublicationMetadata(strategyID, in.Metadata)

@@ -17,6 +17,21 @@ import (
 // in `promptfoo_engine/tests/customStrategyCode.test.ts`; this file pins the BFF
 // half — what gets stored, and what gets refused before it is stored.
 
+// fakeCodeStrategyProber stands in for the engine's publication-time check.
+// The real probe forks a child process; store tests only need the verdict path.
+type fakeCodeStrategyProber struct {
+	verdict *CodeStrategyProbeResult
+	err     error
+	calls   int
+}
+
+func (f *fakeCodeStrategyProber) Enabled() bool { return true }
+
+func (f *fakeCodeStrategyProber) ValidateCodeStrategy(_ context.Context, _ string) (*CodeStrategyProbeResult, error) {
+	f.calls++
+	return f.verdict, f.err
+}
+
 func codeStrategyInput(source string, metadata map[string]string) EvaluationResourceInput {
 	meta := map[string]string{
 		CustomStrategyMetadataFormKey:    CustomStrategyFormJS,
@@ -142,6 +157,7 @@ func TestCustomStrategyFormsStayOnTheirOwnPath(t *testing.T) {
 func TestSaveResourceStoresTheCodeForm(t *testing.T) {
 	store := newFakeResourceStore()
 	service := NewResourceStoreService(store, agentTestKeyStore(t))
+	service.SetCodeStrategyProber(&fakeCodeStrategyProber{verdict: &CodeStrategyProbeResult{OK: true}})
 	saved, err := service.SaveResource(context.Background(), uuid.New(), "tenant-1", codeStrategyInput(validCodeStrategy, nil))
 	if err != nil {
 		t.Fatalf("SaveResource: %v", err)
@@ -161,6 +177,7 @@ func TestSaveResourceStoresTheCodeForm(t *testing.T) {
 func TestResolveEngineCapabilitiesSplitsCodeFromTextStrategies(t *testing.T) {
 	keyStore := agentTestKeyStore(t)
 	service := NewResourceStoreService(newFakeResourceStore(), keyStore)
+	service.SetCodeStrategyProber(&fakeCodeStrategyProber{verdict: &CodeStrategyProbeResult{OK: true}})
 	expert := uuid.New()
 	// Serve both packages from one publication lookup keyed by handle.
 	lookup := &codeStrategyLookup{}
@@ -267,5 +284,58 @@ func TestValidateCustomStrategyCodeRequiresAnExplicitVariant(t *testing.T) {
 	}
 	if !strings.Contains(verr.Error(), "pf_strategy_variant") {
 		t.Errorf("message does not name the missing key: %s", verr.Error())
+	}
+}
+
+// Publishing a code package REQUIRES the engine's verdict. Without it the BFF
+// would store a module it never loaded — the failure would surface mid-run, after
+// the user paid for the probes (design §6.1).
+func TestSaveResourceRefusesCodeStrategyWithoutAVerifiedProbe(t *testing.T) {
+	cases := []struct {
+		name    string
+		prober  CodeStrategyProber
+		verdict *CodeStrategyProbeResult
+		err     error
+		wantSub string
+	}{
+		{
+			name:    "prober not wired",
+			prober:  nil,
+			wantSub: "评测引擎未接入",
+		},
+		{
+			name:    "engine unreachable",
+			prober:  &fakeCodeStrategyProber{err: errors.New("dial tcp 10.0.0.1:8090: connect: connection refused")},
+			wantSub: "评测引擎不可达",
+		},
+		{
+			name:    "engine rejects the module",
+			prober:  &fakeCodeStrategyProber{verdict: &CodeStrategyProbeResult{OK: false, Code: "code_strategy_bad_shape", Message: "模块必须默认导出 { id, action }，且 action 是函数。"}},
+			wantSub: "模块必须默认导出",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeResourceStore()
+			service := NewResourceStoreService(store, agentTestKeyStore(t))
+			if tc.prober != nil {
+				service.SetCodeStrategyProber(tc.prober)
+			}
+			_, err := service.SaveResource(context.Background(), uuid.New(), "tenant-1", codeStrategyInput(validCodeStrategy, nil))
+			if err == nil {
+				t.Fatal("an unverified code package was stored")
+			}
+			var verr *PromptfooCustomPluginValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("err = %v, want a validation error", err)
+			}
+			if !strings.Contains(verr.Error(), tc.wantSub) {
+				t.Errorf("message %q does not explain the refusal (%q)", verr.Error(), tc.wantSub)
+			}
+			// Fail-closed ordering: nothing was written.
+			if len(store.items) != 0 {
+				t.Fatalf("a refused package left rows behind: %d", len(store.items))
+			}
+		})
 	}
 }

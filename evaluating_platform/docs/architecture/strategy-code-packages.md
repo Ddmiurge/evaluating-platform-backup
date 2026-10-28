@@ -362,7 +362,7 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 | # | 项 | 状态 |
 |---|---|---|
 | S-2 | **G-1~G-3**：每租户引擎 / 租户级生成模型 key / 实例 token | **未做**。这是打开入口的硬前置（见 §2.2） |
-| S-3 | 发布期**引擎实测校验**（一次性子进程 import，只回判定） | **未做** |
+| S-3 | 发布期**引擎实测校验**（`POST /strategy-packages/validate`，子进程 import + 一次 action 调用，只回 `{ok, code, message}`） | ✅ 已做；BFF 在写发布记录**之前**调用，引擎不可达则拒绝发布 |
 | S-3b | 总开关 `MACLAW_STRATEGY_CODE_PACKAGES`（默认 off，拒绝发生在任何写盘之前） | ✅ 已做 |
 | S-4 | 运行期 wall-clock 超时（默认 20s，`MACLAW_STRATEGY_CODE_TIMEOUT_MS`）与输出 schema 校验 | ✅ 已做（见 §15.3b） |
 | S-5 | 报告标注"本次运行加载了 N 个专家代码策略"（计数，不含源码/路径） | ✅ 已做 |
@@ -385,6 +385,13 @@ wrapper 做三件事：wall-clock 超时、输出 schema 校验（空数组/条�
 
 **超时的边界**：`Promise.race` 只能约束"永不 settle 的 promise"；同步死循环仍会占住 worker ——
 这是进程内执行的固有代价（§13 R-2）。
+
+### 15.3c 发布期校验的取舍
+
+`ValidateCodeStrategy` 不可达时**拒绝发布**（而不是"先存着、跑的时候再说"）：一个从未加载过的模块，
+其失败会在用户已经付费的 run 里出现，且看起来像引擎故障。拒绝发布的代价是发布方需要重试。
+
+子进程只回 `{ok, code, message}`；模块 `console.log` 的内容、堆栈、路径都不回传（有守卫钉住）。
 
 ### 15.4 现在打开会发生什么（必须明确）
 

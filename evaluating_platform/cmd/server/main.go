@@ -163,6 +163,9 @@ func main() {
 	engineRunRepo := repository.NewEngineRunRepository(pgPool)
 	engineRunService := maclawpkg.NewEngineRunService(engineRunRepo)
 	engineClient := maclawpkg.NewPromptfooEngineClient(cfg.Maclaw.EngineBaseURL, cfg.Maclaw.EngineBearerToken, cfg.Maclaw.EngineTimeoutSeconds)
+	// P19 · code strategy packages are verified by the engine at publication
+	// (design §6.1): the BFF cannot answer "does this module load".
+	maclawResourceStoreService.SetCodeStrategyProber(engineClient)
 	engineRunHandler := handler.NewEngineRunHandler(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
 	maclawSkillHandler := handler.NewMaclawSkillHandlerWithProviderProjectionAndHub(maclawProvider, maclawSkillProjection, maclawHubConfigService)
 	maclawMCPHandler := handler.NewMaclawMCPHandler(maclawProvider)

@@ -13,6 +13,7 @@
 import express from 'express';
 import { ENGINE_WORKER_COUNT, assertNoRemoteGenerationConsent, assertSandboxInvariants, loadEnv } from './env.js';
 import { bearerAuth } from './auth.js';
+import { createStrategyPackagesRouter } from './routes/strategyPackages.js';
 import { TaskManager } from './manager/taskManager.js';
 import { WorkdirManager } from './manager/workdir.js';
 import { createRunsRouter } from './routes/runs.js';
@@ -140,6 +141,8 @@ async function main(): Promise<void> {
 
   app.use(bearerAuth(env.bearerToken));
   app.use(createRunsRouter(manager));
+  // P19 · publication-time probe for CODE strategy packages (design §6.1).
+  app.use(createStrategyPackagesRouter());
 
   // U10: the sandbox report, behind the same bearer auth as the run routes.
   //
