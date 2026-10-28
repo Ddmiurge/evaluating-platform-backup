@@ -24,6 +24,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -77,6 +78,27 @@ type engineReportLookup interface {
 	GetReportByRunID(ctx context.Context, userID uuid.UUID, runID string) (*maclaw.EvaluationReport, error)
 }
 
+// The wizard's report wait: long enough for a confirmed-size run (the bridge's
+// own confirm path allows the same order of magnitude), short enough that a
+// stuck engine does not hold a goroutine forever.
+const wizardReportWaitTimeout = 45 * time.Minute
+
+// wizardReportPollInterval is a var so the wiring test can shrink it.
+//
+// The wizard path has no status mirror of its own (the confirm path has
+// waitPromptfooEngineJob), so a loop that only read the stored row would never see
+// the run advance: every run would sit here until the 45-minute timeout and then
+// compile nothing. finishWizardRun therefore reads the engine on each tick.
+var wizardReportPollInterval = 3 * time.Second
+
+// engineResultCompiler saves evidence and compiles the report for a finished
+// run. Implemented by *maclaw.RedteamToolBridge (which also owns the fallback
+// when no artifact store is configured).
+type engineResultCompiler interface {
+	SaveRedteamEvidence(ctx context.Context, userID uuid.UUID, instanceID string, in maclaw.RedteamEvidenceInput) (*maclaw.RedteamEvidenceOutput, error)
+	CompileRedteamReport(ctx context.Context, userID uuid.UUID, instanceID string, in maclaw.CompileRedteamReportInput) (*maclaw.EvaluationReport, error)
+}
+
 type EngineRunHandler struct {
 	engine             engineClient
 	runs               *maclaw.EngineRunService
@@ -84,7 +106,23 @@ type EngineRunHandler struct {
 	generationProvider maclaw.EngineGenerationProvider
 	capabilities       engineCapabilityResolver
 	reports            engineReportLookup
+	reportCompiler     engineResultCompiler
 	enabled            bool
+}
+
+// SetEngineResultCompiler lets the wizard path produce a report when a run
+// finishes.
+//
+// The confirm fast path compiles a report inside the bridge; the wizard built its
+// own request and only wrote `engine_runs`, so every wizard run — the majority of
+// the history — had no report at all and the history download button could never
+// work for it (measured on ai02 2026-10-27: reports 71 → 71 across two wizard
+// runs). Compiling here mirrors what the user gets from the chat path.
+func (h *EngineRunHandler) SetEngineResultCompiler(compiler engineResultCompiler) {
+	if h == nil {
+		return
+	}
+	h.reportCompiler = compiler
 }
 
 // SetEngineReportLookup wires the report store into the run history so one row
@@ -559,7 +597,85 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		return
 	}
 
+	// Wait for the run in the background and compile its report, so this run is
+	// downloadable from the history exactly like a chat-confirmed one.
+	if h.reportCompiler != nil {
+		go h.finishWizardRun(userID, strings.TrimSpace(in.InstanceID), saved.ID)
+	}
+
 	c.JSON(http.StatusCreated, engineRunResponse(saved, nil))
+}
+
+// finishWizardRun polls one wizard run to a terminal phase and compiles its
+// report.
+//
+// Called only after the wizard was handed a report compiler, and deliberately
+// silent on failure: the run record already holds the engine's own status and
+// error code, and a missing report is visible as such on the history row. What
+// must not happen is claiming a report exists — `Complete`-equivalent semantics
+// live in the bridge, and this path only adds the artifact.
+func (h *EngineRunHandler) finishWizardRun(userID uuid.UUID, instanceID, runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), wizardReportWaitTimeout)
+	defer cancel()
+
+	record := (*maclaw.EngineRunRecord)(nil)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wizardReportPollInterval):
+		}
+		current, err := h.runs.Get(ctx, userID, runID)
+		if err != nil || current == nil {
+			return
+		}
+		if !maclaw.IsEngineRunTerminal(current.Status) {
+			// Advance the stored row from the engine, exactly as GetRun would on
+			// demand — nothing else writes it on this path.
+			if status, statusErr := h.engine.GetRun(ctx, runID); statusErr == nil && status != nil {
+				h.runs.ApplyStatus(current, status)
+				if updated, saveErr := h.runs.Save(ctx, current); saveErr == nil {
+					current = updated
+				}
+			}
+			if !maclaw.IsEngineRunTerminal(current.Status) {
+				continue
+			}
+		}
+		record = current
+		break
+	}
+	if record == nil || record.Status != maclaw.EnginePhaseSucceeded || record.Result == nil {
+		return
+	}
+
+	result := record.Result
+	evidenceHandles := make([]string, 0, 1)
+	evidence, err := h.reportCompiler.SaveRedteamEvidence(context.Background(), userID, instanceID, maclaw.RedteamEvidenceInput{
+		RunID:   record.ID,
+		Kind:    maclaw.EvaluationEvidenceKindResult,
+		Title:   "promptfoo 引擎评测安全摘要",
+		Summary: maclaw.EngineResultSummary(result),
+		Metadata: map[string]string{
+			"engine":        "promptfoo",
+			"engine_run_id": record.ID,
+		},
+	})
+	if err == nil && evidence != nil {
+		evidenceHandles = append(evidenceHandles, evidence.Handle)
+	}
+	riskLevel, safetyScore := maclaw.EngineRiskAndScore(result)
+	_, _ = h.reportCompiler.CompileRedteamReport(context.Background(), userID, instanceID, maclaw.CompileRedteamReportInput{
+		RunID:           record.ID,
+		EngineRunID:     record.ID,
+		Title:           "大模型安全评估报告（promptfoo 引擎）",
+		Summary:         maclaw.EngineResultSummary(result),
+		RiskLevel:       riskLevel,
+		SafetyScore:     safetyScore,
+		Findings:        maclaw.EngineSafeResultFindings(result),
+		EvidenceHandles: evidenceHandles,
+		Metadata:        maclaw.EngineReportMetadata(record, result),
+	})
 }
 
 // ListRuns returns the caller's runs (safe fields only).

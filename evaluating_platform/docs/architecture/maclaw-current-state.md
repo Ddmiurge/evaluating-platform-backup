@@ -1033,3 +1033,15 @@ GET /api/v1/maclaw/engine/runs/:id/report
 覆盖 `target_type` 与 `target_summary.target_type`（对象/字符串两形态），并记录
 `target_type_claimed` 保留规划器原值。只覆盖 kind，URL/model/name 不动；查不到目标则不改写。
 前端只认 `llm` / `agent`，其它显示「未确认（目标类型未识别）」。
+
+## 历史下载 / 向导报告 / 终态空窗（P17，2026-10-27/28）
+
+| 问题 | 修法 |
+|---|---|
+| run→report 用 `run_id` 关联（存的是规划器 id，0/72 是 `er-…`） | 迁移 028 加 `engine_run_id` 列 + 部分索引；写入时赋值；读取接受列与 `metadata.engine_run_id` 两种形态 |
+| 向导 run 不编译报告 | `EngineRunHandler.SetEngineResultCompiler` + 后台 `finishWizardRun`（每 tick 先向引擎刷新记录，因为向导路径没有状态镜像） |
+| 终态但无 report_id 的窗口（2.0s） | `UpdateProgress` 拒绝写终态，结束权只归 `Complete` |
+
+守卫：`TestGetReportByRunIDJoinsOnTheEngineRunID`（源码级，因为单测没有 Postgres）、
+`TestWizardCreateRunCompilesItsReport`（走 HTTP 入口）、
+`TestUpdateProgressCannotWriteATerminalStatus`；反证均已跑红。

@@ -1861,3 +1861,63 @@ User-configured values were included in inference and may have been deemed harmf
 
 - 只修**展示与记录**：run 实际调用什么端点由 `maclaw_target_configs.kind` 决定，本批没有改执行链路（它本来就是对的）。
 - 历史会话里的旧计划卡仍是旧文案（消息已落库）；新计划卡从下一次对话开始正确。
+
+---
+
+## 32. P17：历史下载的三处硬伤 + 终态空窗（2026-10-27/28，40 号记录）
+
+40 号记录判定 P15「功能不成立」：接口 100% 未命中、向导 run 没有报告、对话卡消失 2 秒。三处都修。
+
+### 32.1 join 键：engine run id 从来不在 `run_id`
+
+`maclaw_redteam_reports.run_id` 存的是**规划器**给的 id（confirm 快速路径是计划消息 `msg_…`，
+P11 之前是 `run_…`）；ai02 实测 72 行里 `run_id LIKE 'er-%'` 为 **0**，而 43/43 份报告能通过
+`metadata->>'engine_run_id'` 对上真实 run。P15 按 `run_id` 查，于是每条 run 都 404。
+
+**修法**
+- 新增迁移 `028_redteam_report_engine_run_id.sql`：给表加 `engine_run_id` 列 + 部分索引
+  `(platform_user_id, engine_run_id) WHERE engine_run_id <> ''`；
+- `CompileRedteamReport` 写入该列（`CompileRedteamReportInput.EngineRunID`，由引擎桥传
+  `saved.ID`）；写入 SQL、RETURNING、两条读取 SELECT、扫描器同步；
+- 读取**两种形态都接受**（`engine_run_id = $2 OR metadata->>'engine_run_id' = $2`），
+  历史行不需要回填。
+
+### 32.2 向导 run 根本没有报告
+
+confirm 快速路径在 bridge 里编译报告；向导 handler 自己构造请求、只写 `engine_runs`。
+实测连续两次向导 run：reports 71 → 71。
+
+**修法**：`EngineRunHandler` 增加可选的 `engineResultCompiler`（由 `RedteamToolBridge` 实现），
+`CreateRun` 提交成功后启动 `finishWizardRun` 后台协程：轮询到终态 → 保存证据 → 编译报告
+（`RunID` 与 `EngineRunID` 都写 run id）。**顺带修掉一个真缺陷**：该协程此前只读库里的记录，
+而向导路径**没有状态镜像**，记录不会自己前进 —— 于是每轮都要等满 45 分钟超时、什么也不编译。
+现在每个 tick 先 `h.engine.GetRun` 刷新记录（与 `GetRun` 接口同一条路径）。
+
+### 32.3 终态与报告之间的 2 秒空窗
+
+`UpdateProgress` 允许把非终态写成终态，于是镜像协程会抢先写 `succeeded`（`ReportID` 为空），
+而 `Complete` 才挂 `report_id`。实测窗口 2.0 秒；浏览器恰好在此刻轮询到终态就停止轮询，
+而服务端此时**两张卡都不生成**（进度卡按终态抑制、报告卡缺 id），底部卡片当场消失且再无请求。
+
+**修法**：`UpdateProgress` 拒绝写终态 —— **结束权只归 `Complete`**。镜像协程仍然自己判断
+「记录已终态就退出循环」，只是不再改 job 状态，进度卡就能撑到 `Complete` 那一刻。
+
+### 32.4 守卫与反证（这次是"喂真实形态"，不是"证明调用发生"）
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestGetReportByRunIDJoinsOnTheEngineRunID`（仓储源码级：必须匹配 `engine_run_id` 与 metadata 兜底，且不得再出现 `AND run_id = $2`） | 把 WHERE 改回 `run_id = $2` → 红 |
+| `TestGetReportByRunIDAcceptsTheEngineIdShape`（真实形态：`run_id=msg_…` + 引擎 id 在列或 metadata；`msg_…` 不得再解析出报告） | 同上；服务层传错键 → 红 |
+| `TestWizardCreateRunCompilesItsReport`（**走 HTTP**：POST /maclaw/engine/runs → 等后台编译） | 去掉 `go h.finishWizardRun(...)` → 红（"no report was compiled"）；去掉引擎刷新 → 同样红（记录永远停在 queued） |
+| `TestEngineRunHandlerCompilesReportForWizardRuns`（编译内容：证据 1 次、编译 1 次、`RunID`/`EngineRunID` 都是 run id、findings 非空） | 同上 |
+| `TestUpdateProgressCannotWriteATerminalStatus`（镜像写三种终态均不生效；`Complete` 才结束） | 删掉守卫 → 红（"only Complete may end a job"） |
+
+> 40 号记录点名的问题：「守卫证明的是调用发生，不是结果正确」。本轮三条关键守卫都改成
+> **要么喂线上真实数据形态**（`msg_…` + metadata），**要么走 HTTP 入口**（向导 CreateRun），
+> 而不是直接调 helper。反证时前两版的假实现确实都是绿的，正是记录预言的形状。
+
+### 32.5 边界
+
+- 历史报告不回填 `engine_run_id`：读取路径仍兼容 metadata，无需数据迁移；
+- 向导后台协程失败是静默的（run 记录本身已带引擎状态与错误码，历史行会显示"没有报告"）；
+- 判据 3/4/5 未涉及，沿用 39/40 号结果；本批需上机复验三件事的可见效果。

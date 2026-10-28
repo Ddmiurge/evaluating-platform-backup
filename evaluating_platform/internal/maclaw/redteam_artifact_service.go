@@ -37,12 +37,22 @@ type RedteamEvidenceRecord struct {
 }
 
 type RedteamReportRecord struct {
-	ID              string
-	Handle          string
-	PlatformUserID  uuid.UUID
-	InstanceID      string
-	SessionID       string
-	RunID           string
+	ID             string
+	Handle         string
+	PlatformUserID uuid.UUID
+	InstanceID     string
+	SessionID      string
+	RunID          string
+	// EngineRunID is the platform engine run (`er-…`) this report belongs to.
+	//
+	// RunID above is NOT it: that is the planner's run id (`msg_…` on the confirm
+	// fast path, `run_…` before P11). Historically the engine id lived only in
+	// Metadata["engine_run_id"], which made "run → report" a string-keyed join
+	// that any rename would break and no index could serve — measured on ai02
+	// 2026-10-27: 0/72 reports had an `er-…` RunID while 43/43 could be joined via
+	// the metadata key. This column is written at compile time; rows from before
+	// migration 028 keep it empty and the read path still accepts the metadata key.
+	EngineRunID     string
 	Title           string
 	Summary         string
 	RiskLevel       string
@@ -220,6 +230,7 @@ func (s *RedteamArtifactService) CompileReport(ctx context.Context, userID uuid.
 		PlatformUserID:  userID,
 		InstanceID:      strings.TrimSpace(instanceID),
 		RunID:           strings.TrimSpace(in.RunID),
+		EngineRunID:     strings.TrimSpace(in.EngineRunID),
 		Title:           firstNonEmptyString(sanitizeRedteamArtifactText(in.Title), "大模型安全评估报告"),
 		Summary:         sanitizeRedteamArtifactText(in.Summary),
 		RiskLevel:       sanitizeRedteamArtifactText(in.RiskLevel),

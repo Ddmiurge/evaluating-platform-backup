@@ -219,3 +219,51 @@ func TestEngineConfirmLinkFailureIsObservable(t *testing.T) {
 		t.Fatalf("error = %v, want engine_job_persist_failed", decoded["error"])
 	}
 }
+
+// Wiring: a run created through the WIZARD must end up with a compiled report.
+//
+// The earlier guard called finishWizardRun directly, so deleting the go-routine
+// from CreateRun left it green — the call-site trap this project has hit before.
+// This drives the HTTP handler with an engine that reports terminal state and
+// waits for the background worker to compile.
+func TestWizardCreateRunCompilesItsReport(t *testing.T) {
+	previous := wizardReportPollInterval
+	wizardReportPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { wizardReportPollInterval = previous })
+
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m", CredentialSecret: "sk", Enabled: true,
+	}}
+	engine := newEnabledFakeEngine()
+	engine.status = &maclaw.EngineRunStatus{
+		Phase:         maclaw.EnginePhaseSucceeded,
+		PlannedCount:  3,
+		ExecutedCount: 3,
+		Result: &maclaw.EngineSafeResult{
+			Totals:      maclaw.EngineRunTotals{Probes: 3, AttackSuccess: 1},
+			CaseResults: []maclaw.EngineCaseResult{{Index: 1, PluginID: "contracts", AttackSuccess: true, Response: "同意"}},
+		},
+	}
+	compiler := &fakeEngineResultCompiler{reportID: "redteam_report_wizard"}
+	h := newEngineRunHandler(engine, maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	h.SetEngineResultCompiler(compiler)
+	r := newEngineRunRouter(h, "enterprise")
+
+	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs", `{"purpose":"合规安全评测","plugins":[{"id":"contracts"}],"num_tests":3}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		compiler.mu.Lock()
+		calls := compiler.compileCalls
+		compiler.mu.Unlock()
+		if calls > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the wizard run finished but no report was compiled — CreateRun does not start the worker")
+}

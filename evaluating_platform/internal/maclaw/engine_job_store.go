@@ -159,6 +159,18 @@ func (s *PlatformEngineJobStore) UpdateProgress(jobID string, status EvaluationJ
 	if isTerminalEvaluationJobStatus(job.Status) {
 		return
 	}
+	// A progress mirror may not declare the end (2026-10-27/28).
+	//
+	// `Complete` is the only writer that attaches `report_id` and `CompletedAt`.
+	// A mirror that flips Status to succeeded/ failed first creates a窗口 in which
+	// the job is terminal but has no report: the session snapshot suppresses the
+	// progress card (terminal is "the report path's business") and cannot build a
+	// report card (no id), so a browser that polls exactly then ends up with no
+	// card at all — measured at 2.0 s wide on ai02: the bottom card vanished and
+	// every later request was absent.
+	if isTerminalEvaluationJobStatus(status) {
+		return
+	}
 	job.Status = status
 	if planned > 0 {
 		job.PlannedCount = planned

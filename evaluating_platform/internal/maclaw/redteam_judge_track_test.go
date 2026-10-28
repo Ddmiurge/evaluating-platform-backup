@@ -112,7 +112,7 @@ func TestRedteamReportJudgeTrackFailsClosedOnIllegalMetadata(t *testing.T) {
 // 这里不跑真实评测（需要 PG + 引擎），而是直接调用两条链路各自的
 // metadata 构造函数 —— 它们就是写入点本身，绕开它们测不到真实行为。
 func TestRedteamReportJudgeTrackWrittenByBothTracks(t *testing.T) {
-	engineMetadata := engineReportMetadata(&EngineRunRecord{
+	engineMetadata := EngineReportMetadata(&EngineRunRecord{
 		ID:        "pferr_1",
 		JudgeMode: EngineJudgePromptfooNative,
 	}, &EngineSafeResult{})

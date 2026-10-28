@@ -139,7 +139,7 @@ func TestEngineReportMetadataCarriesGenerationPath(t *testing.T) {
 	record := &EngineRunRecord{ID: "run-1", Purpose: "p"}
 
 	t.Run("both keys are written when the engine sent them", func(t *testing.T) {
-		metadata := engineReportMetadata(record, &EngineSafeResult{
+		metadata := EngineReportMetadata(record, &EngineSafeResult{
 			GenerationPath:    GenerationPathPlanC,
 			NumTestsEffective: 50,
 		})
@@ -154,7 +154,7 @@ func TestEngineReportMetadataCarriesGenerationPath(t *testing.T) {
 	t.Run("an engine that sends nothing leaves both keys absent", func(t *testing.T) {
 		// Absence is honest ("not recorded"); a default would be a guess published
 		// under a heading that claims to explain the numbers.
-		metadata := engineReportMetadata(record, &EngineSafeResult{})
+		metadata := EngineReportMetadata(record, &EngineSafeResult{})
 		if _, ok := metadata[RedteamGenerationPathMetadataKey]; ok {
 			t.Errorf("generation_path was defaulted: %q", metadata[RedteamGenerationPathMetadataKey])
 		}
@@ -166,7 +166,7 @@ func TestEngineReportMetadataCarriesGenerationPath(t *testing.T) {
 	t.Run("an uninterpretable path from the engine is dropped, not stored", func(t *testing.T) {
 		// The write path is fail-closed, so storing it would refuse the whole report
 		// later. Dropping it degrades to "not recorded", which is accurate.
-		metadata := engineReportMetadata(record, &EngineSafeResult{
+		metadata := EngineReportMetadata(record, &EngineSafeResult{
 			GenerationPath:    "plan_b",
 			NumTestsEffective: 50,
 		})

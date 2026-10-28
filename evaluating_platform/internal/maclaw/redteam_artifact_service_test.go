@@ -69,9 +69,15 @@ func (s *memoryArtifactStore) SaveReport(_ context.Context, record RedteamReport
 
 func (s *memoryArtifactStore) GetReportByRunID(_ context.Context, userID uuid.UUID, runID string) (*RedteamReportRecord, error) {
 	var newest *RedteamReportRecord
+	// Mirror the SQL in GetReportByRunID: the dedicated column first, the
+	// metadata key as the legacy fallback, never `run_id`.
 	for i := range s.reports {
 		item := s.reports[i]
-		if item.PlatformUserID != userID || strings.TrimSpace(item.RunID) != strings.TrimSpace(runID) {
+		if item.PlatformUserID != userID {
+			continue
+		}
+		if strings.TrimSpace(item.EngineRunID) != strings.TrimSpace(runID) &&
+			strings.TrimSpace(item.Metadata["engine_run_id"]) != strings.TrimSpace(runID) {
 			continue
 		}
 		if newest == nil || item.CreatedAt.After(newest.CreatedAt) {
@@ -739,10 +745,12 @@ func TestGetReportByRunIDReturnsTheNewestForTheOwner(t *testing.T) {
 	older := time.Now().Add(-time.Hour)
 	newer := time.Now()
 
+	// The join key is EngineRunID (028) — RunID is the planner's id and is never
+	// what this lookup keys on.
 	store.reports = append(store.reports,
-		RedteamReportRecord{ID: "report_old", Handle: "h1", PlatformUserID: owner, RunID: "er-1", Title: "old", CreatedAt: older},
-		RedteamReportRecord{ID: "report_new", Handle: "h2", PlatformUserID: owner, RunID: "er-1", Title: "new", CreatedAt: newer},
-		RedteamReportRecord{ID: "report_other", Handle: "h3", PlatformUserID: other, RunID: "er-2", Title: "other", CreatedAt: newer},
+		RedteamReportRecord{ID: "report_old", Handle: "h1", PlatformUserID: owner, RunID: "msg-old", EngineRunID: "er-1", Title: "old", CreatedAt: older},
+		RedteamReportRecord{ID: "report_new", Handle: "h2", PlatformUserID: owner, RunID: "msg-new", EngineRunID: "er-1", Title: "new", CreatedAt: newer},
+		RedteamReportRecord{ID: "report_other", Handle: "h3", PlatformUserID: other, RunID: "msg-other", EngineRunID: "er-2", Title: "other", CreatedAt: newer},
 	)
 
 	report, err := service.GetReportByRunID(context.Background(), owner, "er-1")
@@ -762,5 +770,64 @@ func TestGetReportByRunIDReturnsTheNewestForTheOwner(t *testing.T) {
 	}
 	if got, _ := service.GetReportByRunID(context.Background(), owner, "  "); got != nil {
 		t.Errorf("blank run id resolved to %+v", got)
+	}
+}
+
+// The history download joins run → report by the engine run id, and that id was
+// never in `run_id`.
+//
+// Measured on ai02 2026-10-27: of 72 reports, 0 had an `er-…` run_id (the column
+// holds the planner's `msg_…` / `run_…`), while 43/43 could be joined through
+// `metadata->>'engine_run_id'`. The first lookup keyed on `run_id` and 404ed for
+// every run; this test feeds the real shape so the mistake cannot come back.
+func TestGetReportByRunIDAcceptsTheEngineIdShape(t *testing.T) {
+	store := &memoryArtifactStore{}
+	service := NewRedteamArtifactService(store)
+	owner := uuid.New()
+	now := time.Now()
+
+	store.reports = append(store.reports,
+		// Real shape: planner run id in RunID, engine id in metadata (pre-028 row).
+		RedteamReportRecord{
+			ID: "report_legacy", Handle: "h-legacy", PlatformUserID: owner, RunID: "msg_1111",
+			Title: "legacy", CreatedAt: now.Add(-time.Minute),
+			Metadata: map[string]string{"engine_run_id": "er-target"},
+		},
+		// Post-028 shape: the dedicated column is populated.
+		RedteamReportRecord{
+			ID: "report_new", Handle: "h-new", PlatformUserID: owner, RunID: "msg_2222",
+			EngineRunID: "er-target", Title: "new", CreatedAt: now,
+			Metadata: map[string]string{"engine_run_id": "er-target"},
+		},
+	)
+
+	for _, want := range []string{"report_new"} {
+		got, err := service.GetReportByRunID(context.Background(), owner, "er-target")
+		if err != nil {
+			t.Fatalf("GetReportByRunID: %v", err)
+		}
+		if got == nil || got.ID != want {
+			t.Fatalf("report = %+v, want %s (newest for the engine run id)", got, want)
+		}
+	}
+
+	// Only the legacy row: the metadata fallback must still resolve it.
+	store.reports = []RedteamReportRecord{{
+		ID: "report_legacy_only", Handle: "h1", PlatformUserID: owner, RunID: "msg_3333",
+		Title: "legacy", CreatedAt: now,
+		Metadata: map[string]string{"engine_run_id": "er-legacy"},
+	}}
+	got, err := service.GetReportByRunID(context.Background(), owner, "er-legacy")
+	if err != nil {
+		t.Fatalf("legacy lookup: %v", err)
+	}
+	if got == nil || got.ID != "report_legacy_only" {
+		t.Fatalf("legacy report = %+v, want the metadata-keyed row", got)
+	}
+
+	// The planner run id must NOT be what we join on any more: a run id that is a
+	// plan message resolves nothing.
+	if got, _ := service.GetReportByRunID(context.Background(), owner, "msg_3333"); got != nil {
+		t.Errorf("a plan message id resolved to %+v — the join key regressed to run_id", got)
 	}
 }

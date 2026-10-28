@@ -580,7 +580,7 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			RunID:   strings.TrimSpace(in.RunID),
 			Kind:    EvaluationEvidenceKindResult,
 			Title:   "promptfoo 引擎评测安全摘要",
-			Summary: engineResultSummary(result),
+			Summary: EngineResultSummary(result),
 			Metadata: map[string]string{
 				"engine":        "promptfoo",
 				"engine_run_id": saved.ID,
@@ -590,16 +590,20 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 			evidenceHandles = append(evidenceHandles, evidence.Handle)
 		}
 
-		riskLevel, safetyScoreOut := engineRiskAndScore(result)
+		riskLevel, safetyScoreOut := EngineRiskAndScore(result)
 		report, err = b.CompileRedteamReport(ctx, userID, instanceID, CompileRedteamReportInput{
+			// The planner's run id (the plan message, on the confirm path) is kept in
+			// RunID for traceability; EngineRunID is the join key the history
+			// download uses. They are different values and both are needed.
 			RunID:           strings.TrimSpace(in.RunID),
+			EngineRunID:     saved.ID,
 			Title:           "大模型安全评估报告（promptfoo 引擎）",
-			Summary:         engineResultSummary(result),
+			Summary:         EngineResultSummary(result),
 			RiskLevel:       riskLevel,
 			SafetyScore:     safetyScoreOut,
 			Findings:        EngineSafeResultFindings(result),
 			EvidenceHandles: evidenceHandles,
-			Metadata:        engineReportMetadata(saved, result),
+			Metadata:        EngineReportMetadata(saved, result),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("compile engine report: %w", err)
@@ -952,7 +956,7 @@ func engineMeasuredCounts(result *EngineSafeResult) (success, failure, unanswere
 // was judged both fields are left unset (「未评定 / 未评分») — promptfoo counts
 // an unanswered probe as a pass, so the arithmetic is otherwise happy to print
 // 「最高安全 100/100」 from zero answers.
-func engineRiskAndScore(result *EngineSafeResult) (string, *float64) {
+func EngineRiskAndScore(result *EngineSafeResult) (string, *float64) {
 	_, _, unanswered, total := engineMeasuredCounts(result)
 	measured := total - unanswered
 	if total > 0 && measured <= 0 {
@@ -982,7 +986,7 @@ func engineAttackSuccessRate(result *EngineSafeResult) float64 {
 	return rate
 }
 
-func engineResultSummary(result *EngineSafeResult) string {
+func EngineResultSummary(result *EngineSafeResult) string {
 	if result == nil {
 		return "promptfoo 引擎评测未返回结果。"
 	}
@@ -1113,7 +1117,7 @@ func classifyTargetCallError(message string) string {
 	return "目标调用失败"
 }
 
-func engineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map[string]string {
+func EngineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map[string]string {
 	measuredSuccess, measuredFailure, measuredUnanswered, measuredTotal := engineMeasuredCounts(result)
 	metadata := map[string]string{
 		"engine":         "promptfoo",

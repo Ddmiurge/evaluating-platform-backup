@@ -177,7 +177,7 @@ func TestEngineReportMetadataCarriesPluginAndStrategyRollups(t *testing.T) {
 			{ID: "none", Label: "none", Probes: 4, AttackSuccess: 0, SuccessRate: 0, MaxSeverity: "none"},
 		},
 	}
-	metadata := engineReportMetadata(&EngineRunRecord{ID: "er-rollup", Purpose: "x"}, result)
+	metadata := EngineReportMetadata(&EngineRunRecord{ID: "er-rollup", Purpose: "x"}, result)
 
 	for _, key := range []string{RedteamPluginStatsMetadataKey, RedteamStrategyStatsMetadataKey} {
 		raw, ok := metadata[key]
@@ -210,7 +210,7 @@ func TestEngineReportMetadataCarriesPluginAndStrategyRollups(t *testing.T) {
 // TestEngineReportMetadataOmitsRollupsWhenEngineReportedNone pins the absent/empty
 // distinction the renderer depends on.
 func TestEngineReportMetadataOmitsRollupsWhenEngineReportedNone(t *testing.T) {
-	metadata := engineReportMetadata(&EngineRunRecord{ID: "er-empty"}, &EngineSafeResult{})
+	metadata := EngineReportMetadata(&EngineRunRecord{ID: "er-empty"}, &EngineSafeResult{})
 	if _, present := metadata[RedteamPluginStatsMetadataKey]; present {
 		t.Error("plugin rollup present with no plugins; the metrics section cannot tell that from an empty run")
 	}

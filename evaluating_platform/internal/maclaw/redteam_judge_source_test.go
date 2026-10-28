@@ -371,7 +371,7 @@ func TestJudgeSourceAndJudgeTrackAreIndependent(t *testing.T) {
 // TestEngineReportMetadataRecordsJudgeSources 验证引擎链路的报告 metadata
 // 同时带上单值键与计数键 —— 少任何一个都会让降级被抹掉。
 func TestEngineReportMetadataRecordsJudgeSources(t *testing.T) {
-	metadata := engineReportMetadata(&EngineRunRecord{ID: "pferr_u8", JudgeMode: EngineJudgePromptfooNative}, &EngineSafeResult{
+	metadata := EngineReportMetadata(&EngineRunRecord{ID: "pferr_u8", JudgeMode: EngineJudgePromptfooNative}, &EngineSafeResult{
 		Totals: EngineRunTotals{Probes: 9},
 		JudgeSources: []EngineJudgeSourceCount{
 			{Source: "category:harmful", Probes: 5},
@@ -396,7 +396,7 @@ func TestEngineReportMetadataRecordsJudgeSources(t *testing.T) {
 // TestEngineReportMetadataOmitsJudgeSourceWhenUnrecorded 断言 U8 之前的
 // 结果**不**被补一个档位：没记录就是没记录，不能反推。
 func TestEngineReportMetadataOmitsJudgeSourceWhenUnrecorded(t *testing.T) {
-	metadata := engineReportMetadata(&EngineRunRecord{ID: "pferr_u8", JudgeMode: EngineJudgePromptfooNative}, &EngineSafeResult{
+	metadata := EngineReportMetadata(&EngineRunRecord{ID: "pferr_u8", JudgeMode: EngineJudgePromptfooNative}, &EngineSafeResult{
 		Totals: EngineRunTotals{Probes: 4},
 	})
 	if _, ok := metadata[RedteamJudgeSourceMetadataKey]; ok {

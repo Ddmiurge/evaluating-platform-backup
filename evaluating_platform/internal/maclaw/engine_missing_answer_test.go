@@ -170,14 +170,14 @@ func TestEngineResultSummaryDisclosesUnansweredProbes(t *testing.T) {
 	missing := EngineCaseResult{Index: 2, Error: "HTTP call failed with status 500"}
 
 	t.Run("none missing", func(t *testing.T) {
-		summary := engineResultSummary(result(answered, answered))
+		summary := EngineResultSummary(result(answered, answered))
 		if strings.Contains(summary, "未取得目标回答") {
 			t.Errorf("summary = %q, want no disclosure when every probe was answered", summary)
 		}
 	})
 
 	t.Run("some missing", func(t *testing.T) {
-		summary := engineResultSummary(result(answered, missing))
+		summary := EngineResultSummary(result(answered, missing))
 		// The split (2026-10-22): the unanswered probe is NOT counted as an
 		// attack failure. 攻击失败 1 is the one probe that was actually judged.
 		if !strings.Contains(summary, "攻击失败 1 条") {
@@ -192,7 +192,7 @@ func TestEngineResultSummaryDisclosesUnansweredProbes(t *testing.T) {
 	})
 
 	t.Run("all missing", func(t *testing.T) {
-		summary := engineResultSummary(result(missing, missing))
+		summary := EngineResultSummary(result(missing, missing))
 		if !strings.Contains(summary, "安全结论不成立") {
 			t.Errorf("summary = %q, want an explicit refusal to conclude", summary)
 		}
@@ -310,7 +310,7 @@ func TestEngineReportMetadataCarriesTheProbeCounts(t *testing.T) {
 			{Index: 6, Error: "timed out"},
 		},
 	}
-	metadata := engineReportMetadata(&EngineRunRecord{ID: "er-test"}, result)
+	metadata := EngineReportMetadata(&EngineRunRecord{ID: "er-test"}, result)
 	// The split (2026-10-22): 6 probes, 3 judged (all failures), 3 unanswered.
 	// failure_count must NOT be 6 — that would count the same three probes twice
 	// and let 「攻击失败」 mean both "the target held" and "nothing was judged".
@@ -346,7 +346,7 @@ func TestEngineRiskAndScoreUsesMeasuredProbes(t *testing.T) {
 			{Index: 6, Error: "timed out"},
 		},
 	}
-	risk, score := engineRiskAndScore(mixed)
+	risk, score := EngineRiskAndScore(mixed)
 	if score == nil {
 		t.Fatal("score = nil, want a number when some probes were judged")
 	}
@@ -365,7 +365,7 @@ func TestEngineRiskAndScoreUsesMeasuredProbes(t *testing.T) {
 		Totals:      EngineRunTotals{Probes: 3},
 		CaseResults: []EngineCaseResult{{Index: 1, Error: "x"}, {Index: 2, Error: "x"}, {Index: 3, Error: "x"}},
 	}
-	if risk, score := engineRiskAndScore(none); risk != "" || score != nil {
+	if risk, score := EngineRiskAndScore(none); risk != "" || score != nil {
 		t.Errorf("all-unanswered: risk = %q score = %v, want 未评定 / 未评分", risk, score)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -933,4 +934,87 @@ func TestEngineRunHandlerGetRunReport(t *testing.T) {
 			t.Fatalf("status = %d", w.Code)
 		}
 	})
+}
+
+// The wizard path must produce a report when its run finishes, or the history's
+// download button is dead for every run it creates.
+//
+// Measured on ai02 2026-10-27: two wizard runs, reports 71 → 71. The confirm fast
+// path compiles inside the bridge; the wizard only wrote engine_runs.
+func TestEngineRunHandlerCompilesReportForWizardRuns(t *testing.T) {
+	previous := wizardReportPollInterval
+	wizardReportPollInterval = time.Millisecond
+	t.Cleanup(func() { wizardReportPollInterval = previous })
+
+	store := newFakeRunStore()
+	svc := maclaw.NewEngineRunService(store)
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	rec := svc.NewRun(userID, "inst-1", "sess-1", maclaw.EngineRunSourceWizard, "p", maclaw.EngineJudgeAuto, 3, "t1", []maclaw.EngineCapabilityRef{{ID: "contracts"}}, nil)
+	saved, err := svc.Save(context.Background(), rec)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// The run reaches a terminal succeeded phase with a result, exactly as the
+	// status mirror would leave it.
+	done := saved
+	done.Status = maclaw.EnginePhaseSucceeded
+	done.PlannedCount, done.ExecutedCount = 3, 3
+	done.Result = &maclaw.EngineSafeResult{
+		Totals:      maclaw.EngineRunTotals{Probes: 3, AttackSuccess: 1},
+		CaseResults: []maclaw.EngineCaseResult{{Index: 1, PluginID: "contracts", AttackSuccess: true, Response: "同意"}},
+	}
+	if _, err := svc.Save(context.Background(), done); err != nil {
+		t.Fatalf("mark terminal: %v", err)
+	}
+
+	compiler := &fakeEngineResultCompiler{reportID: "redteam_report_wizard"}
+	h := newEngineRunHandler(newEnabledFakeEngine(), svc, nil, nil)
+	h.SetEngineResultCompiler(compiler)
+
+	// Drive the same helper the handler starts in the background, with a zero
+	// wait so it observes the terminal record on its first tick.
+	h.finishWizardRun(userID, "inst-1", saved.ID)
+
+	if compiler.evidenceCalls != 1 {
+		t.Errorf("evidence calls = %d, want 1", compiler.evidenceCalls)
+	}
+	if compiler.compileCalls != 1 {
+		t.Fatalf("compile calls = %d, want 1", compiler.compileCalls)
+	}
+	if compiler.lastRunID != saved.ID || compiler.lastEngineRunID != saved.ID {
+		t.Errorf("compiled with run_id=%q engine_run_id=%q, want both = %q", compiler.lastRunID, compiler.lastEngineRunID, saved.ID)
+	}
+	if compiler.lastFindings == 0 {
+		t.Error("compiled a report with no findings — the run had one probe")
+	}
+}
+
+// fakeEngineResultCompiler is written from a background goroutine, so its counters
+// are mutex-guarded: the wiring test reads them while the worker runs.
+type fakeEngineResultCompiler struct {
+	mu              sync.Mutex
+	reportID        string
+	evidenceCalls   int
+	compileCalls    int
+	lastRunID       string
+	lastEngineRunID string
+	lastFindings    int
+}
+
+func (f *fakeEngineResultCompiler) SaveRedteamEvidence(context.Context, uuid.UUID, string, maclaw.RedteamEvidenceInput) (*maclaw.RedteamEvidenceOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.evidenceCalls++
+	return &maclaw.RedteamEvidenceOutput{Handle: "ev-1"}, nil
+}
+
+func (f *fakeEngineResultCompiler) CompileRedteamReport(_ context.Context, _ uuid.UUID, _ string, in maclaw.CompileRedteamReportInput) (*maclaw.EvaluationReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.compileCalls++
+	f.lastRunID = in.RunID
+	f.lastEngineRunID = in.EngineRunID
+	f.lastFindings = len(in.Findings)
+	return &maclaw.EvaluationReport{ID: f.reportID}, nil
 }

@@ -80,7 +80,7 @@ func TestPlatformReportMetadataSurvivesSanitization(t *testing.T) {
 	t.Run("引擎链路：真实写入点的每个键都存活", func(t *testing.T) {
 		// 用真实构造函数而不是手写 map —— 手写的 map 会在写入点变更时过期，
 		// 而那正是「键被丢掉」这件事最容易被漏掉的地方。
-		metadata := engineReportMetadata(&EngineRunRecord{
+		metadata := EngineReportMetadata(&EngineRunRecord{
 			ID:            "pferr_sanitize",
 			Purpose:       "合规安全评测",
 			JudgeMode:     EngineJudgePromptfooNative,

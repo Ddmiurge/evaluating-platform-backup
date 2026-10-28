@@ -39,6 +39,7 @@ func reportRowValues(t *testing.T, handle, findings, evidenceHandles, metadata s
 		"inst-1",                // instance_id
 		"sess-1",                // session_id
 		"run-1",                 // run_id
+		"er-run-1",              // engine_run_id（028 起，run→report 的显式关联键）
 		"Report Title",          // title
 		"summary",               // summary
 		"high",                  // risk_level

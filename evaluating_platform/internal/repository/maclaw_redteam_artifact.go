@@ -117,14 +117,15 @@ func (r *MaclawRedteamArtifactRepository) SaveReport(ctx context.Context, record
 	}
 	const query = `
 		INSERT INTO maclaw_redteam_reports (
-			id, handle, platform_user_id, instance_id, session_id, run_id, title, summary, risk_level,
+			id, handle, platform_user_id, instance_id, session_id, run_id, engine_run_id, title, summary, risk_level,
 			safety_score, findings, evidence_handles, metadata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (id) DO UPDATE SET
 			handle = EXCLUDED.handle,
 			instance_id = EXCLUDED.instance_id,
 			session_id = EXCLUDED.session_id,
 			run_id = EXCLUDED.run_id,
+			engine_run_id = EXCLUDED.engine_run_id,
 			title = EXCLUDED.title,
 			summary = EXCLUDED.summary,
 			risk_level = EXCLUDED.risk_level,
@@ -133,7 +134,7 @@ func (r *MaclawRedteamArtifactRepository) SaveReport(ctx context.Context, record
 			evidence_handles = EXCLUDED.evidence_handles,
 			metadata = EXCLUDED.metadata,
 			updated_at = NOW()
-		RETURNING id, handle, platform_user_id, instance_id, session_id, run_id, title, summary, risk_level,
+		RETURNING id, handle, platform_user_id, instance_id, session_id, run_id, engine_run_id, title, summary, risk_level,
 			safety_score, findings, evidence_handles, metadata, created_at, updated_at
 	`
 	row := r.pool.QueryRow(ctx, query,
@@ -143,6 +144,7 @@ func (r *MaclawRedteamArtifactRepository) SaveReport(ctx context.Context, record
 		record.InstanceID,
 		record.SessionID,
 		record.RunID,
+		record.EngineRunID,
 		record.Title,
 		record.Summary,
 		record.RiskLevel,
@@ -164,11 +166,23 @@ func (r *MaclawRedteamArtifactRepository) GetReportByRunID(ctx context.Context, 
 	if runID == "" {
 		return nil, nil
 	}
+	// The engine run id is NOT in `run_id`: that column holds the planner's run
+	// id (`msg_…` on the confirm fast path, `run_…` on the pre-P11 platform path).
+	// Measured on ai02 2026-10-27: 0 of 72 rows had an `er-…` run_id, while 43/43
+	// reports carried `metadata.engine_run_id` and all 43 joined a real
+	// engine_runs row — the first version of this lookup matched on `run_id` and
+	// therefore 404ed for every run.
+	//
+	// Both shapes are accepted while rows written before the dedicated column
+	// existed are still in the table; new rows are written to `engine_run_id`.
+	// The metadata expression is cost-bounded by the owner predicate and the
+	// index created with the column.
 	const query = `
-		SELECT id, handle, platform_user_id, instance_id, session_id, run_id, title, summary, risk_level,
+		SELECT id, handle, platform_user_id, instance_id, session_id, run_id, engine_run_id, title, summary, risk_level,
 			safety_score, findings, evidence_handles, metadata, created_at, updated_at
 		FROM maclaw_redteam_reports
-		WHERE platform_user_id = $1 AND run_id = $2
+		WHERE platform_user_id = $1
+		  AND (engine_run_id = $2 OR metadata->>'engine_run_id' = $2)
 		ORDER BY created_at DESC
 		LIMIT 1
 	`
@@ -184,7 +198,7 @@ func (r *MaclawRedteamArtifactRepository) GetReportByRunID(ctx context.Context, 
 
 func (r *MaclawRedteamArtifactRepository) GetReport(ctx context.Context, userID uuid.UUID, reportID string) (*maclaw.RedteamReportRecord, error) {
 	const query = `
-		SELECT id, handle, platform_user_id, instance_id, session_id, run_id, title, summary, risk_level,
+		SELECT id, handle, platform_user_id, instance_id, session_id, run_id, engine_run_id, title, summary, risk_level,
 			safety_score, findings, evidence_handles, metadata, created_at, updated_at
 		FROM maclaw_redteam_reports
 		WHERE platform_user_id = $1 AND (id = $2 OR handle = $2)
@@ -284,6 +298,7 @@ func scanRedteamReport(row rowScanner) (*maclaw.RedteamReportRecord, error) {
 		&out.InstanceID,
 		&out.SessionID,
 		&out.RunID,
+		&out.EngineRunID,
 		&out.Title,
 		&out.Summary,
 		&out.RiskLevel,

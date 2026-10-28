@@ -196,6 +196,9 @@ func main() {
 	engineRunHandler.SetEngineCapabilityResolver(redteamToolBridge)
 	// History rows are runs, not reports; this is how a row finds its PDF.
 	engineRunHandler.SetEngineReportLookup(maclawRedteamArtifactService)
+	// Wizard runs compile their own report on the terminal path; without this the
+	// history's download button only ever works for chat-confirmed runs.
+	engineRunHandler.SetEngineResultCompiler(redteamToolBridge)
 	// Phase 1 confirm fast path: shared platform engine job store.
 	platformEngineJobs := maclawpkg.NewPlatformEngineJobStore()
 	maclawRuntimeHandler.SetPromptfooEngine(redteamToolBridge, platformEngineJobs, engineRunService)
@@ -517,6 +520,7 @@ var migrationFiles = []string{
 	"migrations/025_attack_sample_categories.sql",
 	"migrations/026_promptfoo_engine.sql",
 	"migrations/027_engine_run_job_link.sql",
+	"migrations/028_redteam_report_engine_run_id.sql",
 }
 
 // runMigrations 按 migrationFiles 清单顺序执行迁移。

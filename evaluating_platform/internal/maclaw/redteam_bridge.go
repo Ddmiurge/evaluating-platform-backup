@@ -298,7 +298,10 @@ type RedteamEvidenceOutput struct {
 }
 
 type CompileRedteamReportInput struct {
-	RunID           string                           `json:"run_id,omitempty"`
+	RunID string `json:"run_id,omitempty"`
+	// EngineRunID is the platform engine run (`er-…`) the report belongs to.
+	// Empty for the platform judge path, which has no engine run.
+	EngineRunID     string                           `json:"engine_run_id,omitempty"`
 	Title           string                           `json:"title,omitempty"`
 	Summary         string                           `json:"summary,omitempty"`
 	RiskLevel       string                           `json:"risk_level,omitempty"`
