@@ -175,7 +175,7 @@ func (h *MaclawRuntimeHandler) GetSession(c *gin.Context) {
 		writeMaclawError(c, err)
 		return
 	}
-	normalizeRuntimeMessages(messages)
+	h.normalizeRuntimeMessages(c, messages)
 	hydrateRuntimeReportMessages(c.Request.Context(), gateway, messages)
 	messages = filterBrowserRuntimeMessages(messages)
 	if jobs, err := gateway.ListEvaluationJobs(c.Request.Context(), maclaw.EvaluationJobQuery{
@@ -262,7 +262,7 @@ func (h *MaclawRuntimeHandler) PostMessage(c *gin.Context) {
 		writeMaclawError(c, err)
 		return
 	}
-	normalizeRuntimeMessageResponse(out)
+	h.normalizeRuntimeMessageResponse(c, out)
 	c.JSON(http.StatusOK, out)
 }
 
@@ -902,11 +902,39 @@ func isLikelySkillRef(ref string) bool {
 		strings.HasPrefix(ref, "skill:")
 }
 
-func normalizeRuntimeMessageResponse(out *maclaw.RuntimeMessageResponse) {
+func (h *MaclawRuntimeHandler) normalizeRuntimeMessageResponse(c *gin.Context, out *maclaw.RuntimeMessageResponse) {
 	if out == nil || out.Message == nil {
 		return
 	}
-	normalizeRuntimeMessage(out.Message)
+	h.normalizeRuntimeMessage(c, out.Message)
+}
+
+// normalizeRuntimeMessage applies the platform's target facts before the shared
+// normalization, so the stored message and the card agree from the first read.
+func (h *MaclawRuntimeHandler) normalizeRuntimeMessage(c *gin.Context, msg *maclaw.RuntimeMessage) {
+	if msg == nil {
+		return
+	}
+	if body, ok := runtimePlanJSON(msg.Content); ok && strings.TrimSpace(fmtAnyString(body["response_source"])) == "plan_confirm" {
+		applyPlatformTargetFacts(body, h.platformTargetKind(c))
+		if data, err := json.Marshal(body); err == nil {
+			msg.Content = string(data)
+		}
+	}
+	normalizeRuntimeMessage(msg)
+}
+
+func (h *MaclawRuntimeHandler) normalizeRuntimeMessages(c *gin.Context, messages []maclaw.RuntimeMessage) {
+	kind := h.platformTargetKind(c)
+	for i := range messages {
+		if body, ok := runtimePlanJSON(messages[i].Content); ok && strings.TrimSpace(fmtAnyString(body["response_source"])) == "plan_confirm" {
+			applyPlatformTargetFacts(body, kind)
+			if data, err := json.Marshal(body); err == nil {
+				messages[i].Content = string(data)
+			}
+		}
+		normalizeRuntimeMessage(&messages[i])
+	}
 }
 
 func normalizeRuntimeMessages(messages []maclaw.RuntimeMessage) {
@@ -1309,6 +1337,68 @@ func downgradeRuntimeProgressForBrowser(msg maclaw.RuntimeMessage) maclaw.Runtim
 	msg.Content = statusText
 	msg.Metadata = metadata
 	return msg
+}
+
+// platformTargetKind returns the KIND the caller's connected target has, or "".
+//
+// The plan card's 「目标类型」 is whatever the planner wrote — maclaw sees the
+// target at most as a name, and its fast path hardcodes llm — while the kind is a
+// platform fact: it is stored in maclaw_target_configs and decides whether the run
+// calls an HTTP model or an agent endpoint. Reading it here is what makes the card
+// stop saying llm for an agent target (2026-10-28).
+//
+// "" means "unknown", and callers must leave the planner's value alone in that
+// case: a card that says llm because maclaw said llm is wrong, but a card that
+// says 「未配置」 because the lookup failed would be wrong differently.
+func (h *MaclawRuntimeHandler) platformTargetKind(c *gin.Context) string {
+	if h == nil || h.targetConfig == nil || !h.targetConfig.Enabled() {
+		return ""
+	}
+	userID, err := uuid.Parse(strings.TrimSpace(c.GetString("user_id")))
+	if err != nil {
+		return ""
+	}
+	targets, err := h.targetConfig.ListTargets(c.Request.Context(), userID, maclaw.EvaluationTargetQuery{IncludeInactive: true})
+	if err != nil || len(targets) == 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(string(targets[0].Kind)))
+}
+
+// applyPlatformTargetFacts overwrites the target summary fields the planner
+// guessed with the values the platform owns.
+//
+// Only the KIND is overridden. URL / model / name are left to the planner: it may
+// legitimately describe a different view of the same target, and overwriting them
+// would turn a cosmetic mismatch into a silent rewrite of what the user approved.
+// The kind is different — it is an enum with two values, both of which this
+// platform can read exactly.
+func applyPlatformTargetFacts(body map[string]any, kind string) {
+	if body == nil || kind == "" {
+		return
+	}
+	before := fmtAnyString(body["target_type"])
+	body["target_type"] = kind
+	switch summary := body["target_summary"].(type) {
+	case map[string]any:
+		summary["target_type"] = kind
+	case string:
+		// The runtime may serialize the summary as JSON text; rewrite it in place
+		// so both the object and the string form agree.
+		var parsed map[string]any
+		if json.Unmarshal([]byte(summary), &parsed) == nil {
+			parsed["target_type"] = kind
+			if encoded, err := json.Marshal(parsed); err == nil {
+				body["target_summary"] = string(encoded)
+			}
+		}
+	}
+	// The card shows what the run will actually call. Recording both values keeps
+	// the disagreement visible to anyone reading the stored message, which is how
+	// a future planner drift gets noticed instead of silently corrected.
+	if before != "" && !strings.EqualFold(before, kind) {
+		body["target_type_claimed"] = before
+	}
 }
 
 func normalizeRuntimeMessage(msg *maclaw.RuntimeMessage) {

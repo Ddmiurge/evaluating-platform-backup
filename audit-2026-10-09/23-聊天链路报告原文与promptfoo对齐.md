@@ -1820,3 +1820,44 @@ User-configured values were included in inference and may have been deemed harmf
 
 - 历史里 P11 之前、或失败/取消的 run 没有报告 → 按钮置灰或点击后提示「这次运行还没有可下载的报告」；
 - 前端按钮本身是纯 UI，没有单测，需上机点一次。
+
+---
+
+## 31. P16：计划卡的「目标类型」跟平台走，不再跟规划器猜（2026-10-28）
+
+### 31.1 症状与根因
+
+对话计划卡的「目标类型」一栏永远显示 `llm`，企业接的是智能体时也一样。
+
+根因是**字段来源错了**：该值取自 maclaw 的计划载荷（`target_type` / `target_summary.target_type`），
+而 maclaw 对目标最多只知道一个名字 —— 它的 `redteam_evaluation_v1` 快速路径把 kind 写死为 llm。
+真正的事实存在 `maclaw_target_configs.kind`（`llm` / `agent`），它决定 run 调用的是模型端点还是智能体端点，
+却在 BFF 里只被用于搜索，从未进入计划卡。
+
+### 31.2 修法
+
+1. **BFF 归一化时用平台事实覆盖**：`MaclawRuntimeHandler` 在计划卡归一化前读取当前账号的 target kind
+   （`platformTargetKind`），由 `applyPlatformTargetFacts` 写回 `target_type` 与
+   `target_summary.target_type`（对象与 JSON 字符串两种形态都处理）。只覆盖 **kind**，
+   URL / model / name 保持规划器给的 —— 那些可能是同一目标的不同视角，覆盖它们等于静默改写用户批准的内容。
+   两处入口都接：会话快照 `normalizeRuntimeMessages` 与发消息响应 `normalizeRuntimeMessageResponse`，
+   所以卡片在**第一次读取时就是对的**，不依赖前端补救。
+2. **保留原判断**：规划器写的不等于平台 kind 时，额外写 `target_type_claimed`，
+   让"规划器猜错了"这件事留在消息里可见，而不是被静默抹平（将来规划器漂移能被发现）。
+3. **查不到时不动**：账号没有目标或读取失败 → 不改写。说「未确认」是诚实的，擅自改成 llm 不是。
+4. **前端只认两种值**：`llm` → 「大模型（LLM）」，`agent` → 「智能体（Agent）」，
+   其它（包括规划器过去写的 provider 名 `openai`）→ 「未确认（目标类型未识别）」，
+   不再把 provider 名当目标类型渲染。
+
+### 31.3 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestPlanCardTargetKindComesFromThePlatform`（真实 TargetConfigService 存一个 agent 目标，计划卡写 llm → 快照里必须是 agent，且 `target_type_claimed=llm`） | 不调用 `applyPlatformTargetFacts` → 红（`plan target_type = llm`） |
+| `TestApplyPlatformTargetFacts`（对象/字符串形态、未知 kind 不动、一致时不记 claimed） | 同上 |
+| 前端 `chatDisplayTargetType.test.ts`（两种 kind 标签 + provider 名不得当类型渲染） | 去掉白名单映射 → 红 |
+
+### 31.4 边界
+
+- 只修**展示与记录**：run 实际调用什么端点由 `maclaw_target_configs.kind` 决定，本批没有改执行链路（它本来就是对的）。
+- 历史会话里的旧计划卡仍是旧文案（消息已落库）；新计划卡从下一次对话开始正确。

@@ -1021,3 +1021,15 @@ GET /api/v1/maclaw/engine/runs/:id/report
 
 - `GetReportByRunID` 的归属写在 SQL 里（`platform_user_id` + `run_id`），别人的 run 与不存在的 run 同答；
 - 同 run 多份取 `created_at DESC` 最新一份（重新编译原地覆盖，旧快照不得回给读者）。
+
+## 计划卡的「目标类型」以平台 kind 为准（2026-10-28）
+
+| 值 | 来源 |
+|---|---|
+| 平台事实 | `maclaw_target_configs.kind`（`llm` / `agent`），决定 run 调模型端点还是智能体端点 |
+| 规划器写的 | maclaw 计划载荷的 `target_type`（快速路径写死 llm；前端曾回落为 provider 名 `openai`） |
+
+修法：BFF 归一化计划卡时用 `platformTargetKind` 读当前账号目标，`applyPlatformTargetFacts`
+覆盖 `target_type` 与 `target_summary.target_type`（对象/字符串两形态），并记录
+`target_type_claimed` 保留规划器原值。只覆盖 kind，URL/model/name 不动；查不到目标则不改写。
+前端只认 `llm` / `agent`，其它显示「未确认（目标类型未识别）」。

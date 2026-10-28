@@ -139,7 +139,13 @@ function fallbackPlanGoal(plan: Partial<PlanInfo>) {
 export function normalizePlanForDisplay(plan: PlanInfo): PlanInfo {
   const goal = isMeaningfulPlanText(plan.goal) ? plan.goal.trim() : fallbackPlanGoal(plan)
   const name = isMeaningfulPlanText(plan.name) ? plan.name.trim() : 'AI 安全评测计划'
-  const targetType = isMeaningfulPlanText(plan.target_type) ? plan.target_type.trim() : 'openai'
+  // The backend rewrites `target_type` to the platform's own target kind (llm /
+  // agent). Anything else is the planner's guess — e.g. the bare provider name it
+  // used to write, 「openai」 — and is shown as 未确认 rather than rendered as if
+  // it were a target kind (reported 2026-10-28).
+  const TARGET_TYPE_LABELS: Record<string, string> = { llm: '大模型（LLM）', agent: '智能体（Agent）' }
+  const rawTargetType = isMeaningfulPlanText(plan.target_type) ? plan.target_type.trim().toLowerCase() : ''
+  const targetType = TARGET_TYPE_LABELS[rawTargetType] ?? '未确认（目标类型未识别）'
   const targetUrl = isMeaningfulPlanText(plan.target_url) ? plan.target_url.trim() : ''
   const targetModel = isMeaningfulPlanText(plan.target_model) ? plan.target_model.trim() : ''
   return {
