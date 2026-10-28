@@ -331,6 +331,11 @@ type EngineSafeResult struct {
 	// machinery). P2-6 — the two are not comparable and looked identical before this
 	// field existed. Fixed enum, safe to store and render.
 	GenerationPath string `json:"generation_path,omitempty"`
+	// CodeStrategyCount / CodeStrategyIDs name the expert CODE strategy packages
+	// that executed during this evaluation. Count + public ids only — the report
+	// states the trust level of its numbers, never what the code contained.
+	CodeStrategyCount int      `json:"code_strategy_count,omitempty"`
+	CodeStrategyIDs   []string `json:"code_strategy_ids,omitempty"`
 	// NumTestsEffective is the probe count actually configured, after the platform
 	// total was divided across the selection (P2-4). Distinct from
 	// `totals.probes`, which counts results that came back.

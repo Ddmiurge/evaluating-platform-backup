@@ -230,7 +230,9 @@ func isSafePayloadMetadataKey(lower string) bool {
 	// 失败原因，都不含载荷/凭据/路径。键名恰好躲过了黑名单子串，但那正是前三例的
 	// 教训：显式登记，别靠运气。
 	case "target_answer_missing",
-		"target_call_error":
+		"target_call_error",
+		// P18: an integer count of expert CODE strategy packages that ran.
+		"code_strategy_count":
 		return true
 	default:
 		return false

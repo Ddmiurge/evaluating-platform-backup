@@ -35,6 +35,8 @@ import type { EngineCustomStrategyCode } from '../src/types.js';
 import type { RunRecord } from '../src/manager/taskManager.js';
 
 process.env.CI = 'true';
+// The capability is off by default; these tests exercise it.
+process.env.MACLAW_STRATEGY_CODE_PACKAGES = '1';
 process.env.PROMPTFOO_DISABLE_REMOTE_GENERATION = '1';
 process.env.PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION = '1';
 
@@ -81,9 +83,15 @@ describe('materializeCustomStrategyCode', () => {
     try {
       const [item] = await materializeCustomStrategyCode([pkg()], workdir);
       expect(item.ref).toBe(`file://${item.filePath}`);
+      // The ref points at the GUARDED wrapper (what promptfoo imports); the
+      // package itself is copied next to it under a bare relative name.
       expect(item.filePath).toBe(path.join(workdir, 'custom-strategies', 'code-probe.js'));
+      const wrapper = await fs.readFile(item.filePath, 'utf8');
+      expect(wrapper).toContain("import pkg from './code-probe.module.js'");
+      expect(wrapper).toContain('TIMEOUT_MS');
       expect(item.publicId).toBe('custom:code:code-probe');
-      expect(await fs.readFile(item.filePath, 'utf8')).toContain('ZZ_CODE');
+      const moduleSource = await fs.readFile(path.join(workdir, 'custom-strategies', 'code-probe.module.js'), 'utf8');
+      expect(moduleSource).toContain('ZZ_CODE');
     } finally {
       await fs.rm(workdir, { recursive: true, force: true });
     }
@@ -298,6 +306,124 @@ describe('executeNativeRedteamRun with a code strategy', () => {
       // And it was never imported: no file reference was honoured.
       await expect(fs.stat(path.join(workdir, 'custom-strategies'))).rejects.toThrow();
     } finally {
+      await fs.rm(workdir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+});
+
+describe('the guarded wrapper', () => {
+  async function runAction(
+    pkgOverrides: Partial<EngineCustomStrategyCode>,
+    opts: { timeoutMs?: number; injectVar?: string } = {},
+  ) {
+    const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-strategy-guard-'));
+    try {
+      const [item] = await materializeCustomStrategyCode([pkg(pkgOverrides)], workdir, {
+        timeoutMs: opts.timeoutMs ?? 20_000,
+        injectVar: opts.injectVar ?? 'prompt',
+      });
+      const mod = (await import(item.filePath)) as {
+        default: { id: string; action: (t: unknown, ...rest: unknown[]) => Promise<unknown> };
+      };
+      const input = [{ vars: { prompt: '原始问题' }, metadata: { pluginId: 'contracts' } }];
+      // promptfoo's real call passes the run's injectVar as the second argument;
+      // a test that always passes 'prompt' would not exercise a custom one.
+      const injectVar = opts.injectVar ?? 'prompt';
+      return { item, mod, output: await mod.default.action(input, injectVar, {}) };
+    } finally {
+      await fs.rm(workdir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  it('reports the public id, not the module id or the path', async () => {
+    const { mod, item } = await runAction({});
+    expect(mod.default.id).toBe('custom:code:code-probe');
+    expect(item.publicId).toBe('custom:code:code-probe');
+  });
+
+  it('lets a well-formed transform through', async () => {
+    const { output } = await runAction({});
+    const rows = output as Array<{ vars: Record<string, unknown> }>;
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0].vars.prompt)).toContain('ZZ_CODE');
+  });
+
+  it('refuses an empty output — a report must not claim coverage it lacks', async () => {
+    await expect(
+      runAction({ definition: `export default { id: 'x', action() { return []; } };` }),
+    ).rejects.toThrow(/空数组/);
+  });
+
+  it('refuses output that drops the injection variable', async () => {
+    await expect(
+      runAction({ definition: `export default { id: 'x', action(t) { return t.map(() => ({ vars: {} })); } };` }),
+    ).rejects.toThrow(/缺少 vars\.prompt/);
+  });
+
+  it('refuses output that multiplies cases beyond the limit', async () => {
+    await expect(
+      runAction({
+        definition: `export default { id: 'x', action(t) { return [...t, ...t, ...t]; } };`,
+      }),
+    ).rejects.toThrow(/返回用例过多/);
+  });
+
+  it('bounds a promise that never settles', async () => {
+    await expect(
+      runAction(
+        { definition: `export default { id: 'x', async action() { await new Promise(() => {}); return []; } };` },
+        { timeoutMs: 50 },
+      ),
+    ).rejects.toThrow(/超过 50ms/);
+  });
+
+  it('uses the run\'s inject var when it is customised', async () => {
+    const { output } = await runAction(
+      { definition: `export default { id: 'x', action(t, injectVar) { return t.map((tc) => ({ ...tc, vars: { ...tc.vars, [injectVar]: 'q' } })); } };` },
+      { injectVar: 'user_input' },
+    );
+    const input = output as Array<{ vars: Record<string, unknown> }>;
+    expect(input[0].vars).toEqual({ prompt: '原始问题', user_input: 'q' });
+  });
+});
+
+describe('the capability switch', () => {
+  it('refuses code packages when MACLAW_STRATEGY_CODE_PACKAGES is off', async () => {
+    const key = 'MACLAW_STRATEGY_CODE_PACKAGES';
+    const previous = process.env[key];
+    delete process.env[key];
+    const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-strategy-off-'));
+    const record = {
+      controller: new AbortController(),
+      request: {
+        run_id: 'switch-off',
+        platform_user_id: 'u',
+        purpose: 'p',
+        num_tests: 1,
+        plugins: [{ id: 'contracts' }],
+        strategies: [],
+        custom_strategy_code: [pkg()],
+        judge_mode: 'promptfoo_native' as const,
+        credentials: {
+          target: { base_url: 'http://127.0.0.1:1/v1/chat/completions', model: 'm', api_key: 'k' },
+          generation: { base_url: 'http://127.0.0.1:1/v1', model: 'g', api_key: 'k' },
+        },
+        catalog: {
+          plugins: [
+            { id: 'contracts', category: 'industry', category_label: '行业合规', severity: 'medium', judge_criteria: 'R', judge_source: 'category:industry' },
+          ],
+          strategies: [],
+        },
+      },
+    } as unknown as RunRecord;
+    try {
+      await expect(executeNativeRedteamRun(record, () => undefined, workdir)).rejects.toMatchObject({
+        code: 'native_generation_strategy_unsupported',
+      });
+      // Nothing was written: refusal happens before materialization.
+      await expect(fs.stat(path.join(workdir, 'custom-strategies'))).rejects.toThrow();
+    } finally {
+      process.env[key] = previous;
       await fs.rm(workdir, { recursive: true, force: true }).catch(() => undefined);
     }
   });

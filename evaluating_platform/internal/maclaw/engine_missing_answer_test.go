@@ -3,6 +3,8 @@ package maclaw
 import (
 	"strings"
 	"testing"
+
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 // A probe that produced no answer must not read as a probe that was answered
@@ -442,5 +444,46 @@ func TestMeasuredCountsClampAContradictoryEngineResult(t *testing.T) {
 	}
 	if unanswered != 0 {
 		t.Errorf("unanswered = %d, want 0 — a probe counted as a success cannot also be unanswered", unanswered)
+	}
+}
+
+// P18: a report must state that expert CODE ran during the evaluation.
+//
+// The reader is looking at numbers produced while third-party code executed
+// inside the engine. That changes the trust level of the numbers, so it belongs
+// in the report-information section — as a count, never as source or a path.
+func TestReportStatesWhenCodeStrategiesRan(t *testing.T) {
+	withCode := &EngineSafeResult{Totals: EngineRunTotals{Probes: 3}, CodeStrategyCount: 2}
+	if got := codeStrategyCount(withCode); got != 2 {
+		t.Fatalf("codeStrategyCount = %d, want 2", got)
+	}
+	if got := codeStrategyCount(&EngineSafeResult{Totals: EngineRunTotals{Probes: 3}}); got != 0 {
+		t.Errorf("count without code strategies = %d, want 0", got)
+	}
+
+	rendered := strings.Join(reportInfoLines(&EvaluationReport{
+		Metadata: map[string]string{"code_strategy_count": "2"},
+	}), "\n")
+	if !strings.Contains(rendered, "本次运行加载了 2 个专家代码策略") {
+		t.Errorf("report info does not state the code strategies:\n%s", rendered)
+	}
+
+	// Absent or zero means no code ran: the line must not appear.
+	plain := strings.Join(reportInfoLines(&EvaluationReport{
+		Metadata: map[string]string{"code_strategy_count": "0"},
+	}), "\n")
+	if strings.Contains(plain, "专家代码策略") {
+		t.Errorf("a run with no code strategy still claims one:\n%s", plain)
+	}
+}
+
+// The count survives the report sanitiser. Registered explicitly in the
+// redteam whitelist, for the same reason the earlier platform keys were: the
+// blacklist is a key-substring match, and "code_strategy_count" is only safe by
+// luck today.
+func TestCodeStrategyCountSurvivesSanitization(t *testing.T) {
+	out := redteam.SanitizeMetadata(map[string]string{"code_strategy_count": "2"})
+	if out["code_strategy_count"] != "2" {
+		t.Fatalf("SanitizeMetadata dropped code_strategy_count: %#v", out)
 	}
 }

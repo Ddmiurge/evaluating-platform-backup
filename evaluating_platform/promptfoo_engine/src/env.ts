@@ -56,6 +56,27 @@ function parseIntEnv(v: string | undefined, fallback: number, min: number, max: 
   return Math.min(max, Math.max(min, n));
 }
 
+/**
+ * Whether expert-published CODE strategy packages may run.
+ *
+ * OFF by default, and it is the only switch that gates them. The design
+ * (`docs/architecture/strategy-code-packages.md`) is explicit about why: a code
+ * strategy executes inside the engine process, which is still a single shared
+ * instance holding the platform-level generation key. Until per-tenant engines
+ * exist, the capability must be opt-in per deployment.
+ *
+ * The switch is read per request rather than latched at boot, so turning it off
+ * during an incident takes effect on the next run without a restart.
+ */
+export function codeStrategyPackagesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseBool(env.MACLAW_STRATEGY_CODE_PACKAGES);
+}
+
+/** Wall-clock budget for one code strategy's `action` call. */
+export function codeStrategyTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  return parseIntEnv(env.MACLAW_STRATEGY_CODE_TIMEOUT_MS, 20_000, 1_000, 120_000);
+}
+
 /** Assert exfiltration switches are all disabled; throw otherwise. */
 export function assertSecuritySwitches(env: NodeJS.ProcessEnv = process.env): void {
   const switches: Array<[string, string]> = [

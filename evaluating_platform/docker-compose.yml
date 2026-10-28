@@ -229,6 +229,15 @@ services:
       # runner 把 `cache: true` 硬写在 doEval 里（dist/src/index.js:18998），覆盖
       # 我们传的 cache:false，所以只能在进程环境里关掉；env.ts 会 fail-closed 校验。
       PROMPTFOO_CACHE_ENABLED: "0"
+      # 2026-10-28：专家代码策略包（pf_strategy_form=js）的开关，**默认关闭**。
+      # 代码在引擎进程内执行，而引擎目前仍是全局唯一实例、持有平台级生成模型 key；
+      # 设计要求的租户隔离（每租户引擎 / 租户级 key / 实例 token）尚未落地，
+      # 因此在共享部署上开启等于把整台部署的凭据交给专家代码。见
+      # docs/architecture/strategy-code-packages.md §2.2 与 §15.3。
+      MACLAW_STRATEGY_CODE_PACKAGES: "${MACLAW_STRATEGY_CODE_PACKAGES:-0}"
+      # 单个代码策略 action 的 wall-clock 上限。Promise.race 只能约束"永不 settle 的
+      # promise"，同步死循环不受此限制（见设计 §4.3/§13 R-2）。
+      MACLAW_STRATEGY_CODE_TIMEOUT_MS: "${MACLAW_STRATEGY_CODE_TIMEOUT_MS:-20000}"
       # 每次外发 HTTP 调用的超时。promptfoo 的 http provider 只认这个变量
       # （getRequestTimeoutMs 默认 300s），不认 config.timeoutMs。180s 覆盖正常
       # 生成/判分/靶机调用，同时保证一条挂住的探针不会永久占住唯一的 worker。

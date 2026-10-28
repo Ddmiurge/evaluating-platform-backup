@@ -114,6 +114,7 @@ import {
   materializeCustomStrategyCode,
   normalizeCodeStrategyIds,
 } from './customStrategyCode.js';
+import { codeStrategyPackagesEnabled, codeStrategyTimeoutMs } from '../env.js';
 
 type Emit = (event: RunProgressEvent) => void;
 
@@ -1395,9 +1396,18 @@ export async function executeNativeRedteamRun(
   // workdir BEFORE the vocabulary check, because their file:// refs are what the
   // check has to let through. Validation happens before any write, so a refused
   // package leaves no file for a later run to import.
+  // The switch is checked BEFORE anything is written: with it off, a request
+  // carrying code packages is refused rather than quietly run without them.
+  if ((request.custom_strategy_code ?? []).length > 0 && !codeStrategyPackagesEnabled()) {
+    throw new EngineRunError(
+      NATIVE_ERR_STRATEGY_UNSUPPORTED,
+      '本部署未开放策略代码包（MACLAW_STRATEGY_CODE_PACKAGES 未开启），拒绝执行专家代码策略。',
+    );
+  }
   const materializedCodeStrategies = await materializeCustomStrategyCode(
     request.custom_strategy_code ?? [],
     workdir,
+    { timeoutMs: codeStrategyTimeoutMs(), injectVar: (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR },
   );
   // Only refs THIS run materialized are allowed through; a file:// id supplied
   // by the caller is still refused in resolveNativeStrategies.
@@ -1559,6 +1569,13 @@ export async function executeNativeRedteamRun(
   // built config also means a wiring mistake in the builder (a dropped
   // `numTests`) is reported rather than hidden by a second correct calculation.
   result.generation_path = 'plan_c';
+  // A report must say that expert CODE ran in this evaluation. Count and public
+  // ids only — no source, no path, no file name: the reader needs to know the
+  // trust level of the numbers, not what the code contained.
+  if (materializedCodeStrategies.length > 0) {
+    result.code_strategy_count = materializedCodeStrategies.length;
+    result.code_strategy_ids = materializedCodeStrategies.map((item) => item.publicId);
+  }
   result.num_tests_effective =
     configuredProbeCount(config.redteam.plugins, catalogFanout(request.catalog)) *
     productiveStrategyCount(config.redteam.strategies);

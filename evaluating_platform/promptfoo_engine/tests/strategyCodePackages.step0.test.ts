@@ -36,6 +36,8 @@ import promptfoo from 'promptfoo';
 import { reduceEvalToSafeResult } from '../src/runner/redteamRun.js';
 
 process.env.CI = 'true';
+// The capability is off by default; these tests exercise it.
+process.env.MACLAW_STRATEGY_CODE_PACKAGES = '1';
 process.env.PROMPTFOO_DISABLE_REMOTE_GENERATION = '1';
 process.env.PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION = '1';
 

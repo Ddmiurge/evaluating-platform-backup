@@ -362,10 +362,29 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 | # | 项 | 状态 |
 |---|---|---|
 | S-2 | **G-1~G-3**：每租户引擎 / 租户级生成模型 key / 实例 token | **未做**。这是打开入口的硬前置（见 §2.2） |
-| S-3 | 发布期**引擎实测校验**（一次性子进程 import，只回判定）与总开关 `MACLAW_STRATEGY_CODE_PACKAGES`（默认 off） | **未做** |
-| S-4 | 运行期 wall-clock 超时（`Promise.race`，默认 20s）与输出 schema 校验（长度/字段/指纹） | **未做**（当前只做物化期的 shape 与令牌检查） |
-| S-5 | 报告标注"本次运行加载了专家代码策略"、目录「代码」标签、失败码 | **未做** |
+| S-3 | 发布期**引擎实测校验**（一次性子进程 import，只回判定） | **未做** |
+| S-3b | 总开关 `MACLAW_STRATEGY_CODE_PACKAGES`（默认 off，拒绝发生在任何写盘之前） | ✅ 已做 |
+| S-4 | 运行期 wall-clock 超时（默认 20s，`MACLAW_STRATEGY_CODE_TIMEOUT_MS`）与输出 schema 校验 | ✅ 已做（见 §15.3b） |
+| S-5 | 报告标注"本次运行加载了 N 个专家代码策略"（计数，不含源码/路径） | ✅ 已做 |
+| S-5b | 目录「代码」标签、失败码细分 | 未做 |
 | S-6 | 上机判据（跨租户不可读、token 不通用、确定性、停用即拒绝） | 未做 |
+
+### 15.3b 超时与输出校验的实现方式（与 §4 的差异）
+
+§4 设想在 `applyStrategies` 外部包一层。Step 0 之后改为**生成 wrapper 文件**：promptfoo 只接受
+`{id, action}`，引擎无法 hook 调用点，所以物化时写两个文件 ——
+
+```
+custom-strategies/<variant>.module.js   ← 专家提交的模块原文
+custom-strategies/<variant>.js          ← 生成的 wrapper：import './<variant>.module.js'
+                                          再导出 { id: publicId, action: guarded(...) }
+```
+
+wrapper 做三件事：wall-clock 超时、输出 schema 校验（空数组/条数上限/缺 injectVar/单条与总量上限）、
+把 id 固定成公开 id。package 用**裸相对路径** import，无法走出目录。
+
+**超时的边界**：`Promise.race` 只能约束"永不 settle 的 promise"；同步死循环仍会占住 worker ——
+这是进程内执行的固有代价（§13 R-2）。
 
 ### 15.4 现在打开会发生什么（必须明确）
 

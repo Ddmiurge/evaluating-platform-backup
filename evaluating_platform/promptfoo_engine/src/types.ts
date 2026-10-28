@@ -323,6 +323,16 @@ export interface SafeRunResult {
    */
   generation_path?: 'plan_a' | 'plan_c';
   /**
+   * Expert CODE strategy packages that ran in this evaluation (count + public
+   * ids). Present only when at least one ran.
+   *
+   * A reader has to know the trust level of the numbers: expert code executed
+   * inside the engine during the run. Counts and ids only — never source, paths
+   * or file names.
+   */
+  code_strategy_count?: number;
+  code_strategy_ids?: string[];
+  /**
    * P2-6 · how many probes the run was configured for, after the platform total
    * was translated into per-plugin counts (P2-4).
    *

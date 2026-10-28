@@ -93,6 +93,11 @@ const ALLOWED_TOP_FIELDS = new Set([
   // probes it actually configured. Both are fixed-enum/integer metadata.
   'generation_path',
   'num_tests_effective',
+  // P18: how many expert CODE strategy packages ran, and their public ids. An
+  // integer and `custom:code:<variant>` tokens — fixed shape, no content, no
+  // paths. The report needs it to state the trust level of its own numbers.
+  'code_strategy_count',
+  'code_strategy_ids',
   // U8: which rubric judged each group of probes. Enum-shaped source ids.
   'judge_sources',
   // The single text-bearing field, and the reason this list exists: the report is

@@ -96,6 +96,11 @@ func reportInfoLines(report *EvaluationReport) []string {
 	lines = append(lines, "- "+RedteamJudgeSourceCaption(report.Metadata, parseJudgeSourceHistogramMetadata(report.Metadata)))
 	// P2-6：生成路径与「plan_a / plan_c 不可比」的说明，同样属元数据而非结论段落。
 	lines = append(lines, "- "+RedteamGenerationPathCaption(report.Metadata))
+	// P18：本次运行执行了专家代码策略。读者据此判断数字的信任档位 —— 这是
+	// 元数据，不是结论；不列代码内容、路径或文件名。
+	if codeCount := strings.TrimSpace(report.Metadata["code_strategy_count"]); codeCount != "" && codeCount != "0" {
+		lines = append(lines, "- 本次运行加载了 "+codeCount+" 个专家代码策略（在评测引擎内执行）")
+	}
 	if target := strings.TrimSpace(firstNonEmptyString(report.Metadata["target_summary"], report.Metadata["target_model"], report.Metadata["target_name"])); target != "" {
 		lines = append(lines, "- 评估目标："+target)
 	}

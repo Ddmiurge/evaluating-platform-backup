@@ -1140,6 +1140,14 @@ func classifyTargetCallError(message string) string {
 	return "目标调用失败"
 }
 
+// codeStrategyCount reports how many expert code strategy packages ran.
+func codeStrategyCount(result *EngineSafeResult) int {
+	if result == nil || result.CodeStrategyCount <= 0 {
+		return 0
+	}
+	return result.CodeStrategyCount
+}
+
 func EngineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map[string]string {
 	measuredSuccess, measuredFailure, measuredUnanswered, measuredTotal := engineMeasuredCounts(result)
 	metadata := map[string]string{
@@ -1158,6 +1166,10 @@ func EngineReportMetadata(record *EngineRunRecord, result *EngineSafeResult) map
 		"failure_count":       redteam.IntString(measuredFailure),
 		"unanswered_count":    redteam.IntString(measuredUnanswered),
 		"attack_success_rate": fmt.Sprintf("%.1f%%", engineAttackSuccessRate(result)),
+		// P18: expert CODE ran during this evaluation. Count + public ids only;
+		// the renderer turns it into one line so a reader knows the trust level
+		// of the numbers. Absent means no code strategy ran.
+		"code_strategy_count": redteam.IntString(codeStrategyCount(result)),
 		// U4 写入点 1/2：本报告的分数由promptfoo 引擎侧 rubric 算出，
 		// 与平台 Judge 口径不可比，必须显式标注（DD-2=A）。
 		RedteamJudgeTrackMetadataKey: string(RedteamJudgeTrackEngine),
