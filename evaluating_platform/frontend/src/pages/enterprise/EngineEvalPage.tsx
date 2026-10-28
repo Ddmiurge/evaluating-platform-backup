@@ -271,7 +271,13 @@ export function EngineEvalPage() {
         if (cancelled) return
         setExpertPackages({
           plugins: plugins.map((item) => ({ value: `pf_plugin:${item.handle}`, label: `${item.name}（专家发布）`, disabled: false })),
-          strategies: strategies.map((item) => ({ value: `pf_strategy:${item.handle}`, label: `${item.name}（专家发布）`, disabled: false })),
+          strategies: strategies.map((item) => ({
+            value: `pf_strategy:${item.handle}`,
+            // A code package executes in the engine; the picker says so, because
+            // who runs code during an evaluation is the user's business.
+            label: `${item.name}（专家发布${item.form === 'js' ? '· 代码策略' : ''}）`,
+            disabled: false,
+          })),
         })
       } catch {
         // A catalogue failure must not block the form: the built-ins still work,

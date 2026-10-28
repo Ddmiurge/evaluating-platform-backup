@@ -148,6 +148,8 @@ export interface PublishedEnginePackage {
   name: string
   kind: string
   version?: string
+  /** `yaml` | `js` for a strategy package; absent for other kinds. */
+  form?: string
   summary?: string
   enabled: boolean
   status: string

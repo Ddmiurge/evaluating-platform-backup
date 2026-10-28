@@ -366,7 +366,8 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 | S-3b | 总开关 `MACLAW_STRATEGY_CODE_PACKAGES`（默认 off，拒绝发生在任何写盘之前） | ✅ 已做 |
 | S-4 | 运行期 wall-clock 超时（默认 20s，`MACLAW_STRATEGY_CODE_TIMEOUT_MS`）与输出 schema 校验 | ✅ 已做（见 §15.3b） |
 | S-5 | 报告标注"本次运行加载了 N 个专家代码策略"（计数，不含源码/路径） | ✅ 已做 |
-| S-5b | 目录「代码」标签、失败码细分 | 未做 |
+| S-5b | 企业选择器把代码包标注为「代码策略」 | ✅ 已做（标签，不含源码） |
+| S-5c | 失败码细分到引擎 `error_brief`（超时/形状/输出三分） | 部分：引擎已抛 `custom_strategy_code_*`，BFF 侧按 `native_generation_promptfoo_failed` 归类，细分未做 |
 | S-6 | 上机判据（跨租户不可读、token 不通用、确定性、停用即拒绝） | 未做 |
 
 ### 15.3b 超时与输出校验的实现方式（与 §4 的差异）
