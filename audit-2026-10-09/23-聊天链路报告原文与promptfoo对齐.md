@@ -1921,3 +1921,58 @@ confirm 快速路径在 bridge 里编译报告；向导 handler 自己构造请�
 - 历史报告不回填 `engine_run_id`：读取路径仍兼容 metadata，无需数据迁移；
 - 向导后台协程失败是静默的（run 记录本身已带引擎状态与错误码，历史行会显示"没有报告"）；
 - 判据 3/4/5 未涉及，沿用 39/40 号结果；本批需上机复验三件事的可见效果。
+
+---
+
+## 33. P22：代码策略的运行时两处断点（2026-10-28，42 号记录）
+
+42 号记录判定：发布与校验全部通过，但**运行时两条入口都失败**。两处断点都在"两段各自正确、拼起来不通"。
+
+### 33.1 断点一：引擎收到 `pf_strategy:<handle>` 标记，但没人换
+
+BFF 对所有发布包都发 `pf_strategy:<handle>` 标记，**依赖引擎换回 `custom:<variant>`**。
+可那个替换表（`applyCustomStrategyRefs`）只吃**文本包**：代码包被分流到 `custom_strategy_code`，
+表是空的 → 标记原样存活 → 引擎 vocabulary 校验拒绝（`native_generation_strategy_unknown`）。
+
+**修法（BFF 侧）**：代码包的引擎引用直接发**解析后的 `custom:<variant>`**——它本来就是 promptfoo
+认得的 custom id，不需要再换一次。文本包仍发标记（那条路有表）。
+两处 resolver 都改（`resolveCustomStrategies` 与 `runPromptfooEngineRedteamEvaluation` 的包装）。
+
+### 33.2 断点二：向导路径没下发源码
+
+`engine_run.go` 组装请求时只带 `CustomPlugins` / `CustomStrategies`，**漏了 `CustomStrategyCode`**；
+确认路径带了。于是即使 33.1 修好，向导路径仍无源码可物化。
+
+**修法**：向导路径补上该字段（解析结果 `resolved.CustomStrategyCode` 一直有，只是没被用）。
+这是 P10/P11 那条"两条入口必须共享同一个解析结果"在新通道上的重演。
+
+### 33.3 修 33.1 之后暴露的第三点：id 不能被**追加**
+
+先前的实现是把 `file://` ref **追加**到请求策略后面。修掉 33.1 后请求里同时存在
+`custom:<variant>`（命名的包）与 `file://` ref（物化的文件），于是 promptfoo 在
+`validateStrategies()` 里对那个 `custom:<variant>` 报
+**"Custom strategy requires strategyText in config"** —— 它不是文本策略，没有 strategyText。
+
+**修法**：改为**替换**（`applyCodeStrategyRefs`）：请求里的包 id → 本次物化的 `file://` ref。
+语义与文本通道的 `applyCustomStrategyRefs` 对称：**id 是请求里的名字，ref 是 promptfoo 加载的东西**。
+
+### 33.4 小项：开关关闭时的状态码不一致
+
+引擎回 409 `code_strategy_disabled`，BFF 回 400。同一个事实两种状态码，提交方无从判断该信哪个。
+现在 BFF 对该 code 也回 **409**（"本部署未提供该能力"是状态而非坏请求）；其余校验错误仍是 400。
+
+### 33.5 守卫与反证
+
+| 测试 | 反证（已跑，红） |
+|---|---|
+| `TestCodeStrategyEngineRefIsTheResolvedID`（BFF 侧解析结果） | 发回标记 → 红 |
+| `TestWizardForwardsTheCodeStrategyChannel`（走 HTTP 入口） | 去掉向导的 `CustomStrategyCode` → 红 |
+| 引擎 `applyCodeStrategyRefs` 五条（替换 / 公开拼写 / 内置不动 / 幂等 / 未知自定义不动） | — |
+| 引擎 e2e：请求命名包 → 跑通且报告无路径 | 改回"追加 file://" → 红（`Custom strategy requires strategyText in config`）；swap 恒返回原数组 → 红 |
+| `TestClassifyMaclawErrorDisabledCodeStrategyIs409` | 回 400 → 红 |
+
+### 33.6 边界
+
+- 发布期（开关关闭拒绝、引擎实测校验、纯函数令牌）三条防线在 42 号已上机验证，本批未改；
+- 运行时修复后仍需上机复验（§41.2 的第 2 步）；
+- 租户隔离（G-1~G-3）仍未做，开关默认仍为 `0`。

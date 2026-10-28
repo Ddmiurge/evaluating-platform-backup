@@ -111,6 +111,7 @@ import {
 } from './customPlugin.js';
 import { applyCustomStrategyRefs, isPromptfooCustomStrategyId, resolveCustomStrategies, type EngineCustomStrategy } from './customStrategy.js';
 import {
+  applyCodeStrategyRefs,
   materializeCustomStrategyCode,
   normalizeCodeStrategyIds,
 } from './customStrategyCode.js';
@@ -1413,13 +1414,18 @@ export async function executeNativeRedteamRun(
   // by the caller is still refused in resolveNativeStrategies.
   const allowedFileRefs = new Set(materializedCodeStrategies.map((item) => item.ref));
 
-  const requestStrategies = [
-    ...applyCustomStrategyRefs(
+  // Text packages: marker → custom:<variant>. Code packages: the request names
+  // the RESOLVED id (the BFF stopped sending the marker on this channel), so the
+  // id is swapped for the file:// ref this run materialized. Appending the refs
+  // instead would leave a `custom:<variant>` with no strategyText in the config,
+  // which promptfoo rejects mid-run (record 42).
+  const requestStrategies = applyCodeStrategyRefs(
+    applyCustomStrategyRefs(
       request.strategies,
       resolveCustomStrategies(request.custom_strategies ?? []),
     ),
-    ...materializedCodeStrategies.map((item) => ({ id: item.ref })),
-  ];
+    materializedCodeStrategies,
+  );
   const native = resolveNativeStrategies(requestStrategies, allowedFileRefs);
 
   const injectVar = (request.inject_var ?? '').trim() || DEFAULT_INJECT_VAR;

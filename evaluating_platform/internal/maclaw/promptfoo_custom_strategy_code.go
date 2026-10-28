@@ -51,6 +51,10 @@ const (
 const (
 	CustomStrategyErrCodeInvalid = "pf_strategy_code_invalid"
 	CustomStrategyErrCodeUnsafe  = "pf_strategy_code_unsafe"
+	// CustomStrategyErrDisabled mirrors the engine's `code_strategy_disabled`:
+	// the capability is off in this deployment. Same string so the two doors
+	// answer identically (record 42 §4.3).
+	CustomStrategyErrDisabled = "code_strategy_disabled"
 )
 
 // customStrategyCodeForbidden are the capability tokens refused before anything

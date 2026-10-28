@@ -539,6 +539,7 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	recordPlugins, recordStrategies := plugins, strategies
 	var customPlugins []maclaw.EngineCustomPlugin
 	var customStrategies []maclaw.EngineCustomStrategy
+	var customStrategyCode []maclaw.EngineCustomStrategy
 	if h.capabilities != nil {
 		resolved, err := h.capabilities.ResolveEngineCapabilities(c.Request.Context(), userID, plugins, strategies)
 		if err != nil {
@@ -551,6 +552,7 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		strategies = resolved.EngineStrategies
 		customPlugins = resolved.CustomPlugins
 		customStrategies = resolved.CustomStrategies
+		customStrategyCode = resolved.CustomStrategyCode
 	}
 
 	source := maclaw.EngineRunSourceWizard
@@ -583,6 +585,13 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		// for the package's executable id and inlines its config.
 		CustomPlugins:    customPlugins,
 		CustomStrategies: customStrategies,
+		// The code channel is separate and must be sent on BOTH entry points.
+		// The confirm path has always forwarded it; the wizard assembled its own
+		// request and dropped it, so a code strategy selected from the wizard
+		// reached the engine with no module to materialize (measured 2026-10-28,
+		// run er-54dfbf0d — the second half of the same "two entry points must
+		// share one resolution result" lesson as P10/P11).
+		CustomStrategyCode: customStrategyCode,
 	}
 	// U7: carry the application description through to the engine so promptfoo's
 	// native generation can aim at this system rather than attack generically.

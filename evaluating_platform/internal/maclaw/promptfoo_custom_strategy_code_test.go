@@ -339,3 +339,62 @@ func TestSaveResourceRefusesCodeStrategyWithoutAVerifiedProbe(t *testing.T) {
 		})
 	}
 }
+
+// Gap 1 (record 42): a CODE package must reach the engine as its resolved
+// `custom:<variant>`, never as the `pf_strategy:<handle>` marker.
+//
+// The marker is swapped for an id by the engine's TEXT-package table. A code
+// package has no entry in that table — it only contributes a file:// ref — so a
+// marker left the engine with an id it could only refuse
+// (`native_generation_strategy_unknown`, run er-54dfbf0d).
+func TestCodeStrategyEngineRefIsTheResolvedID(t *testing.T) {
+	keyStore := agentTestKeyStore(t)
+	service := NewResourceStoreService(newFakeResourceStore(), keyStore)
+	service.SetCodeStrategyProber(&fakeCodeStrategyProber{verdict: &CodeStrategyProbeResult{OK: true}})
+	expert := uuid.New()
+
+	saved, err := service.SaveResource(context.Background(), expert, "tenant-1", codeStrategyInput(validCodeStrategy, map[string]string{
+		"handle":                         "expert_code_ref",
+		CustomStrategyMetadataVariantKey: "p18upper",
+	}))
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	lookup := &codeStrategyLookup{items: []*model.MaclawResourcePublication{{
+		SourceExpertUserID:   expert,
+		SourceResourceHandle: "expert_code_ref",
+		SourceVersion:        "1",
+		Kind:                 string(EvaluationResourceKindPromptfooStrategy),
+		Status:               string(EvaluationResourceStatusPublished),
+		Enabled:              true,
+		Metadata:             saved.Metadata,
+	}}}
+	bridge := NewRedteamToolBridge(nil, nil, nil)
+	bridge.SetCustomPluginResolver(NewCustomPluginResolver(lookup, service))
+
+	resolved, err := bridge.ResolveEngineCapabilities(context.Background(), uuid.New(), nil, []EngineCapabilityRef{
+		{ID: "pf_strategy:expert_code_ref"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveEngineCapabilities: %v", err)
+	}
+	if len(resolved.EngineStrategies) != 1 {
+		t.Fatalf("engine strategies = %+v, want one", resolved.EngineStrategies)
+	}
+	got := resolved.EngineStrategies[0].ID
+	if got != "custom:p18upper" {
+		t.Fatalf("engine strategy ref = %q, want the resolved custom:<variant>", got)
+	}
+	if strings.HasPrefix(got, "pf_strategy:") {
+		t.Fatal("engine still receives the transport marker — the code package has no table to swap it")
+	}
+	// The record keeps the same resolved id.
+	if len(resolved.RecordStrategies) != 1 || resolved.RecordStrategies[0].ID != "custom:p18upper" {
+		t.Errorf("record strategies = %+v, want the resolved id", resolved.RecordStrategies)
+	}
+	// And the code channel carries the module, which is the other half of what
+	// the engine needs: without it there is nothing to materialize.
+	if len(resolved.CustomStrategyCode) != 1 || resolved.CustomStrategyCode[0].Handle != "expert_code_ref" {
+		t.Errorf("code channel = %+v, want the package", resolved.CustomStrategyCode)
+	}
+}

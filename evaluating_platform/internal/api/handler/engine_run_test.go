@@ -855,6 +855,44 @@ func TestEngineRunHandlerResolvesExpertPackages(t *testing.T) {
 	}
 }
 
+// Gap 2 (record 42): the wizard must forward the CODE strategy channel.
+//
+// The confirm path always did; the wizard assembled its own request and dropped
+// it, so a code strategy selected from the wizard reached the engine with no
+// module to materialize (run er-54dfbf0d).
+func TestWizardForwardsTheCodeStrategyChannel(t *testing.T) {
+	store := newFakeRunStore()
+	targets := &fakeTargetConfigService{target: &maclaw.EvaluationTargetInput{
+		ID: "t1", BaseURL: "https://target.example/v1", Model: "m", CredentialSecret: "sk", Enabled: true,
+	}}
+	engine := newEnabledFakeEngine()
+	h := newEngineRunHandler(engine, maclaw.NewEngineRunService(store), targets, newFakeGenerationProvider())
+	h.SetEngineCapabilityResolver(&fakeCapabilityResolver{caps: &maclaw.ResolvedEngineCapabilities{
+		EnginePlugins:      []maclaw.EngineCapabilityRef{{ID: "contracts"}},
+		EngineStrategies:   []maclaw.EngineCapabilityRef{{ID: "custom:p18upper"}},
+		RecordPlugins:      []maclaw.EngineCapabilityRef{{ID: "contracts"}},
+		RecordStrategies:   []maclaw.EngineCapabilityRef{{ID: "custom:p18upper"}},
+		CustomStrategyCode: []maclaw.EngineCustomStrategy{{Handle: "h", StrategyID: "custom:p18upper", Definition: "export default {}", Form: maclaw.CustomStrategyFormJS}},
+	}})
+	r := newEngineRunRouter(h, "enterprise")
+
+	w := doJSON(r, http.MethodPost, "/maclaw/engine/runs",
+		`{"purpose":"合规安全评测","plugins":[{"id":"contracts"}],"strategies":[{"id":"pf_strategy:h"}],"num_tests":1}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	if engine.createReq == nil {
+		t.Fatal("engine was not called")
+	}
+	if len(engine.createReq.CustomStrategyCode) != 1 || engine.createReq.CustomStrategyCode[0].StrategyID != "custom:p18upper" {
+		t.Fatalf("engine request custom_strategy_code = %+v, want the package — without it the engine has nothing to materialize",
+			engine.createReq.CustomStrategyCode)
+	}
+	if len(engine.createReq.Strategies) != 1 || engine.createReq.Strategies[0].ID != "custom:p18upper" {
+		t.Errorf("engine strategies = %+v, want the resolved id", engine.createReq.Strategies)
+	}
+}
+
 type fakeCapabilityResolver struct {
 	caps *maclaw.ResolvedEngineCapabilities
 	err  error

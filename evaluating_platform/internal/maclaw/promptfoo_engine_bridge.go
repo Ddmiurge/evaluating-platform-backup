@@ -528,7 +528,20 @@ func (b *RedteamToolBridge) resolveCustomStrategies(
 			packages = append(packages, *pkg)
 		}
 		recordIDs = append(recordIDs, pkg.StrategyID)
-		engineRefs = append(engineRefs, EngineCapabilityRef{ID: CustomStrategyRef(pkg.Handle)})
+		// The ENGINE ref differs by form, and the difference is load-bearing:
+		//
+		//   - TEXT: the `pf_strategy:<handle>` marker, which the engine swaps for
+		//     `custom:<variant>` + strategyText through its text-package table;
+		//   - CODE: the resolved `custom:<variant>` directly. There is no table
+		//     to swap a marker in — the code package only contributes a file://
+		//     ref — so sending the marker would leave an id the engine can only
+		//     refuse (`native_generation_strategy_unknown`, measured 2026-10-28,
+		//     run er-54dfbf0d).
+		if pkg.Form == CustomStrategyFormJS {
+			engineRefs = append(engineRefs, EngineCapabilityRef{ID: pkg.StrategyID})
+		} else {
+			engineRefs = append(engineRefs, EngineCapabilityRef{ID: CustomStrategyRef(pkg.Handle)})
+		}
 	}
 	return &customStrategyResolution{
 		engineRefs:   engineRefs,

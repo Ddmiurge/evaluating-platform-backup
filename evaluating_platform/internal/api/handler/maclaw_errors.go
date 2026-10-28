@@ -39,6 +39,14 @@ func classifyMaclawError(err error) (int, string, string) {
 	// have turned it into a 503 with "maclaw runtime is not configured".
 	var validation *maclaw.PromptfooCustomPluginValidationError
 	if errors.As(err, &validation) {
+		// "This deployment does not offer the capability" is a state, not a bad
+		// request: the engine answers 409 for the same code, and a submitter who
+		// sees 400 here and 409 there has no way to tell which one to believe
+		// (record 42 §4.3). Everything else stays a 400 — the package itself is
+		// what needs fixing.
+		if validation.Code == maclaw.CustomStrategyErrDisabled {
+			return http.StatusConflict, validation.Code, validation.Error()
+		}
 		return http.StatusBadRequest, validation.Code, validation.Error()
 	}
 	// U10: a `pf_plugin:` reference that cannot be resolved (admin disabled it,

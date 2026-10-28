@@ -24,6 +24,7 @@ import path from 'node:path';
 
 import { executeNativeRedteamRun } from '../src/runner/nativeRedteam.js';
 import {
+  applyCodeStrategyRefs,
   CODE_STRATEGY_ERR_INVALID,
   CODE_STRATEGY_ERR_UNSAFE,
   CodeStrategyError,
@@ -219,7 +220,9 @@ describe('executeNativeRedteamRun with a code strategy', () => {
         purpose: '客服问答机器人',
         num_tests: 1,
         plugins: [{ id: 'contracts' }],
-        strategies: [],
+        // The request names the package by its resolved id; the engine swaps it
+        // for the file:// ref it materializes (record 42).
+        strategies: [{ id: 'custom:code-probe' }],
         custom_strategy_code: [pkg()],
         judge_mode: 'promptfoo_native' as const,
         credentials: {
@@ -426,5 +429,42 @@ describe('the capability switch', () => {
       process.env[key] = previous;
       await fs.rm(workdir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+});
+
+describe('applyCodeStrategyRefs', () => {
+  const item = {
+    ref: 'file:///data/runs/r/custom-strategies/p.js',
+    strategyId: 'custom:p18upper',
+    filePath: '/data/runs/r/custom-strategies/p.js',
+    publicId: 'custom:code:p18upper',
+  };
+
+  it('replaces the package id with the ref it materialized', () => {
+    const out = applyCodeStrategyRefs([{ id: 'custom:p18upper' }], [item]);
+    expect(out).toEqual([{ id: item.ref }]);
+  });
+
+  it('accepts the public spelling too', () => {
+    const out = applyCodeStrategyRefs([{ id: 'custom:code:p18upper' }], [item]);
+    expect(out).toEqual([{ id: item.ref }]);
+  });
+
+  it('leaves built-in strategy ids alone', () => {
+    const out = applyCodeStrategyRefs([{ id: 'base64' }], [item]);
+    expect(out).toEqual([{ id: 'base64' }]);
+  });
+
+  it('leaves an already-file:// ref alone (idempotent)', () => {
+    const out = applyCodeStrategyRefs([{ id: item.ref }], [item]);
+    expect(out).toEqual([{ id: item.ref }]);
+  });
+
+  it('does not invent a ref for an unbudgeted custom id', () => {
+    // A custom:<variant> with no materialized package is not this function's
+    // business to resolve — it must remain visible to the vocabulary check,
+    // which refuses it rather than letting it run as some other package.
+    const out = applyCodeStrategyRefs([{ id: 'custom:someone-else' }], [item]);
+    expect(out).toEqual([{ id: 'custom:someone-else' }]);
   });
 });

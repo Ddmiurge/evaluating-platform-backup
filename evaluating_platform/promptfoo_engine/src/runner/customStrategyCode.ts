@@ -74,6 +74,51 @@ export class CodeStrategyError extends Error {
   }
 }
 
+/**
+ * Swap each code package's resolved id for the file:// ref this run materialized.
+ *
+ * # Why a REPLACEMENT and not an append (record 42, measured)
+ *
+ * The first version appended the file:// refs alongside whatever the request
+ * named. For a code package the request names its resolved `custom:<variant>`
+ * (the BFF no longer sends the `pf_strategy:` marker, because no table swaps it
+ * on this channel). That id is a promptfoo `custom` strategy with **no
+ * strategyText**, so leaving it in the config makes `validateStrategies()` throw
+ * mid-run — and the run that reached it had two entries for one package.
+ *
+ * So the id is the package's NAME in the request; the ref is what promptfoo
+ * loads. This function turns one into the other, exactly as
+ * `applyCustomStrategyRefs` does for the text channel.
+ *
+ * A `custom:<variant>` that matches no materialized package is a refusal, not a
+ * pass-through: it would either fail the run (no strategyText) or, worse, run as
+ * some other package's strategy.
+ */
+export function applyCodeStrategyRefs(
+  strategies: Array<{ id: string; config?: Record<string, unknown> }>,
+  materialized: MaterializedCodeStrategy[],
+): Array<{ id: string; config?: Record<string, unknown> }> {
+  if (materialized.length === 0) return strategies;
+  const byId = new Map<string, MaterializedCodeStrategy>();
+  for (const item of materialized) byId.set(item.strategyId, item);
+  // Any `custom:<variant>` whose variant matches a materialized package — the
+  // request may carry either spelling (`custom:<variant>` or the public
+  // `custom:code:<variant>`).
+  const match = (id: string): MaterializedCodeStrategy | undefined => {
+    for (const item of materialized) {
+      if (item.strategyId === id || item.publicId === id) return item;
+    }
+    return undefined;
+  };
+  return strategies.map((ref) => {
+    const id = (ref?.id ?? '').trim();
+    if (!id || id.toLowerCase().startsWith(FILE_STRATEGY_PREFIX)) return ref;
+    const item = match(id);
+    if (!item) return ref;
+    return { id: item.ref };
+  });
+}
+
 /** `custom:code:<variant>` for a `custom:<variant>` strategy id. */
 export function defaultPublicId(strategyId: string): string {
   const variant = codeStrategyVariant(strategyId);
@@ -293,6 +338,8 @@ export default {
 export interface MaterializedCodeStrategy {
   /** `file://<absolute path>` — what promptfoo loads. */
   ref: string;
+  /** The package's resolved `custom:<variant>` — what the request names it by. */
+  strategyId: string;
   /** Absolute path, needed to map the ref back after the run. */
   filePath: string;
   /** Public id the report must show. */
@@ -345,7 +392,12 @@ export async function materializeCustomStrategyCode(
       encoding: 'utf8',
       mode: 0o600,
     });
-    out.push({ ref: `${FILE_STRATEGY_PREFIX}${wrapperPath}`, filePath: wrapperPath, publicId });
+    out.push({
+      ref: `${FILE_STRATEGY_PREFIX}${wrapperPath}`,
+      strategyId: pkg.strategy_id.trim(),
+      filePath: wrapperPath,
+      publicId,
+    });
   }
   return out;
 }

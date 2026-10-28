@@ -44,3 +44,30 @@ func TestClassifyMaclawErrorUnknownFallsBackToUnavailable(t *testing.T) {
 		t.Errorf("status/code = %d/%q, want 503/maclaw_unavailable", status, code)
 	}
 }
+
+// The "capability is off in this deployment" answer must match the engine's.
+//
+// Record 42 §4.3: the engine returned 409 `code_strategy_disabled` while the BFF
+// returned 400 for the same code. Same fact, two statuses — a submitter cannot
+// tell which one to act on.
+func TestClassifyMaclawErrorDisabledCodeStrategyIs409(t *testing.T) {
+	status, code, _ := classifyMaclawError(&maclaw.PromptfooCustomPluginValidationError{
+		Code:    maclaw.CustomStrategyErrDisabled,
+		Message: "本部署未开放策略代码包。",
+	})
+	if status != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (the engine answers 409 for the same code)", status)
+	}
+	if code != maclaw.CustomStrategyErrDisabled {
+		t.Errorf("code = %q, want %q", code, maclaw.CustomStrategyErrDisabled)
+	}
+
+	// Every other validation failure is still the package's fault → 400.
+	status, _, _ = classifyMaclawError(&maclaw.PromptfooCustomPluginValidationError{
+		Code:    maclaw.CustomStrategyErrCodeUnsafe,
+		Message: "命中禁止项 process.env",
+	})
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d for an unsafe package, want 400", status)
+	}
+}
