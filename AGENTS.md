@@ -175,7 +175,7 @@ Current Skill supply follows the resource projection model:
 必须遵守：
 
 - 每个企业、专家、admin 平台账号对应一个独立 maclaw tenant/user/credential/instance。
-- 专家只能看到和管理自己 tenant 内的资源。
+- 专家只能看到和管理自己 tenant 内的资源。唯一只读例外（P23，2026-10-30）：专家门户「评测插件/评测策略」页可通过 `GET /maclaw/evaluation/resources?include_published_catalog=1` 浏览全体专家**已发布**的引擎包目录；后端把合并限制在 `pf_plugin`/`pf_strategy` 两个 kind（样本/模板/组合攻击永不合并），只回安全元数据，本账号行由服务端标 `metadata.is_own`、他人包的 `source_expert_user_id` 对专家删除（发布者身份不可见）。
 - 企业看到统一的专家已发布资源安全目录。
 - 企业执行时只能使用自己 tenant 内的 shadow resource handle。
 - 跨租户 materialize/copy 只允许发生在 BFF 服务端。

@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
-  Card,
-  Empty,
   Form,
   Input,
   Modal,
   Popconfirm,
   Segmented,
   Space,
-  Table,
-  Tag,
   Typography,
   message,
 } from 'antd'
@@ -22,6 +18,8 @@ import {
   type PromptfooStrategySummary,
 } from '../../services/expert'
 import { promptfooStrategyRejectionHint } from './promptfooStrategyRejectionHints'
+import { buildStrategyCatalogGroups, type CatalogRow } from './engineCatalogGroups'
+import { EngineCatalogBrowser } from './EngineCatalogBrowser'
 import { formatDate } from '../../utils/format'
 
 const { Paragraph, Text, Title } = Typography
@@ -86,6 +84,7 @@ maxTurns: 5
 export function PromptfooStrategyPublisher() {
   const [items, setItems] = useState<PromptfooStrategySummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [degraded, setDegraded] = useState(false)
   const [open, setOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [rejection, setRejection] = useState<{ code: string; message: string } | null>(null)
@@ -112,10 +111,24 @@ export function PromptfooStrategyPublisher() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await expertService.listPromptfooStrategies({ include_inactive: true, limit: 200 })
+      // P23 专家目录：同一路由 + include_published_catalog，由服务端合并全体专家
+      // 已发布的包（仅 pf_* kind 允许；去重与 is_own 都在后端判定，前端不猜）。
+      const data = await expertService.listPromptfooStrategies({
+        include_inactive: true,
+        limit: 300,
+        include_published_catalog: true,
+      })
       setItems(data.items ?? [])
-    } catch (error) {
-      message.error((error as Error).message || '加载策略失败')
+      setDegraded(false)
+    } catch {
+      // 目录请求失败降级为仅自有列表：发布动线不能被目录浏览阻断（同向导吞错口径）。
+      try {
+        const own = await expertService.listPromptfooStrategies({ include_inactive: true, limit: 300 })
+        setItems(own.items ?? [])
+        setDegraded(true)
+      } catch (error) {
+        message.error((error as Error).message || '加载策略失败')
+      }
     } finally {
       setLoading(false)
     }
@@ -124,6 +137,27 @@ export function PromptfooStrategyPublisher() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const groups = useMemo(
+    () =>
+      buildStrategyCatalogGroups(
+        items.map((row) => ({
+          id: row.id,
+          handle: row.handle,
+          name: row.name,
+          version: row.version,
+          status: row.status,
+          enabled: row.enabled,
+          form: row.form,
+          // 降级态下目录没合并，列表里**全是**自有行，但后端不会给它们标
+          // is_own——按降级语义补标，否则重新发布/下架会整排消失。
+          isOwn: row.isOwn === true || degraded,
+          declaredId: row.metadata?.pf_strategy_id,
+          updatedAt: row.updated_at ? formatDate(row.updated_at) : undefined,
+        })),
+      ),
+    [items, degraded],
+  )
 
   const publish = async () => {
     setRejection(null)
@@ -203,6 +237,7 @@ export function PromptfooStrategyPublisher() {
           </Title>
           <Text style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
             以 YAML 定义策略包（strategyText），驱动多轮攻击的推进方式。发布后企业评测即可选用，管理员可随时停用或下架。
+            下方目录同时展示平台内置策略与全体专家已发布的包；「本账号发布」的包可直接重新发布或下架。
           </Text>
         </div>
         <Space>
@@ -223,73 +258,40 @@ export function PromptfooStrategyPublisher() {
         description="它会被拼进攻击模型的提示词，用来决定每一轮怎么推进；报告里展示的是每轮实际发出的内容。选中自定义策略后，探针数按策略个数成倍增加（与内置策略一致）。"
       />
 
-      {items.length === 0 ? (
-        <Card loading={loading}>
-          <Empty description="还没有发布过自定义策略。发布后它会出现在评测的策略选择里。" />
-        </Card>
-      ) : (
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={items}
-          pagination={{ pageSize: 10 }}
-          columns={[
-            {
-              title: '策略',
-              dataIndex: 'name',
-              render: (value: string, row) => (
-                <Space orientation="vertical" size={0}>
-                  <Text>{value}</Text>
-                  <Text type="secondary">{row.metadata?.pf_strategy_id ?? '未声明标识'}</Text>
-                </Space>
-              ),
-            },
-            { title: '版本', dataIndex: 'version', width: 100 },
-            {
-              title: '状态',
-              dataIndex: 'status',
-              width: 120,
-              render: (value: string, row) => (
-                <Space size={4}>
-                  <Tag color={value === 'published' ? 'green' : value === 'archived' ? 'default' : 'blue'}>
-                    {value}
-                  </Tag>
-                  {!row.enabled && <Tag color="red">已停用</Tag>}
-                </Space>
-              ),
-            },
-            {
-              title: '更新时间',
-              dataIndex: 'updated_at',
-              width: 160,
-              render: (value?: string) => (value ? formatDate(value) : '-'),
-            },
-            {
-              title: '操作',
-              width: 150,
-              render: (_: unknown, row: PromptfooStrategySummary) => (
-                <Space size={0}>
-                  <Button type="link" size="small" onClick={() => openPublish(row)}>
-                    重新发布
-                  </Button>
-                  <Popconfirm
-                    title="下架这个包？"
-                    description="下架后企业侧立即不可见、评测无法再选用；已跑过的报告不受影响。由管理员可重新启用。"
-                    okText="下架"
-                    cancelText="取消"
-                    onConfirm={() => void archive(row)}
-                    disabled={row.status === 'archived'}
-                  >
-                    <Button type="link" size="small" danger disabled={row.status === 'archived'}>
-                      下架
-                    </Button>
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
+      <EngineCatalogBrowser
+        groups={groups}
+        kindNoun="策略"
+        loading={loading}
+        degraded={degraded}
+        packageActions={(row: CatalogRow) => {
+          if (!row.package?.isOwn) {
+            return null
+          }
+          const full = items.find((item) => item.id === row.package?.id)
+          if (!full) {
+            return null
+          }
+          return (
+            <Space size={0}>
+              <Button type="link" size="small" onClick={() => openPublish(full)}>
+                重新发布
+              </Button>
+              <Popconfirm
+                title="下架这个包？"
+                description="下架后企业侧立即不可见、评测无法再选用；已跑过的报告不受影响。由管理员可重新启用。"
+                okText="下架"
+                cancelText="取消"
+                onConfirm={() => void archive(full)}
+                disabled={full.status === 'archived'}
+              >
+                <Button type="link" size="small" danger disabled={full.status === 'archived'}>
+                  下架
+                </Button>
+              </Popconfirm>
+            </Space>
+          )
+        }}
+      />
 
       <Modal
         title={republishOf ? '重新发布自定义评测策略（YAML）' : '发布自定义评测策略（YAML）'}

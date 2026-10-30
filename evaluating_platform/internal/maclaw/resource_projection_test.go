@@ -52,7 +52,7 @@ func TestResourceProjectionListsPublishedExpertResourcesForEnterpriseCatalog(t *
 		t.Fatalf("RecordExpertResource draft: %v", err)
 	}
 
-	items, err := service.ListEnterpriseCatalog(ctx, []EvaluationResourceSummary{{ID: "own", Handle: "own_handle", Name: "Own resource"}}, EvaluationResourceQuery{})
+	items, err := service.ListEnterpriseCatalog(ctx, []EvaluationResourceSummary{{ID: "own", Handle: "own_handle", Name: "Own resource"}}, EvaluationResourceQuery{}, CatalogCaller{})
 	if err != nil {
 		t.Fatalf("ListEnterpriseCatalog: %v", err)
 	}
@@ -65,6 +65,87 @@ func TestResourceProjectionListsPublishedExpertResourcesForEnterpriseCatalog(t *
 	}
 	if expertItem.Metadata["requires_shadow_copy"] != "true" || expertItem.Metadata["source_expert_user_id"] != expertID.String() {
 		t.Fatalf("expert metadata = %#v", expertItem.Metadata)
+	}
+	// The zero-value caller is the enterprise path: no ownership tagging at
+	// all. If this ever grows an is_own key the browser would start seeing a
+	// field nobody asked for on the account that must not have one.
+	for _, item := range items {
+		if _, tagged := item.Metadata["is_own"]; tagged {
+			t.Fatalf("enterprise catalog item %q carries is_own: %#v", item.ID, item.Metadata)
+		}
+	}
+}
+
+func TestResourceProjectionExpertCatalogMarksOwnAndHidesOwner(t *testing.T) {
+	ctx := context.Background()
+	expertA := uuid.New()
+	expertB := uuid.New()
+	store := newFakePublicationStore()
+	service := NewResourceProjectionService(&fakeProjectionProvider{}, store, newFakeShadowStore())
+
+	seed := func(expert uuid.UUID, resourceID, handle string, metadata map[string]string) {
+		if err := store.UpsertPublication(ctx, &model.MaclawResourcePublication{
+			SourceExpertUserID:   expert,
+			SourceResourceID:     resourceID,
+			SourceResourceHandle: handle,
+			SourceVersion:        "v1",
+			Name:                 "package " + resourceID,
+			Kind:                 string(EvaluationResourceKindPromptfooStrategy),
+			Status:               string(EvaluationResourceStatusPublished),
+			Enabled:              true,
+			Metadata:             metadata,
+		}); err != nil {
+			t.Fatalf("seed publication %s: %v", resourceID, err)
+		}
+	}
+	seed(expertA, "res_a", "handle_a", map[string]string{"pf_strategy_form": "js"})
+	seed(expertA, "res_a_not_in_own", "handle_a2", map[string]string{"pf_strategy_form": "js"})
+	seed(expertB, "res_b", "handle_b", map[string]string{})
+
+	own := []EvaluationResourceSummary{{
+		ID:      "res_a",
+		Handle:  "handle_a",
+		Name:    "package res_a",
+		Kind:    EvaluationResourceKindPromptfooStrategy,
+		Version: "v1",
+		Status:  EvaluationResourceStatusDraft,
+		Enabled: false,
+	}}
+	items, err := service.ListEnterpriseCatalog(ctx, own, EvaluationResourceQuery{Kind: EvaluationResourceKindPromptfooStrategy}, CatalogCaller{UserID: expertA.String(), HideOwnerMetadata: true})
+	if err != nil {
+		t.Fatalf("ListEnterpriseCatalog expert: %v", err)
+	}
+	byID := make(map[string]EvaluationResourceSummary, len(items))
+	for _, item := range items {
+		if _, duplicate := byID[item.ID]; duplicate {
+			t.Fatalf("duplicate item id %q — own row and its publication row must merge into one", item.ID)
+		}
+		byID[item.ID] = item
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want own res_a + two foreign rows (res_a's publication deduped): %#v", len(items), items)
+	}
+	ownRow := byID["res_a"]
+	if ownRow.Status != EvaluationResourceStatusDraft || ownRow.Enabled {
+		t.Fatalf("res_a must be the caller's own richer row, not the publication copy: %#v", ownRow)
+	}
+	if ownRow.Metadata["is_own"] != "true" {
+		t.Fatalf("own row metadata = %#v, want is_own=true", ownRow.Metadata)
+	}
+	// A published row of the caller that has no own counterpart is still own.
+	if byID["res_a_not_in_own"].Metadata["is_own"] != "true" {
+		t.Fatalf("caller publication must be tagged is_own: %#v", byID["res_a_not_in_own"].Metadata)
+	}
+	foreign := byID["res_b"]
+	if _, leaked := foreign.Metadata["source_expert_user_id"]; leaked {
+		t.Fatalf("expert catalog must not expose who published a package: %#v", foreign.Metadata)
+	}
+	if _, tagged := foreign.Metadata["is_own"]; tagged {
+		t.Fatalf("foreign item must not be tagged is_own: %#v", foreign.Metadata)
+	}
+	// The caller's own published row keeps its package form visible (标签依据).
+	if byID["res_a_not_in_own"].Metadata["pf_strategy_form"] != "js" {
+		t.Fatalf("publication metadata must pass through unchanged: %#v", byID["res_a_not_in_own"].Metadata)
 	}
 }
 

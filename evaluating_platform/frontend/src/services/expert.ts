@@ -154,12 +154,12 @@ export const expertService = {
   publishPromptfooPlugin: (data: PromptfooPluginPublishInput) =>
     api.post<PromptfooPluginSummary>('/maclaw/evaluation/resources', data).then((r) => r.data),
 
-  listPromptfooPlugins: (params?: { include_inactive?: boolean; limit?: number }) =>
+  listPromptfooPlugins: (params?: { include_inactive?: boolean; limit?: number; include_published_catalog?: boolean }) =>
     api
       .get<{ items: PromptfooPluginSummary[] }>('/maclaw/evaluation/resources', {
         params: { kind: 'pf_plugin', ...params },
       })
-      .then((r) => r.data),
+      .then((r) => ({ items: (r.data.items ?? []).map(withEnginePackageFields) })),
 
   // ── 专家自定义策略（与插件同一条发布链路，kind=pf_strategy）──────────────
   // 执行侧一直支持策略包（pf_strategy: 解析、拒收提示），缺的只是发布入口；
@@ -180,12 +180,12 @@ export const expertService = {
       )
       .then((r) => r.data),
 
-  listPromptfooStrategies: (params?: { include_inactive?: boolean; limit?: number }) =>
+  listPromptfooStrategies: (params?: { include_inactive?: boolean; limit?: number; include_published_catalog?: boolean }) =>
     api
       .get<{ items: PromptfooStrategySummary[] }>('/maclaw/evaluation/resources', {
         params: { kind: 'pf_strategy', ...params },
       })
-      .then((r) => r.data),
+      .then((r) => ({ items: (r.data.items ?? []).map(withEnginePackageFields) })),
 }
 
 /** U10 · 一条已发布的自定义插件（只含安全摘要，不含插件正文）。 */
@@ -203,6 +203,10 @@ export interface PromptfooPluginSummary {
   metadata?: Record<string, string>
   created_at?: string
   updated_at?: string
+  /** 派生自 metadata.is_own：仅专家目录（include_published_catalog）返回时出现。 */
+  isOwn?: boolean
+  /** 派生自 metadata.pf_strategy_form / pf_plugin_form（'yaml' | 'js'）。 */
+  form?: string
 }
 
 /**
@@ -249,6 +253,27 @@ export interface PromptfooStrategySummary {
   metadata?: Record<string, string>
   created_at?: string
   updated_at?: string
+  /** 派生自 metadata.is_own：仅专家目录（include_published_catalog）返回时出现。 */
+  isOwn?: boolean
+  /** 派生自 metadata.pf_strategy_form / pf_plugin_form（'yaml' | 'js'）。 */
+  form?: string
+}
+
+/**
+ * 把 metadata 里两个我们关心的键提升到顶层派生字段。
+ *
+ * 后端 DTO 从不下发顶层 `form` / `is_own`（值住在 metadata），此前页面各处
+ * 直接猜键名；集中在这里，键名单侧改动只需要跟着后端改一行。
+ */
+function withEnginePackageFields<T extends { metadata?: Record<string, string> }>(
+  item: T,
+): T & { isOwn?: boolean; form?: string } {
+  const metadata = item.metadata ?? {}
+  return {
+    ...item,
+    isOwn: metadata.is_own === 'true',
+    form: metadata.pf_strategy_form ?? metadata.pf_plugin_form,
+  }
 }
 
 /**

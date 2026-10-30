@@ -143,6 +143,7 @@ Skill 分发是 Hub-first：
 
 - 专家门户可配置 remote HTTP MCP server。
 - 专家门户「评测插件」「评测策略」两页走同一条发布链路（`POST /maclaw/evaluation/resources`，`kind=pf_plugin` / `pf_strategy`），发布后企业评测即可选用：向导的插件/策略下拉会出现「专家发布」分组，ref 形如 `pf_plugin:<handle>` / `pf_strategy:<handle>`，对话计划卡里的同名 ref 也会被确认路径接受（2026-10-23）。
+- 这两个页面的主体同时是**平台能力目录**（P23，2026-10-30）：内置插件按 promptfoo 原生类别分组、内置策略平组、全体专家已发布的包并入「专家发布包」组；本账号发布的行标注「本账号发布」并保留重新发布/下架，他人包只读且**不显示发布者**。合并仅对 `pf_*` kind 生效（服务端白名单），只含安全元数据——这是「专家只能看到自己 tenant 资源」的唯一只读例外，边界与守卫见 `evaluating_platform/docs/architecture/custom-plugin-publication.md` §6.9。
 - v1 不允许专家配置本地 command MCP。
 - 企业侧只能通过平台目录看到安全摘要，不能直接读取专家 MCP secret。
 

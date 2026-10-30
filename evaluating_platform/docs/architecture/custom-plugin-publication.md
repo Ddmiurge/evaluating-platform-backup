@@ -191,3 +191,27 @@ cd evaluating_platform
 
 代码形态必须有显式 `pf_strategy_variant`：promptfoo 记录的是**文件路径**，平台只能靠这个标识区分两个代码策略。
 执行前置条件（每租户引擎 / 租户级 key / 实例 token）与完整边界见 `strategy-code-packages.md`。
+
+### 6.9 专家能力目录浏览（P23，2026-10-30）
+
+专家在两个发布页里能看到「当前所有的插件和策略」：promptfoo 内置目录（116 插件按原生
+category 分组 / 30 策略平组）+ 全体专家**已发布**的包。形态是页面主体即分组目录，
+本账号发布的行特殊标注「本账号发布」并保留重新发布/下架操作，其余行只读。
+
+三条必须记住的边界：
+
+| 边界 | 落点 |
+|---|---|
+| 合并只对 `pf_plugin`/`pf_strategy` 两个 kind 生效 | `maclaw_evaluation.go` `ListResources` 服务端硬编码白名单——专家传 `kind=sample&include_published_catalog=1` 也拿不到别人的样本（有测试钉死） |
+| 发布者身份不可见 | 专家目录消费方走 `CatalogCaller{HideOwnerMetadata: true}`，`source_expert_user_id` 被删除；企业侧行为逐字节不变 |
+| 归属判定在服务端 | 去重按 `SourceResourceID == own.ID`（自己的已发布包只出现一次，且是自己的全状态行）；`metadata.is_own` 由 `ListEnterpriseCatalog` 打标，前端不猜 id |
+
+内置目录没有新后端：前端 import 的是 `engineEval.ts` 的同源镜像（一致性由
+`TestFrontendOptionsConsistency` 钉死）。顺带修复一个活缺陷：`listPublishedPackages`
+此前把响应直接 cast，而后端从不下发顶层 `form`（值在 `metadata.pf_strategy_form`），
+企业向导的「· 代码策略」标签从未真实出现过；现在由 service 显式映射，
+镜像守卫 `TestFrontendExpertCatalogKeepsTheCatalogContractLiterals` 防止键名单侧改名。
+
+守卫：`TestResourceProjectionExpertCatalogMarksOwnAndHidesOwner`（service 去重/标注/隐去
+owner）、`TestMaclawEvaluationHandlerExpertPublishedCatalog*` 四用例（合并、样本不泄漏、
+不传参回归、企业不变）。

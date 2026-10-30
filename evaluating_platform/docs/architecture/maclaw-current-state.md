@@ -1045,3 +1045,16 @@ GET /api/v1/maclaw/engine/runs/:id/report
 守卫：`TestGetReportByRunIDJoinsOnTheEngineRunID`（源码级，因为单测没有 Postgres）、
 `TestWizardCreateRunCompilesItsReport`（走 HTTP 入口）、
 `TestUpdateProgressCannotWriteATerminalStatus`；反证均已跑红。
+
+## 专家能力目录浏览（P23，2026-10-30）
+
+「专家只能看到自己 tenant 内的资源」新增一条**只读**例外：专家门户的「评测插件」「评测策略」
+页面主体改为平台能力目录——内置目录（同源镜像，无新后端）+ 全体专家已发布的引擎包
+（`GET /maclaw/evaluation/resources?kind=pf_*&include_published_catalog=1`）。
+
+- 合并只允许 `pf_plugin`/`pf_strategy` 两个 kind，白名单在 handler 服务端硬编码；样本、
+  模板、组合攻击对专家**永不**跨租户合并（`TestMaclawEvaluationHandlerExpertCatalogParamNeverLeaksForeignSamples`）。
+- 本账号行由服务端标 `metadata.is_own`，并保留重新发布/下架；他人的已发布包对专家只读，
+  且 `source_expert_user_id` 被删除——**发布者是谁不可见**（产品决定，2026-10-30）。
+- 企业/admin 路径行为逐字节不变（`CatalogCaller{}` 零值：不标注、不隐藏、不去重语义变化）。
+- 目录行只含安全元数据：publication 表本就不存 payload，读路径不解密。

@@ -1,16 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
-  Card,
-  Empty,
   Form,
   Input,
   Modal,
   Popconfirm,
   Space,
-  Table,
-  Tag,
   Typography,
   message,
 } from 'antd'
@@ -21,6 +17,8 @@ import {
   type PromptfooPluginSummary,
 } from '../../services/expert'
 import { promptfooPluginRejectionHint } from './promptfooPluginRejectionHints'
+import { buildPluginCatalogGroups, type CatalogRow } from './engineCatalogGroups'
+import { EngineCatalogBrowser } from './EngineCatalogBrowser'
 import { formatDate } from '../../utils/format'
 
 const { Paragraph, Text, Title } = Typography
@@ -63,6 +61,7 @@ grader: |-
 export function PromptfooPluginPublisher() {
   const [items, setItems] = useState<PromptfooPluginSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [degraded, setDegraded] = useState(false)
   const [open, setOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [rejection, setRejection] = useState<{ code: string; message: string } | null>(null)
@@ -87,10 +86,24 @@ export function PromptfooPluginPublisher() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await expertService.listPromptfooPlugins({ include_inactive: true, limit: 200 })
+      // P23 专家目录：同一路由 + include_published_catalog，由服务端合并全体专家
+      // 已发布的包（仅 pf_* kind 允许；去重与 is_own 都在后端判定，前端不猜）。
+      const data = await expertService.listPromptfooPlugins({
+        include_inactive: true,
+        limit: 300,
+        include_published_catalog: true,
+      })
       setItems(data.items ?? [])
-    } catch (error) {
-      message.error((error as Error).message || '加载插件失败')
+      setDegraded(false)
+    } catch {
+      // 目录请求失败降级为仅自有列表：发布动线不能被目录浏览阻断（同向导吞错口径）。
+      try {
+        const own = await expertService.listPromptfooPlugins({ include_inactive: true, limit: 300 })
+        setItems(own.items ?? [])
+        setDegraded(true)
+      } catch (error) {
+        message.error((error as Error).message || '加载插件失败')
+      }
     } finally {
       setLoading(false)
     }
@@ -99,6 +112,27 @@ export function PromptfooPluginPublisher() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const groups = useMemo(
+    () =>
+      buildPluginCatalogGroups(
+        items.map((row) => ({
+          id: row.id,
+          handle: row.handle,
+          name: row.name,
+          version: row.version,
+          status: row.status,
+          enabled: row.enabled,
+          form: row.form,
+          // 降级态下目录没合并，列表里**全是**自有行，但后端不会给它们标
+          // is_own——按降级语义补标，否则重新发布/下架会整排消失。
+          isOwn: row.isOwn === true || degraded,
+          declaredId: row.metadata?.pf_plugin_id,
+          updatedAt: row.updated_at ? formatDate(row.updated_at) : undefined,
+        })),
+      ),
+    [items, degraded],
+  )
 
   const publish = async () => {
     setRejection(null)
@@ -173,6 +207,7 @@ export function PromptfooPluginPublisher() {
           </Title>
           <Text style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
             以 YAML 定义攻击生成模板（generator）与判定标准（grader）。发布后立即可用于评测，管理员可随时停用或下架。
+            下方目录同时展示平台内置插件与全体专家已发布的包；「本账号发布」的包可直接重新发布或下架。
           </Text>
         </div>
         <Space>
@@ -193,73 +228,40 @@ export function PromptfooPluginPublisher() {
         description="JS / 脚本形态会在评测引擎进程内执行任意代码（引擎持有已物化的生成模型密钥），因此一律拒绝，包括内部提交。这不是界面限制，后端在存储出口独立校验。"
       />
 
-      {items.length === 0 ? (
-        <Card loading={loading}>
-          <Empty description="还没有发布过自定义插件。发布后它会出现在评测的插件选择里。" />
-        </Card>
-      ) : (
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={items}
-          pagination={{ pageSize: 10 }}
-          columns={[
-            {
-              title: '插件',
-              dataIndex: 'name',
-              render: (value: string, row) => (
-                <Space orientation="vertical" size={0}>
-                  <Text>{value}</Text>
-                  <Text type="secondary">{row.metadata?.pf_plugin_id ?? '未声明 id'}</Text>
-                </Space>
-              ),
-            },
-            { title: '版本', dataIndex: 'version', width: 100 },
-            {
-              title: '状态',
-              dataIndex: 'status',
-              width: 120,
-              render: (value: string, row) => (
-                <Space size={4}>
-                  <Tag color={value === 'published' ? 'green' : value === 'archived' ? 'default' : 'blue'}>
-                    {value}
-                  </Tag>
-                  {!row.enabled && <Tag color="red">已停用</Tag>}
-                </Space>
-              ),
-            },
-            {
-              title: '更新时间',
-              dataIndex: 'updated_at',
-              width: 160,
-              render: (value?: string) => (value ? formatDate(value) : '-'),
-            },
-            {
-              title: '操作',
-              width: 150,
-              render: (_: unknown, row: PromptfooPluginSummary) => (
-                <Space size={0}>
-                  <Button type="link" size="small" onClick={() => openPublish(row)}>
-                    重新发布
-                  </Button>
-                  <Popconfirm
-                    title="下架这个包？"
-                    description="下架后企业侧立即不可见、评测无法再选用；已跑过的报告不受影响。由管理员可重新启用。"
-                    okText="下架"
-                    cancelText="取消"
-                    onConfirm={() => void archive(row)}
-                    disabled={row.status === 'archived'}
-                  >
-                    <Button type="link" size="small" danger disabled={row.status === 'archived'}>
-                      下架
-                    </Button>
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
+      <EngineCatalogBrowser
+        groups={groups}
+        kindNoun="插件"
+        loading={loading}
+        degraded={degraded}
+        packageActions={(row: CatalogRow) => {
+          if (!row.package?.isOwn) {
+            return null
+          }
+          const full = items.find((item) => item.id === row.package?.id)
+          if (!full) {
+            return null
+          }
+          return (
+            <Space size={0}>
+              <Button type="link" size="small" onClick={() => openPublish(full)}>
+                重新发布
+              </Button>
+              <Popconfirm
+                title="下架这个包？"
+                description="下架后企业侧立即不可见、评测无法再选用；已跑过的报告不受影响。由管理员可重新启用。"
+                okText="下架"
+                cancelText="取消"
+                onConfirm={() => void archive(full)}
+                disabled={full.status === 'archived'}
+              >
+                <Button type="link" size="small" danger disabled={full.status === 'archived'}>
+                  下架
+                </Button>
+              </Popconfirm>
+            </Space>
+          )
+        }}
+      />
 
       <Modal
         title={republishOf ? '重新发布自定义评测插件（YAML）' : '发布自定义评测插件（YAML）'}

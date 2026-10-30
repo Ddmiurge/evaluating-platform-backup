@@ -83,7 +83,18 @@ func (s *ResourceProjectionService) RecordExpertResource(ctx context.Context, id
 	})
 }
 
-func (s *ResourceProjectionService) ListEnterpriseCatalog(ctx context.Context, own []EvaluationResourceSummary, q EvaluationResourceQuery) ([]EvaluationResourceSummary, error) {
+// CatalogCaller says who the catalog is being rendered for. The zero value
+// keeps the enterprise behavior byte-for-byte: no ownership tags, owner
+// identity present. An expert may browse the published engine-package
+// catalog (read-only safe metadata, the one exception to "experts see only
+// their own tenant"), and that view must mark the caller's own rows
+// (UserID) and must not reveal who published anyone else's (HideOwnerMetadata).
+type CatalogCaller struct {
+	UserID            string
+	HideOwnerMetadata bool
+}
+
+func (s *ResourceProjectionService) ListEnterpriseCatalog(ctx context.Context, own []EvaluationResourceSummary, q EvaluationResourceQuery, caller CatalogCaller) ([]EvaluationResourceSummary, error) {
 	if s == nil || s.publications == nil {
 		return own, nil
 	}
@@ -91,11 +102,43 @@ func (s *ResourceProjectionService) ListEnterpriseCatalog(ctx context.Context, o
 	if err != nil {
 		return nil, fmt.Errorf("list maclaw resource publications: %w", err)
 	}
+	callerUserID := strings.TrimSpace(caller.UserID)
+	ownIDs := make(map[string]struct{}, len(own))
 	out := append([]EvaluationResourceSummary{}, own...)
+	for i := range out {
+		ownIDs[out[i].ID] = struct{}{}
+		out[i] = markOwnCatalogItem(out[i], callerUserID)
+	}
 	for _, pub := range publications {
-		out = append(out, s.publicationSummary(pub))
+		// The caller's own row already carries this package with its FULL
+		// status (draft / archived / disabled included); the publication row
+		// would be a stale duplicate of the same fact.
+		if _, duplicate := ownIDs[pub.SourceResourceID]; duplicate {
+			continue
+		}
+		item := s.publicationSummary(pub)
+		if caller.HideOwnerMetadata {
+			delete(item.Metadata, "source_expert_user_id")
+		}
+		if callerUserID != "" && strings.EqualFold(pub.SourceExpertUserID.String(), callerUserID) {
+			item = markOwnCatalogItem(item, callerUserID)
+		}
+		out = append(out, item)
 	}
 	return out, nil
+}
+
+// markOwnCatalogItem copies the metadata before tagging: the items in `own`
+// belong to the caller's gateway response, and mutating their maps in place
+// would leak this view's rendering decision into the store layer's data.
+func markOwnCatalogItem(summary EvaluationResourceSummary, callerUserID string) EvaluationResourceSummary {
+	if callerUserID == "" {
+		return summary
+	}
+	metadata := cloneMetadata(summary.Metadata)
+	metadata["is_own"] = metadataTrue
+	summary.Metadata = metadata
+	return summary
 }
 
 func (s *ResourceProjectionService) SyncEnterprisePublishedResources(ctx context.Context, identity RuntimeIdentity, enterpriseSession *GatewaySession) error {

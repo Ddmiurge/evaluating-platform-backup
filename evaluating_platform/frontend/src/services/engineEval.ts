@@ -134,10 +134,26 @@ export const engineEvalService = {
    * the handle alone is not a capability reference.
    */
   async listPublishedPackages(kind: 'pf_plugin' | 'pf_strategy'): Promise<PublishedEnginePackage[]> {
-    const res = await api.get<{ items: PublishedEnginePackage[] }>('/maclaw/evaluation/resources', {
+    const res = await api.get<{ items: PublishedEnginePackageResponse[] }>('/maclaw/evaluation/resources', {
       params: { kind, limit: 200 },
     })
-    return (res.data.items ?? []).filter((item) => item.enabled && item.status === 'published')
+    // 后端 DTO 从不下发顶层 `form`（2026-10-30 修复：此前的直接 cast 让
+    // EngineEvalPage 的「· 代码策略」标签从未真实出现过）；形态与归属都住在
+    // metadata 里，这里显式映射，页面不再各自猜键名。
+    return (res.data.items ?? [])
+      .filter((item) => item.enabled && item.status === 'published')
+      .map((item) => ({
+        id: item.id,
+        handle: item.handle,
+        name: item.name,
+        kind: item.kind,
+        version: item.version,
+        form: item.metadata?.pf_strategy_form ?? item.metadata?.pf_plugin_form,
+        summary: item.summary,
+        enabled: item.enabled,
+        status: item.status,
+        isOwn: item.metadata?.is_own === 'true',
+      }))
   },
 }
 
@@ -153,6 +169,21 @@ export interface PublishedEnginePackage {
   summary?: string
   enabled: boolean
   status: string
+  /** 专家目录（include_published_catalog）下标记「本账号发布」；企业侧恒 false。 */
+  isOwn: boolean
+}
+
+/** Raw wire shape of one resource row (only the fields this mapping reads). */
+interface PublishedEnginePackageResponse {
+  id: string
+  handle: string
+  name: string
+  kind: string
+  version?: string
+  summary?: string
+  enabled: boolean
+  status: string
+  metadata?: Record<string, string>
 }
 
 /** 内置引擎插件目录（由后端 promptfoo_plugin_catalog.go 生成的同源清单，勿手改 id）。 */

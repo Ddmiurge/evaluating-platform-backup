@@ -70,13 +70,19 @@ func (h *MaclawEvaluationHandler) ListResources(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
 		return
 	}
-	items, err := gateway.SearchEvaluationResources(c.Request.Context(), maclaw.EvaluationResourceQuery{
+	includePublishedCatalog, err := parseOptionalBool(c.Query("include_published_catalog"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "include_published_catalog must be a boolean"})
+		return
+	}
+	query := maclaw.EvaluationResourceQuery{
 		Kind:            maclaw.EvaluationResourceKind(strings.TrimSpace(c.Query("kind"))),
 		AssessmentTypes: parseAssessmentTypes(c),
 		Query:           firstNonEmpty(c.Query("query"), c.Query("q")),
 		IncludeInactive: includeInactive,
 		Limit:           limit,
-	})
+	}
+	items, err := gateway.SearchEvaluationResources(c.Request.Context(), query)
 	if err != nil && !maclaw.IsPartialCorruption(err) {
 		writeMaclawError(c, err)
 		return
@@ -88,14 +94,22 @@ func (h *MaclawEvaluationHandler) ListResources(c *gin.Context) {
 			"err": err.Error(),
 		})
 	}
-	if h.resourceProjection != nil && isEnterpriseLikeRole(c.GetString("user_role")) {
-		items, err = h.resourceProjection.ListEnterpriseCatalog(c.Request.Context(), items, maclaw.EvaluationResourceQuery{
-			Kind:            maclaw.EvaluationResourceKind(strings.TrimSpace(c.Query("kind"))),
-			AssessmentTypes: parseAssessmentTypes(c),
-			Query:           firstNonEmpty(c.Query("query"), c.Query("q")),
-			IncludeInactive: includeInactive,
-			Limit:           limit,
-		})
+	// The expert engine-package catalog (2026-10-30) is the one read-only
+	// exception to "experts see only their own tenant's resources": an expert
+	// that asks for the published catalog additionally gets cross-expert
+	// PUBLICATIONS — safe metadata only, never payloads. The kind whitelist
+	// is enforced HERE, not from the frontend: samples, templates and composed
+	// attacks must never be merged for an expert caller, whatever the query
+	// params claim.
+	role := c.GetString("user_role")
+	engineCatalogKind := query.Kind == maclaw.EvaluationResourceKindPromptfooPlugin || query.Kind == maclaw.EvaluationResourceKindPromptfooStrategy
+	expertCatalog := role == "expert" && includePublishedCatalog && engineCatalogKind
+	if h.resourceProjection != nil && (isEnterpriseLikeRole(role) || expertCatalog) {
+		caller := maclaw.CatalogCaller{}
+		if role == "expert" {
+			caller = maclaw.CatalogCaller{UserID: strings.TrimSpace(c.GetString("user_id")), HideOwnerMetadata: true}
+		}
+		items, err = h.resourceProjection.ListEnterpriseCatalog(c.Request.Context(), items, query, caller)
 		if err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "maclaw resource catalog unavailable", "code": "maclaw_resource_projection_failed"})
 			return
