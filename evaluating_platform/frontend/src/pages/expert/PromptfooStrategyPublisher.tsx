@@ -9,9 +9,10 @@ import {
   Segmented,
   Space,
   Typography,
+  Upload,
   message,
 } from 'antd'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   expertService,
   type PromptfooStrategyPublishInput,
@@ -20,6 +21,14 @@ import {
 import { promptfooStrategyRejectionHint } from './promptfooStrategyRejectionHints'
 import { buildStrategyCatalogGroups, type CatalogRow } from './engineCatalogGroups'
 import { EngineCatalogBrowser } from './EngineCatalogBrowser'
+import {
+  acceptForForm,
+  byteLength,
+  slugifyVariant,
+  stripBom,
+  validatePackageFile,
+  variantSuggestionFromFilename,
+} from './promptfooPackageUpload'
 import { formatDate } from '../../utils/format'
 
 const { Paragraph, Text, Title } = Typography
@@ -47,14 +56,11 @@ function rejectionOf(error: unknown): { code: string; message: string } | null {
   return { code: data.code, message: data.error ?? '' }
 }
 
-/** A conservative variant from a display name (code packages need one). */
+/** A conservative variant from a display name (code packages need one).
+ *  Same rule as the upload filename suggestion (promptfooPackageUpload.ts) —
+ *  两条推导必须一致，否则「名字推的」和「文件名带的」会是两个 variant。 */
 function slugFromName(name: string): string {
-  const ascii = String(name ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48)
-  return ascii || 'code-strategy'
+  return slugifyVariant(name) || 'code-strategy'
 }
 
 const CODE_TEMPLATE = `// 策略代码包（ESM）。必须导出 { id, action }。
@@ -95,17 +101,41 @@ export function PromptfooStrategyPublisher() {
   // module (materialized and imported by promptfoo). The template follows the
   // form, because the two packages have different required fields.
   const [formKind, setFormKind] = useState<'yaml' | 'js'>('yaml')
+  // 上传文件的回显状态（P24，设计稿 §1.2「文件上传 + 纯文本回显」）。正文本身进
+  // payload 字段；这里只记「这一份是从文件载入的」，让专家知道框里不是模板残文。
+  const [loadedFile, setLoadedFile] = useState<string | null>(null)
   const [form] = Form.useForm()
 
   const openPublish = (row?: PromptfooStrategySummary) => {
     setRejection(null)
     setRepublishOf(row ?? null)
+    setLoadedFile(null)
     form.resetFields()
     form.setFieldsValue({ payload: TEMPLATE })
     if (row) {
       form.setFieldsValue({ name: row.name, summary: row.summary, version: row.version })
     }
     setOpen(true)
+  }
+
+  // 客户端预检（扩展名/空文/二进制/UTF-8 字节上限）与后端同源，但**不是**边界：
+  // BFF 存储出口与引擎实测校验照旧独立执行；这里只把注定被拒的文件挡在填表期。
+  const handlePackageFile = async (file: File) => {
+    const text = stripBom(await file.text())
+    const check = validatePackageFile(file.name, text, formKind)
+    if (!check.ok) {
+      setLoadedFile(null)
+      message.error(check.error ?? '无法读取该文件')
+      return
+    }
+    form.setFieldValue('payload', text)
+    if (formKind === 'js' && !String(form.getFieldValue('variant') ?? '').trim()) {
+      const suggestion = variantSuggestionFromFilename(file.name)
+      if (suggestion) {
+        form.setFieldValue('variant', suggestion)
+      }
+    }
+    setLoadedFile('已载入 ' + file.name + '（' + Math.ceil(byteLength(text) / 1024) + ' KB），可直接编辑后发布')
   }
 
   const load = useCallback(async () => {
@@ -300,6 +330,7 @@ export function PromptfooStrategyPublisher() {
           setOpen(false)
           setRejection(null)
           setRepublishOf(null)
+          setLoadedFile(null)
           form.resetFields()
         }}
         onOk={() => void publish()}
@@ -332,6 +363,7 @@ export function PromptfooStrategyPublisher() {
           onChange={(value) => {
             const next = value as 'yaml' | 'js'
             setFormKind(next)
+            setLoadedFile(null)
             form.setFieldValue('payload', next === 'js' ? CODE_TEMPLATE : TEMPLATE)
           }}
           options={[
@@ -375,6 +407,21 @@ export function PromptfooStrategyPublisher() {
           >
             <Input placeholder="如：prompt-extraction, contracts" />
           </Form.Item>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Upload
+              accept={acceptForForm(formKind)}
+              showUploadList={false}
+              beforeUpload={(file) => {
+                void handlePackageFile(file)
+                return false
+              }}
+            >
+              <Button icon={<UploadOutlined />}>从文件上传</Button>
+            </Upload>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {loadedFile ?? (formKind === 'js' ? '支持 .js / .mjs，UTF-8，≤ 256 KB' : '支持 .yaml / .yml，UTF-8，≤ 128 KB')}
+            </Text>
+          </div>
           <Form.Item
             name="payload"
             label={formKind === 'js' ? '策略包（JS 模块）' : '策略包（YAML）'}

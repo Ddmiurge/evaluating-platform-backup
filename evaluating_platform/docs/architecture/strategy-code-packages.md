@@ -348,6 +348,7 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 | 引擎 | 物化到 `custom-strategies/<variant>.js`；只放行本次运行物化的 file:// ref；归约前把路径换回公开 id | `customStrategyCode.ts`、`nativeRedteam.ts` |
 | 引擎 | 调用方自带的 `file://` 一律拒绝（`native_generation_strategy_unsupported`） | `nativeRedteam.ts` |
 | 前端 | 策略发布页增加「文本策略 / 代码策略」切换，模板随形态切换；代码形态要求显式策略标识 | `PromptfooStrategyPublisher.tsx` |
+| 前端 | 策略包**文件上传入口**（P24，§1.2 的「先文件上传 + 纯文本回显」）：选 `.js/.mjs`（≤256KB）或 `.yaml/.yml`（≤128KB），客户端预检（扩展名 / 空文 / 含空字节 / **UTF-8 字节**上限）后回显进正文框；代码形态 variant 留空时按文件名建议；发布链路一字未动，上限与后端常量由 `TestFrontendPackageUploadLimitsMatchBackend` 钉同源 | `promptfooPackageUpload.ts` + 同名测试、`PromptfooStrategyPublisher.tsx` |
 
 ### 15.2 守卫与反证（全部已跑红）
 

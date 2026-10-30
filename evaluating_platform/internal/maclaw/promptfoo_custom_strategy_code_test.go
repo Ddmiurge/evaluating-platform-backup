@@ -3,6 +3,10 @@ package maclaw
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -396,5 +400,32 @@ func TestCodeStrategyEngineRefIsTheResolvedID(t *testing.T) {
 	// the engine needs: without it there is nothing to materialize.
 	if len(resolved.CustomStrategyCode) != 1 || resolved.CustomStrategyCode[0].Handle != "expert_code_ref" {
 		t.Errorf("code channel = %+v, want the package", resolved.CustomStrategyCode)
+	}
+}
+
+// TestFrontendPackageUploadLimitsMatchBackend keeps the upload pre-check caps
+// (docs/architecture/strategy-code-packages.md §3: 256 KB code / 128 KB text)
+// pinned to the backend constants they must mirror. The frontend refusing a
+// different size than the store refuses is how a "guaranteed rejected" file
+// stops being predictable at form time — the exact shape this repo guards
+// everywhere else with source-level mirror tests.
+func TestFrontendPackageUploadLimitsMatchBackend(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	path := filepath.Join(filepath.Dir(thisFile), "..", "..", "frontend", "src", "pages", "expert", "promptfooPackageUpload.ts")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read frontend upload module %s: %v", path, err)
+	}
+	source := string(raw)
+	wants := []struct {
+		label, literal string
+	}{
+		{"code", fmt.Sprintf("js: %d * 1024", CustomStrategyCodeMaxBytes/1024)},
+		{"text", fmt.Sprintf("yaml: %d * 1024", CustomStrategyMaxPayloadBytes/1024)},
+	}
+	for _, want := range wants {
+		if !strings.Contains(source, want.literal) {
+			t.Fatalf("frontend upload limit for %s packages must mirror the backend cap verbatim (%q): change both sides together", want.label, want.literal)
+		}
 	}
 }
