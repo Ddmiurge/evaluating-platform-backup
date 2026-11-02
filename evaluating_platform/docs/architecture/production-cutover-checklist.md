@@ -58,6 +58,8 @@ Frontend must be a deployable image, not a Vite dev container:
 
 ## 必需配置
 
+**换场地部署时（46 号遗留 2）**：`docker-compose.yml` 里 `maclaw-runtime`、`backend`、`promptfoo-engine` 三个服务的 `dns:` 写的是 ai02 场地的内网站点解析器 `10.95.38.38`（Docker 守护进程配的外部 DNS 在该网络不可达）。换新场地必须先改这三处为当地可用解析器，否则引擎解析不到生成模型端点、退回 43 §8.1 的「Generated 0 tests」全断形态。改完在容器内实测 `getent hosts <生成模型域名>` 有解才算数。
+
 Backend：
 
 - `MACLAW_RUNTIME_KIND=maclawsrv`

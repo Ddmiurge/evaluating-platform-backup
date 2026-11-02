@@ -260,3 +260,7 @@ docker compose config --services
 cd C:\Users\wangboyang\Desktop\evaluating_platform
 git diff --check
 ```
+
+### 服务器验收记录规范（2026-11-02）
+
+ai02 回传的验收记录落 `records/`，文件名只用编号形态 `NN.md` 或 `NN-描述-YYYYMMDD.md`（46 号曾以 `records-46.md` 到达，已归一）。上机批次**默认应执行 development-status §5 里该批次的全部步骤**；跳过的步骤（如 46 号未执行「开闸 + 代码包端到端」）必须在记录里写明**原因与后果**，否则判据面看起来完整、实际留有洞——46 号 §6 未列此条即为此例。
