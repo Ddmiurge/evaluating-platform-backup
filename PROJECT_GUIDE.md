@@ -198,6 +198,8 @@ Skill 分发是 Hub-first：
 - `MACLAW_REDTEAM_TARGET_CONCURRENCY`
 - `MACLAW_REDTEAM_JUDGE_MAX_TOKENS`
 - `MACLAW_TIMEOUT_SECONDS>=180`
+- `MACLAW_STRATEGY_CODE_PACKAGES`（策略代码包总闸，默认 0）
+- `MACLAW_TENANT_ENGINES`（P26a 租户引擎路由，默认 0：全部 run 走共享引擎；开启后代码包 run 必须有注册专属实例，设计与边界见 `evaluating_platform/docs/architecture/tenant-isolation-g1-g3.md`）
 - `MACLAW_HTTP_WRITE_TIMEOUT_SECONDS>=600` for confirmed security-evaluation runs, because MaClawSrv may keep the HTTP response open while it invokes tools and compiles the report.
 - `CRYPTO_MASTER_KEY`
 

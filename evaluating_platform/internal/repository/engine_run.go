@@ -32,7 +32,7 @@ const engineRunColumns = `
 	id, platform_user_id, instance_id, session_id, source, job_id, engine, status, judge_mode,
 	purpose, plugins, strategies, target_id, num_tests, planned_count, executed_count,
 	current_stage, duration_ms, stage_durations, token_usage, result,
-	error_code, error_brief, started_at, completed_at, created_at, updated_at
+	error_code, error_brief, started_at, completed_at, created_at, updated_at, engine_base_url
 `
 
 // engineRunBlobs 是 engine_runs 五个 JSONB 列的写入形态。
@@ -131,6 +131,7 @@ func engineRunWriteArgs(record maclaw.EngineRunRecord, blobs engineRunBlobs) []a
 		record.ErrorBrief,
 		record.StartedAt,
 		record.CompletedAt,
+		record.EngineBaseURL,
 	}
 }
 
@@ -140,11 +141,11 @@ const engineRunWriteColumns = `
 	id, platform_user_id, instance_id, session_id, source, job_id, engine, status, judge_mode,
 	purpose, plugins, strategies, target_id, num_tests, planned_count, executed_count,
 	current_stage, duration_ms, stage_durations, token_usage, result,
-	error_code, error_brief, started_at, completed_at
+	error_code, error_brief, started_at, completed_at, engine_base_url
 `
 
 // engineRunWritePlaceholders is the $n list matching engineRunWriteColumns.
-const engineRunWritePlaceholders = `$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25`
+const engineRunWritePlaceholders = `$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26`
 
 func (r *EngineRunRepository) Create(ctx context.Context, record maclaw.EngineRunRecord) (*maclaw.EngineRunRecord, error) {
 	// Fail-closed：编码失败时不发SQL，避免把一行坏JSONB 写进 DB。
@@ -207,6 +208,7 @@ func (r *EngineRunRepository) Update(ctx context.Context, record maclaw.EngineRu
 			error_brief = $23,
 			started_at = $24,
 			completed_at = $25,
+			engine_base_url = COALESCE(NULLIF($26, ''), engine_runs.engine_base_url),
 			updated_at = NOW()
 		WHERE id = $1 AND platform_user_id = $2
 		RETURNING ` + engineRunColumns
@@ -397,6 +399,7 @@ func scanEngineRun(row rowScanner) (*maclaw.EngineRunRecord, error) {
 		&out.CompletedAt,
 		&out.CreatedAt,
 		&out.UpdatedAt,
+		&out.EngineBaseURL,
 	); err != nil {
 		return nil, err
 	}

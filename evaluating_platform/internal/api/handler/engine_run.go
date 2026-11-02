@@ -101,6 +101,7 @@ type engineResultCompiler interface {
 
 type EngineRunHandler struct {
 	engine             engineClient
+	instances          *maclaw.EngineInstanceRegistry
 	runs               *maclaw.EngineRunService
 	targetConfig       engineTargetProvider
 	generationProvider maclaw.EngineGenerationProvider
@@ -152,6 +153,52 @@ func (h *EngineRunHandler) SetEngineCapabilityResolver(resolver engineCapability
 
 func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.EngineRunService, targets engineTargetProvider, generationProvider maclaw.EngineGenerationProvider) *EngineRunHandler {
 	return newEngineRunHandler(engine, runs, targets, generationProvider)
+}
+
+// SetEngineInstances wires the P26a tenant engine registry. Optional: nil or a
+// disabled registry leaves every run on the shared client — pre-P26 behavior,
+// byte-for-byte. This is what lets the routing ship before the instances do.
+func (h *EngineRunHandler) SetEngineInstances(registry *maclaw.EngineInstanceRegistry) {
+	if h != nil {
+		h.instances = registry
+	}
+}
+
+// submitClient picks the engine instance for a NEW run and applies the code
+// strategy gate. refusal is non-nil when a CODE strategy package was selected
+// but the tenant has no dedicated engine; the caller routes it through
+// writeEnginePreflightRejection so both doors refuse in the same shape (the
+// one-dispatcher rule from P2-2). The recorded base URL is empty for shared
+// runs, so every pre-P26 run (and every existing test) is unchanged.
+func (h *EngineRunHandler) submitClient(ctx context.Context, userID uuid.UUID, codeStrategyIDs []string) (engineClient, string, error) {
+	if !h.instances.Enabled() {
+		return h.engine, "", nil
+	}
+	client, dedicated := h.instances.Resolve(ctx, userID)
+	if len(codeStrategyIDs) > 0 && !dedicated {
+		return nil, "", &maclaw.EngineCodeStrategyNoDedicatedError{Strategies: codeStrategyIDs}
+	}
+	if dedicated && client != nil {
+		return client, client.BaseURL(), nil
+	}
+	return h.engine, "", nil
+}
+
+// lifecycleClient routes an EXISTING run's GetRun/Cancel/Stream to the engine
+// instance the run started on (record.EngineBaseURL). ok=false ONLY when a
+// dedicated run's instance has vanished — the caller answers 503 rather than
+// driving the run on the wrong engine (a live run polled against a different
+// instance 404s and reads as "still queued" forever — the ghost-run shape this
+// project already refuses in U5 and record 40).
+func (h *EngineRunHandler) lifecycleClient(ctx context.Context, userID uuid.UUID, record *maclaw.EngineRunRecord) (engineClient, bool) {
+	if !h.instances.Enabled() || record == nil || strings.TrimSpace(record.EngineBaseURL) == "" {
+		return h.engine, true
+	}
+	client, ok := h.instances.ResolveForRun(ctx, userID, record.EngineBaseURL)
+	if !ok || client == nil {
+		return nil, false
+	}
+	return client, true
 }
 
 func newEngineRunHandler(engine engineClient, runs *maclaw.EngineRunService, targets engineTargetProvider, generationProvider maclaw.EngineGenerationProvider) *EngineRunHandler {
@@ -377,6 +424,19 @@ func writeEnginePreflightRejection(c *gin.Context, err error) bool {
 		return true
 	}
 
+	var noDedicated *maclaw.EngineCodeStrategyNoDedicatedError
+	if errors.As(err, &noDedicated) {
+		// P26a: code strategy without a dedicated tenant engine. 409 like every
+		// pre-flight refusal: the request is well-formed and succeeds once the
+		// tenant has an instance (or the user drops the code strategy).
+		c.JSON(http.StatusConflict, gin.H{
+			"error":           noDedicated.Error(),
+			"code":            maclaw.EngineErrCodeStrategyNoDedicatedInstance,
+			"code_strategies": noDedicated.CodeStrategyIDs(),
+		})
+		return true
+	}
+
 	var tooSmall *maclaw.EngineNumTestsTooSmallError
 	if errors.As(err, &tooSmall) {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -555,11 +615,27 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		customStrategyCode = resolved.CustomStrategyCode
 	}
 
+	// P26a code strategy gate, placed at the same seam as package governance:
+	// BEFORE the run record is persisted and before credentials are touched, so
+	// a refused code strategy leaves no half-created run. With the tenant
+	// registry off this resolves to the shared client and an empty recorded
+	// base URL — the pre-P26 path unchanged.
+	codeStrategyIDs := make([]string, 0, len(customStrategyCode))
+	for _, pkg := range customStrategyCode {
+		codeStrategyIDs = append(codeStrategyIDs, pkg.StrategyID)
+	}
+	submitEngine, engineBaseURL, refusal := h.submitClient(c.Request.Context(), userID, codeStrategyIDs)
+	if refusal != nil {
+		writeEnginePreflightRejection(c, refusal)
+		return
+	}
+
 	source := maclaw.EngineRunSourceWizard
 	if strings.TrimSpace(in.SessionID) != "" {
 		source = maclaw.EngineRunSourceChat
 	}
 	record := h.runs.NewRun(userID, strings.TrimSpace(in.InstanceID), strings.TrimSpace(in.SessionID), source, in.Purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordPlugins, recordStrategies)
+	record.EngineBaseURL = engineBaseURL
 	saved, err := h.runs.Save(c.Request.Context(), record)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist engine run"})
@@ -597,7 +673,7 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	// native generation can aim at this system rather than attack generically.
 	maclaw.ResolveEngineNativeGenerationInputs(engineReq, target.Metadata)
 	maclaw.ApplyNativeGenerationOverrides(engineReq, nativeGenerationOverridesFromInput(in))
-	if err := h.engine.CreateRun(c.Request.Context(), engineReq); err != nil {
+	if err := submitEngine.CreateRun(c.Request.Context(), engineReq); err != nil {
 		// Mark the local record failed so the UI does not show a ghost queued run.
 		saved.Status = maclaw.EnginePhaseFailed
 		saved.ErrorCode = engineErrorCode(err)
@@ -640,11 +716,15 @@ func (h *EngineRunHandler) finishWizardRun(userID uuid.UUID, instanceID, runID s
 		}
 		if !maclaw.IsEngineRunTerminal(current.Status) {
 			// Advance the stored row from the engine, exactly as GetRun would on
-			// demand — nothing else writes it on this path.
-			if status, statusErr := h.engine.GetRun(ctx, runID); statusErr == nil && status != nil {
-				h.runs.ApplyStatus(current, status)
-				if updated, saveErr := h.runs.Save(ctx, current); saveErr == nil {
-					current = updated
+			// demand — nothing else writes it on this path. P26a: on the run's OWN
+			// instance; an unresolvable instance skips this tick (the record must
+			// never be advanced from a different engine's answer).
+			if client, ok := h.lifecycleClient(ctx, userID, current); ok {
+				if status, statusErr := client.GetRun(ctx, runID); statusErr == nil && status != nil {
+					h.runs.ApplyStatus(current, status)
+					if updated, saveErr := h.runs.Save(ctx, current); saveErr == nil {
+						current = updated
+					}
 				}
 			}
 			if !maclaw.IsEngineRunTerminal(current.Status) {
@@ -731,7 +811,12 @@ func (h *EngineRunHandler) GetRun(c *gin.Context) {
 		return
 	}
 	if !maclaw.IsEngineRunTerminal(record.Status) {
-		if status, err := h.engine.GetRun(c.Request.Context(), runID); err == nil {
+		client, ok := h.lifecycleClient(c.Request.Context(), userID, record)
+		if !ok {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the engine instance for this run is no longer registered", "code": maclaw.EngineErrCodeInstanceGone})
+			return
+		}
+		if status, err := client.GetRun(c.Request.Context(), runID); err == nil {
 			h.runs.ApplyStatus(record, status)
 			if updated, err := h.runs.Save(c.Request.Context(), record); err == nil {
 				record = updated
@@ -793,7 +878,12 @@ func (h *EngineRunHandler) CancelRun(c *gin.Context) {
 		return
 	}
 	if !maclaw.IsEngineRunTerminal(record.Status) {
-		if err := h.engine.CancelRun(c.Request.Context(), runID); err != nil && err != maclaw.ErrEngineNotFound {
+		client, ok := h.lifecycleClient(c.Request.Context(), userID, record)
+		if !ok {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the engine instance for this run is no longer registered", "code": maclaw.EngineErrCodeInstanceGone})
+			return
+		}
+		if err := client.CancelRun(c.Request.Context(), runID); err != nil && err != maclaw.ErrEngineNotFound {
 			c.JSON(engineHTTPStatus(err), gin.H{"error": "failed to cancel engine run", "code": engineErrorCode(err)})
 			return
 		}
@@ -817,6 +907,14 @@ func (h *EngineRunHandler) StreamRunEvents(c *gin.Context) {
 		return
 	}
 
+	// P26a: resolve the run's engine BEFORE any SSE header is written, so a
+	// vanished dedicated instance can still answer a plain JSON 503.
+	streamClient, ok := h.lifecycleClient(c.Request.Context(), userID, record)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the engine instance for this run is no longer registered", "code": maclaw.EngineErrCodeInstanceGone})
+		return
+	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -828,7 +926,7 @@ func (h *EngineRunHandler) StreamRunEvents(c *gin.Context) {
 
 	// Persist terminal snapshots so polling clients see the final state even
 	// if they never re-connect to this stream.
-	_ = h.engine.StreamRunEvents(c.Request.Context(), runID, func(ev *maclaw.EngineRunStatus) {
+	_ = streamClient.StreamRunEvents(c.Request.Context(), runID, func(ev *maclaw.EngineRunStatus) {
 		writeEngineSSEEvent(c, ev)
 		if flusher != nil {
 			flusher.Flush()

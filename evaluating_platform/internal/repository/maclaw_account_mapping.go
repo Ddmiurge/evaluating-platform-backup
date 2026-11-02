@@ -26,7 +26,8 @@ const maclawAccountMappingColumns = `platform_user_id, platform_role, platform_e
 		       maclaw_tenant_id, maclaw_user_id, maclaw_credential_id, maclaw_instance_id,
 		       encrypted_api_key, encrypted_api_secret, credential_key_id,
 		       encrypted_access_token, access_token_key_id, access_token_expires_at,
-		       provisioning_status, COALESCE(last_error, ''), created_at, updated_at`
+		       provisioning_status, COALESCE(last_error, ''), created_at, updated_at,
+		       COALESCE(engine_base_url, ''), engine_token_ciphertext, COALESCE(engine_token_key_id, '')`
 
 func scanMaclawAccountMapping(row pgx.Row) (*model.MaclawAccountMapping, error) {
 	var out model.MaclawAccountMapping
@@ -49,6 +50,9 @@ func scanMaclawAccountMapping(row pgx.Row) (*model.MaclawAccountMapping, error) 
 		&out.LastError,
 		&out.CreatedAt,
 		&out.UpdatedAt,
+		&out.EngineBaseURL,
+		&out.EngineTokenCiphertext,
+		&out.EngineTokenKeyID,
 	); err != nil {
 		return nil, err
 	}

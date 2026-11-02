@@ -119,6 +119,53 @@ func (b *RedteamToolBridge) SetPromptfooEngine(runner PromptfooEngineRunner, run
 	b.engineGeneration = generation
 }
 
+// SetEngineInstances wires the P26a tenant engine registry into the bridge.
+// Optional: nil or a disabled registry leaves every confirmed run on the shared
+// engineRunner — pre-P26 behavior, which is what lets the routing ship before
+// the instances exist and keeps the gate-open verification (record 47, shared
+// engine, empty registry) on the unchanged path.
+func (b *RedteamToolBridge) SetEngineInstances(registry *EngineInstanceRegistry) {
+	if b != nil {
+		b.engineInstances = registry
+	}
+}
+
+// submitRunnerFor resolves the engine instance for a NEW confirmed run and
+// applies the code strategy gate. It mirrors EngineRunHandler.submitClient so
+// the wizard and the chat confirm path refuse in the identical shape (the
+// one-dispatcher rule). refusal is non-nil when a CODE strategy package was
+// selected but the tenant has no dedicated engine; the confirm handler routes
+// it through writeEnginePreflightRejection.
+func (b *RedteamToolBridge) submitRunnerFor(ctx context.Context, userID uuid.UUID, codeStrategyIDs []string) (runner PromptfooEngineRunner, baseURL string, refusal error) {
+	if !b.engineInstances.Enabled() {
+		return b.engineRunner, "", nil
+	}
+	client, dedicated := b.engineInstances.Resolve(ctx, userID)
+	if len(codeStrategyIDs) > 0 && !dedicated {
+		return nil, "", &EngineCodeStrategyNoDedicatedError{Strategies: codeStrategyIDs}
+	}
+	if dedicated && client != nil {
+		return client, client.BaseURL(), nil
+	}
+	return b.engineRunner, "", nil
+}
+
+// runRunner routes an EXISTING run's lifecycle (poll/result) to the instance it
+// started on (record.EngineBaseURL). ok=false only when a dedicated run's
+// instance has vanished — callers must NOT fall through to the shared engine,
+// because a live run polled against the wrong instance 404s into a permanent
+// "still queued" ghost (the shape refused in U5 and record 40).
+func (b *RedteamToolBridge) runRunner(ctx context.Context, userID uuid.UUID, record *EngineRunRecord) (PromptfooEngineRunner, bool) {
+	if !b.engineInstances.Enabled() || record == nil || strings.TrimSpace(record.EngineBaseURL) == "" {
+		return b.engineRunner, true
+	}
+	client, ok := b.engineInstances.ResolveForRun(ctx, userID, record.EngineBaseURL)
+	if !ok || client == nil {
+		return nil, false
+	}
+	return client, true
+}
+
 // SetCustomPluginResolver wires the U10 published-package resolver into the
 // bridge. Optional: without it, `pf_plugin:` references are not resolvable and
 // runs naming them are rejected rather than silently dropped.
@@ -318,6 +365,20 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	customPlugins := capabilities.CustomPlugins
 	customStrategies := capabilities.CustomStrategies
 	customStrategyCode := capabilities.CustomStrategyCode
+	// P26a code strategy gate, placed at the same seam as package governance:
+	// before credentials are materialized and before the run record is
+	// persisted, so a refused code strategy leaves no half-created run. With
+	// the tenant registry off this yields the shared runner and an empty base
+	// URL — the pre-P26 path unchanged. The refusal surfaces to the confirm
+	// handler, which routes it through writeEnginePreflightRejection.
+	codeStrategyIDs := make([]string, 0, len(customStrategyCode))
+	for _, pkg := range customStrategyCode {
+		codeStrategyIDs = append(codeStrategyIDs, pkg.StrategyID)
+	}
+	submitRunner, engineBaseURL, refusal := b.submitRunnerFor(ctx, userID, codeStrategyIDs)
+	if refusal != nil {
+		return nil, refusal
+	}
 	// Phase 3 · 任务 2: the same treatment for expert-published strategy
 	// packages. Placed at the same seam for the same reason — this is the one
 	// function every confirmed engine run passes through, so a strategy package
@@ -375,6 +436,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	// template and every grader rubric. Conflating the two made every generated
 	// payload a meta-request; see EngineRunPurposeForTarget.
 	record := b.engineRuns.NewRun(userID, instanceID, sessionID, runSource, purpose, judgeMode, numTests, strings.TrimSpace(target.ID), recordRefs, recordStrategyRefs)
+	record.EngineBaseURL = engineBaseURL
 	saved, err := b.engineRuns.Save(ctx, record)
 	if err != nil {
 		return nil, fmt.Errorf("persist engine run: %w", err)
@@ -409,7 +471,7 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	// generation reads. Ignored while Plan A is selected, so this is safe to
 	// send unconditionally and keeps one request shape for both paths.
 	ResolveEngineNativeGenerationInputs(engineReq, target.Metadata)
-	if err := b.engineRunner.CreateRun(ctx, engineReq); err != nil {
+	if err := submitRunner.CreateRun(ctx, engineReq); err != nil {
 		saved.Status = EnginePhaseFailed
 		saved.ErrorCode = engineRunnerErrorCode(err)
 		if updated, saveErr := b.engineRuns.Save(ctx, saved); saveErr == nil {
@@ -574,7 +636,14 @@ func (b *RedteamToolBridge) WaitPromptfooRedteamEvaluation(ctx context.Context, 
 	batchStarted := time.Now()
 
 	pollStarted := time.Now()
-	final, err := b.pollEngineRun(ctx, saved.ID)
+	runner, runnerOK := b.runRunner(ctx, userID, saved)
+	if !runnerOK {
+		// P26a: the run was submitted to a dedicated instance that is no longer
+		// registered. Fail with a clear code instead of polling the shared engine
+		// (which never saw the run and would 404 it into a permanent queued ghost).
+		return nil, fmt.Errorf("%s: the engine instance registered for run %s is no longer available", EngineErrCodeInstanceGone, saved.ID)
+	}
+	final, err := b.pollEngineRun(ctx, runner, saved.ID)
 	if final != nil {
 		b.engineRuns.ApplyStatus(saved, final)
 		if updated, saveErr := b.engineRuns.Save(ctx, saved); saveErr == nil {
@@ -687,7 +756,23 @@ func (b *RedteamToolBridge) GetPromptfooEvaluationResult(ctx context.Context, us
 		return nil, errors.New("engine run not found")
 	}
 	if !IsEngineRunTerminal(record.Status) {
-		if status, err := b.engineRunner.GetRun(ctx, runID); err == nil {
+		// P26a: refresh from the instance the run started on. An unresolvable
+		// instance leaves the stored record untouched and says so in the reply —
+		// the alternative (asking the shared engine about a run it never saw)
+		// answers 404 and the record keeps claiming "running".
+		runner, ok := b.runRunner(ctx, userID, record)
+		if !ok {
+			return &PromptfooEngineResultOutput{
+				EngineRunID:   record.ID,
+				Phase:         string(record.Status),
+				ErrorCode:     EngineErrCodeInstanceGone,
+				PlannedCount:  record.PlannedCount,
+				ExecutedCount: record.ExecutedCount,
+				DurationMs:    record.DurationMs,
+				Result:        record.Result,
+			}, nil
+		}
+		if status, err := runner.GetRun(ctx, runID); err == nil {
 			b.engineRuns.ApplyStatus(record, status)
 			if updated, saveErr := b.engineRuns.Save(ctx, record); saveErr == nil {
 				record = updated
@@ -707,10 +792,14 @@ func (b *RedteamToolBridge) GetPromptfooEvaluationResult(ctx context.Context, us
 
 // pollEngineRun polls the engine until terminal state, ctx cancellation, or
 // the fixed timeout. Returns the terminal status (possibly with error).
-func (b *RedteamToolBridge) pollEngineRun(ctx context.Context, runID string) (*EngineRunStatus, error) {
+//
+// The runner is passed in rather than read from b.engineRunner because P26a:
+// a run must be polled on the engine instance it was submitted to, and that
+// instance is a per-run fact (record.EngineBaseURL), not a per-bridge one.
+func (b *RedteamToolBridge) pollEngineRun(ctx context.Context, runner PromptfooEngineRunner, runID string) (*EngineRunStatus, error) {
 	deadline := time.Now().Add(promptfooEnginePollTimeout)
 	for {
-		status, err := b.engineRunner.GetRun(ctx, runID)
+		status, err := runner.GetRun(ctx, runID)
 		if err == nil && status != nil && IsEngineRunTerminal(status.Phase) {
 			return status, nil
 		}

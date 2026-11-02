@@ -163,10 +163,27 @@ func main() {
 	engineRunRepo := repository.NewEngineRunRepository(pgPool)
 	engineRunService := maclawpkg.NewEngineRunService(engineRunRepo)
 	engineClient := maclawpkg.NewPromptfooEngineClient(cfg.Maclaw.EngineBaseURL, cfg.Maclaw.EngineBearerToken, cfg.Maclaw.EngineTimeoutSeconds)
+	// P26a · tenant engine registry (docs/architecture/tenant-isolation-g1-g3.md).
+	// Disabled by default: every run stays on `engineClient` (the shared instance),
+	// byte-for-byte the pre-P26 behavior. When MACLAW_TENANT_ENGINES=1 the wizard
+	// and the chat confirm path route each run to the tenant's dedicated instance
+	// (maclaw_account_mappings.engine_base_url) and refuse CODE strategy packages
+	// for a tenant that has none — the code gate + the registration must both
+	// say yes before expert code executes anywhere.
+	engineInstances := maclawpkg.NewEngineInstanceRegistry(cfg.Maclaw.TenantEnginesEnabled, engineClient, maclawAccountMappingRepo, keyStore, cfg.Maclaw.EngineTimeoutSeconds)
+	if engineInstances.Enabled() {
+		log.Println("[INFO] maclaw tenant engine registry ENABLED: code strategies require a dedicated tenant engine instance")
+	}
 	// P19 · code strategy packages are verified by the engine at publication
 	// (design §6.1): the BFF cannot answer "does this module load".
+	// P26a note: publication-time validation still uses the SHARED engine —
+	// it only imports the module and calls action on a probe (no tenant
+	// credentials involved). Per-tenant validation instances are a P26c concern;
+	// when the registry is on, only the shared engine's MACLAW_STRATEGY_CODE_PACKAGES
+	// gates publication validation.
 	maclawResourceStoreService.SetCodeStrategyProber(engineClient)
 	engineRunHandler := handler.NewEngineRunHandler(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
+	engineRunHandler.SetEngineInstances(engineInstances)
 	maclawSkillHandler := handler.NewMaclawSkillHandlerWithProviderProjectionAndHub(maclawProvider, maclawSkillProjection, maclawHubConfigService)
 	maclawMCPHandler := handler.NewMaclawMCPHandler(maclawProvider)
 	maclawCapabilityCatalog.SetPlatformDataStores(sampleRepo, tplRepo, composedAttackRepo)
@@ -180,6 +197,7 @@ func main() {
 	redteamToolBridge.SetTargetConcurrency(cfg.Maclaw.RedteamTargetConcurrency)
 	// Phase 1: expose the promptfoo engine to MaClaw through the bridge MCP tools.
 	redteamToolBridge.SetPromptfooEngine(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
+	redteamToolBridge.SetEngineInstances(engineInstances)
 	// U10: resolve expert-published YAML plugin packages and apply admin
 	// governance (启停/下架/归档 → 引擎立即不可用).
 	//
@@ -524,6 +542,7 @@ var migrationFiles = []string{
 	"migrations/026_promptfoo_engine.sql",
 	"migrations/027_engine_run_job_link.sql",
 	"migrations/028_redteam_report_engine_run_id.sql",
+	"migrations/029_tenant_engine_registry.sql",
 }
 
 // runMigrations 按 migrationFiles 清单顺序执行迁移。

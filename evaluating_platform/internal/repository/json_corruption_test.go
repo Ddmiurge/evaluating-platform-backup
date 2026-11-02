@@ -107,6 +107,7 @@ func engineRunRowValues(t *testing.T, id, plugins, strategies, stageDurations, t
 		&now,
 		now,
 		now,
+		"", // engine_base_url (P26a): empty = shared instance
 	}
 }
 

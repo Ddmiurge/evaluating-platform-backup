@@ -1058,3 +1058,23 @@ GET /api/v1/maclaw/engine/runs/:id/report
   且 `source_expert_user_id` 被删除——**发布者是谁不可见**（产品决定，2026-10-30）。
 - 企业/admin 路径行为逐字节不变（`CatalogCaller{}` 零值：不标注、不隐藏、不去重语义变化）。
 - 目录行只含安全元数据：publication 表本就不存 payload，读路径不解密。
+
+## 租户引擎路由（P26a，2026-11-02，本地待上机）
+
+`MACLAW_TENANT_ENGINES`（默认关）开启后，BFF 按 **run 发起方（企业账号）** 从
+`maclaw_account_mappings.engine_base_url / engine_token_ciphertext / engine_token_key_id`
+解析专属引擎实例；wizard 与 chat confirm 两条入口共用同一个 `EngineInstanceRegistry`
+（P10/P11「两条门一个解析结果」的第 N 次应用）。关键语义：
+
+- **代码包双条件闸**：请求含 CODE 策略包时，「注册表开」AND「该租户有专属实例」必须同时成立，
+  否则在任何写盘/凭据物化之前 409 `code_strategy_requires_dedicated_instance`（不落 run 行、
+  不发引擎）。共享引擎继续受 `MACLAW_STRATEGY_CODE_PACKAGES` 约束——单侧失守不开门。
+- **run 粘在起跑实例上**：`engine_runs.engine_base_url` 记录提交实例，生命周期
+  （GetRun/Cancel/Stream/poll）按此路由；仓储 Update 对该列做 sticky（`COALESCE(NULLIF)`，
+  与 U5 的 job_id 同构），记录消失时拒绝而不是回落到共享（防「404 幽灵排队」）。
+- **不泄漏**：`engine_base_url` 不进 run DTO、不进日志、不进报告（compose 内网名不是秘密，
+  但它不属于浏览器面；有守卫钉住）。发布期代码校验暂仍走共享引擎（无凭据、只验形状），
+  专属校验实例是 P26c 的事。
+- **默认关时逐字节等于 P25**：`Resolve` 不查表直接返回共享 client；既有全部测试不改即证明。
+
+设计稿与未做的 P26b/c/d 见 `tenant-isolation-g1-g3.md`。

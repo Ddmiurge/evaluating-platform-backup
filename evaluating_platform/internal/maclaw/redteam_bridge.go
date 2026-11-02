@@ -39,6 +39,7 @@ type RedteamToolBridge struct {
 	handleSalt        string
 	targetConcurrency int
 	engineRunner      PromptfooEngineRunner
+	engineInstances   *EngineInstanceRegistry
 	engineRuns        *EngineRunService
 	engineTargets     EngineTargetProvider
 	engineGeneration  EngineGenerationProvider

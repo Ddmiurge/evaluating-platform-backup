@@ -83,6 +83,13 @@ type MaclawConfig struct {
 	EngineBaseURL            string `mapstructure:"engine_base_url"`
 	EngineBearerToken        string `mapstructure:"engine_bearer_token"`
 	EngineTimeoutSeconds     int    `mapstructure:"engine_timeout_seconds"`
+	// TenantEnginesEnabled turns on P26a per-tenant engine routing
+	// (maclaw_account_mappings.engine_base_url / engine_token_*). Default off:
+	// every run stays on the shared instance, byte-for-byte pre-P26 behavior.
+	// When ON, a run that selects CODE strategies for a tenant with no dedicated
+	// instance is refused (409 code_strategy_requires_dedicated_instance) —
+	// the switch AND the registration must both say yes before expert code runs.
+	TenantEnginesEnabled bool `mapstructure:"tenant_engines_enabled"`
 }
 
 func Load(path string) (*Config, error) {
@@ -121,6 +128,7 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("maclaw.engine_base_url", "PROMPTFOO_ENGINE_BASE_URL")
 	_ = v.BindEnv("maclaw.engine_bearer_token", "PROMPTFOO_ENGINE_BEARER_TOKEN")
 	_ = v.BindEnv("maclaw.engine_timeout_seconds", "PROMPTFOO_ENGINE_TIMEOUT_SECONDS")
+	_ = v.BindEnv("maclaw.tenant_engines_enabled", "MACLAW_TENANT_ENGINES")
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -160,4 +168,5 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("maclaw.engine_base_url", "")
 	v.SetDefault("maclaw.engine_bearer_token", "")
 	v.SetDefault("maclaw.engine_timeout_seconds", 15)
+	v.SetDefault("maclaw.tenant_engines_enabled", false)
 }

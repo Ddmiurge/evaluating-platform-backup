@@ -78,6 +78,13 @@ type EngineRunRecord struct {
 	Result         *EngineSafeResult
 	ErrorCode      string
 	ErrorBrief     string
+	// EngineBaseURL is the engine instance this run was submitted to (P26a).
+	// Empty = shared instance = the behavior of every run before tenant engines
+	// existed. The lifecycle calls MUST use the same instance the run started
+	// on — a run polled against a different engine is a 404-shaped ghost —
+	// and the repository write is sticky, so a progress save can never blank
+	// or move it (the job_id lesson of U5, applied to the routing fact).
+	EngineBaseURL  string
 	StartedAt      *time.Time
 	CompletedAt    *time.Time
 	CreatedAt      time.Time
