@@ -1056,3 +1056,63 @@ func (f *fakeEngineResultCompiler) CompileRedteamReport(_ context.Context, _ uui
 	f.lastFindings = len(in.Findings)
 	return &maclaw.EvaluationReport{ID: f.reportID}, nil
 }
+
+// TestEngineRunHandlerGetRunReturnsRedactedErrorBrief pins the P25 channel:
+// the stored diagnosis reaches the run's OWNER through the run DTO (records
+// 43 §8.3, 44, 45 all carried "the user sees a code, the reason sits in the
+// database"). Two properties are asserted together — presence, and that the
+// redaction still holds on the way out (the brief must carry the diagnosis
+// phrase without the engine's filesystem path).
+func TestEngineRunHandlerGetRunReturnsRedactedErrorBrief(t *testing.T) {
+	store := newFakeRunStore()
+	engine := newEnabledFakeEngine()
+	engine.status = &maclaw.EngineRunStatus{
+		Phase:     maclaw.EnginePhaseFailed,
+		ErrorCode: "native_generation_promptfoo_failed",
+		ErrorMessage: "promptfoo native generation failed: 代码策略 custom:code:p25probe 返回了空数组" +
+			"（原始堆栈见 /app/node_modules/promptfoo/dist/probe.js）",
+	}
+	h := newEngineRunHandler(engine, maclaw.NewEngineRunService(store), nil, nil)
+	r := newEngineRunRouter(h, "enterprise")
+
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	svc := maclaw.NewEngineRunService(store)
+	rec := svc.NewRun(userID, "", "sess-1", "chat", "p", maclaw.EngineJudgeAuto, 5, "t1", []maclaw.EngineCapabilityRef{{ID: "harmful"}}, nil)
+	saved, err := svc.Save(context.Background(), rec)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	w := doJSON(r, http.MethodGet, "/maclaw/engine/runs/"+saved.ID, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	brief, present := resp["error_brief"]
+	if !present {
+		t.Fatalf("run DTO must carry error_brief for the owner: %s", w.Body.String())
+	}
+	briefText, _ := brief.(string)
+	if !strings.Contains(briefText, "custom:code:p25probe") {
+		t.Fatalf("error_brief must keep the diagnosis the engine recorded: %q", briefText)
+	}
+	if strings.Contains(briefText, "/app/node_modules") {
+		t.Fatalf("error_brief escaped BFF-side re-redaction: %q", briefText)
+	}
+
+	// A non-terminal run has no recorded reason: empty, not absent (the key
+	// contract must be stable for the frontend).
+	engine.status = nil
+	running := svc.NewRun(userID, "", "sess-2", "chat", "p", maclaw.EngineJudgeAuto, 5, "t1", []maclaw.EngineCapabilityRef{{ID: "harmful"}}, nil)
+	savedRunning, err := svc.Save(context.Background(), running)
+	if err != nil {
+		t.Fatalf("seed running: %v", err)
+	}
+	w2 := doJSON(r, http.MethodGet, "/maclaw/engine/runs/"+savedRunning.ID, "")
+	var resp2 map[string]interface{}
+	_ = json.Unmarshal(w2.Body.Bytes(), &resp2)
+	if v, ok := resp2["error_brief"]; !ok || v != "" {
+		t.Fatalf("non-terminal run must return error_brief as empty string, got %#v", v)
+	}
+}

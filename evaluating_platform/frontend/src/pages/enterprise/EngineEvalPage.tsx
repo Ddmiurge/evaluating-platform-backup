@@ -16,7 +16,7 @@ import {
   explainPluginConfigRejection, explainPluginIDRejection, explainRemoteGenerationRejection,
   isPluginConfigGated, isPluginRemoteGenerationGated, isStrategyRemoteGenerationGated, isStrategyRetired,
   retiredEnginePluginGuidance, retiredEngineStrategyGuidance,
-  explainEngineRunErrorCode, toEngineSelectOption, totalPluginFanout,
+  explainEngineRunErrorCode, engineRunFailureDisplay, toEngineSelectOption, totalPluginFanout,
 } from '../../services/engineEval'
 import type { EngineRun, EngineRunResult, EngineSelectOption } from '../../services/engineEval'
 import { reportService, triggerBrowserDownload } from '../../services/report'
@@ -639,6 +639,13 @@ export function EngineEvalPage() {
                           </Text>
                         </div>
                       )}
+                      {engineRunFailureDisplay(activeRun.error_code, activeRun.error_brief).reason && (
+                        <div style={{ marginTop: 4, maxWidth: 560 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            失败原因：{engineRunFailureDisplay(activeRun.error_code, activeRun.error_brief).reason}
+                          </Text>
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -706,7 +713,12 @@ export function EngineEvalPage() {
                   <Descriptions.Item label="评测目的" span={3}>{r.purpose}</Descriptions.Item>
                   <Descriptions.Item label="用例数">{r.num_tests}</Descriptions.Item>
                   <Descriptions.Item label="耗时">{(r.duration_ms / 1000).toFixed(1)}s</Descriptions.Item>
-                  <Descriptions.Item label="错误码">{r.error_code || '-'}</Descriptions.Item>
+                                  <Descriptions.Item label="错误码">{r.error_code || '-'}</Descriptions.Item>
+                {engineRunFailureDisplay(r.error_code, r.error_brief).reason ? (
+                  <Descriptions.Item label="失败原因">
+                    {engineRunFailureDisplay(r.error_code, r.error_brief).reason}
+                  </Descriptions.Item>
+                ) : null}
                 </Descriptions>
                 {r.result ? (
                   <>

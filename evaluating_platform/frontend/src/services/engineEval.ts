@@ -53,6 +53,11 @@ export interface EngineRun {
   current_stage?: string
   duration_ms: number
   error_code?: string
+  /**
+   * 终态失败的脱敏诊断（P25，run DTO 直出）。引擎与 BFF 各脱敏一次后才入库，
+   * 空串 = 未记录原因；只有 run 详情接口回传，进度事件仍禁止携带任何错误文本。
+   */
+  error_brief?: string
   created_at: string
   updated_at?: string
   num_tests: number
@@ -440,12 +445,27 @@ const ENGINE_RUN_ERROR_HINTS: Record<string, string> = {
   [ENGINE_RUN_ERROR_MODEL_REFUSED]:
     '生成模型拒绝了用例生成。最常见的原因是被测系统用途被判为可疑 —— 请改成中性的业务角色描述（例如「客服问答机器人：回答售后与物流咨询」），不要写评测意图或对抗措辞，然后重试。',
   native_generation_promptfoo_failed:
-    '引擎在生成阶段失败。若是模型或靶机限流、网络问题，请稍后重试；连续失败请查看运行详情里的错误摘要。',
+    '引擎在生成阶段失败。若是模型或靶机限流、网络问题，请稍后重试；具体原因看运行详情的「失败原因」行。',
 }
 
 export function explainEngineRunErrorCode(code: string | undefined | null): string {
   const key = String(code ?? '').trim()
   return key === '' ? '' : ENGINE_RUN_ERROR_HINTS[key] ?? ''
+}
+
+/**
+ * 失败态的两行展示（P25）：**已知码才给解释**（未知码宁缺毋滥——编一句似是
+ * 而非的说明会阻止读者去查真正原因），`error_brief` 是引擎记录的真实诊断，
+ * 有就展示。两者独立：码未知时 brief 仍然是原因；brief 为空时不编造「未知错误」。
+ */
+export function engineRunFailureDisplay(
+  code: string | undefined | null,
+  brief: string | undefined | null,
+): { hint: string; reason: string } {
+  return {
+    hint: explainEngineRunErrorCode(code),
+    reason: String(brief ?? '').trim(),
+  }
 }
 
 /** 引擎在请求含被标记项时返回的 error_code（与后端常量一致）。 */

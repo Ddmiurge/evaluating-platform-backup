@@ -874,6 +874,13 @@ func engineRunResponse(record *maclaw.EngineRunRecord, extra map[string]interfac
 		"current_stage":  record.CurrentStage,
 		"duration_ms":    record.DurationMs,
 		"error_code":     record.ErrorCode,
+		// The stored diagnosis goes to the owner (P25, 2026-11-02; 43 §8.3).
+		// `ApplyStatus` only writes it on terminal phases and redacts it again
+		// on the way in, independently of the engine's own scrubbing — so an
+		// empty value here means "no error recorded", never "safe to show raw".
+		// This is the run DTO only: progress events and stage metadata keep
+		// their ban on any error text.
+		"error_brief": record.ErrorBrief,
 		"created_at":     record.CreatedAt,
 		"updated_at":     record.UpdatedAt,
 	}

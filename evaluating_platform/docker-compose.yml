@@ -219,6 +219,13 @@ services:
     # Refuse privilege escalation via setuid binaries.
     security_opt:
       - no-new-privileges:true
+    # Same site-resolver fix already applied to maclaw-runtime and backend:
+    # the daemon's external DNS (223.5.5.5/114.114.114.114) is unreachable on
+    # this network, and without it the engine cannot resolve the generation
+    # model host — every run fails at "Generated 0 tests" (records 43 §8.1,
+    # 44, 45 carried this on a /var/tmp override for three rounds).
+    dns:
+      - 10.95.38.38
     environment:
       # fail-closed security switches (also asserted at boot by the engine)
       PROMPTFOO_DISABLE_REMOTE_GENERATION: "1"
