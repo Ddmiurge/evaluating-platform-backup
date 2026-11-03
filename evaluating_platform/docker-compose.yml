@@ -161,6 +161,10 @@ services:
       PROMPTFOO_ENGINE_BASE_URL: "${PROMPTFOO_ENGINE_BASE_URL:-http://promptfoo-engine:8090}"
       PROMPTFOO_ENGINE_BEARER_TOKEN: "${PROMPTFOO_ENGINE_BEARER_TOKEN:-change-me-promptfoo-engine-bearer-secret}"
       PROMPTFOO_ENGINE_TIMEOUT_SECONDS: "${PROMPTFOO_ENGINE_TIMEOUT_SECONDS:-15}"
+      # P26a tenant engine registry (47 号 §6.1: this pass-through was missed at
+      # landing — without it the flag could not be turned on from .env at all).
+      # Default off: every run stays on the shared instance.
+      MACLAW_TENANT_ENGINES: "${MACLAW_TENANT_ENGINES:-0}"
     ports:
       - "8088:8080"
     volumes:

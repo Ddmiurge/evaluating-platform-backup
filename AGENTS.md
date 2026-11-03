@@ -254,6 +254,8 @@ cd C:\Users\wangboyang\Desktop\evaluating_platform\evaluating_platform
 docker compose config --services
 ```
 
+**新增运行时开关必须同时在 compose 里透传。** `pkg/config` 绑定的每个新环境变量（`BindEnv`），都要在消费它的那个服务的 `environment:` 里加一行 `${VAR:-default}`——Go 代码读的是容器环境，compose 不透传就等于开关永远打不开，只能靠临时 override 或旁路容器验证（46 号引擎漏 `dns:`、47 号 backend 漏 `MACLAW_TENANT_ENGINES` 都是这一类：新能力接了代码却没接编排）。判据：改完用 `docker compose config` 看渲染出的容器环境里确有该键。
+
 收尾检查：
 
 ```powershell

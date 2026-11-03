@@ -1,6 +1,6 @@
 # 租户隔离 G-1~G-3（P26 立项）设计稿
 
-> 状态：**P26a 已落地（本地，待上机）；P26b/c/d 未做**（2026-11-02）。
+> 状态：**P26a 已落地并上机（47 号：默认关=逐字节 P25、双条件闸 409 不落行、开闸端到端两入口全通）；P26b/c/d 未做**（2026-11-03）。47 号另发现 backend compose 漏透传 `MACLAW_TENANT_ENGINES`（P26a.1 已修）。
 > 已落地范围（默认关，`MACLAW_TENANT_ENGINES=0` 时逐字节等同 P25 行为）：迁移 029
 > （映射表 `engine_base_url/token_ciphertext/token_key_id` + run 表 `engine_base_url`）、
 > `EngineInstanceRegistry`、wizard 与 confirm 两扇门的按用户路由 + 代码包双条件拒绝、
@@ -116,7 +116,7 @@
 
 | 步 | 内容 | 守卫（每条先跑红） | 依赖 |
 |---|---|---|---|
-| P26a | D-2 注册表 + `EngineClientResolver` + 共享实例代码包本地拒绝 | **已落地（本地）**：路由单测（两租户解析出两 client，URL/token 断言）；含 `custom_strategy_code` 且无专属实例 → 409 且**未发出 HTTP**（反证：删拒绝分支 → 门侧测试变红，已跑）；wizard/confirm 两入口同一解析结果；生命周期按 run 记录的实例路由，消失即拒不清空 | 迁移 029（已落地） |
+| P26a | D-2 注册表 + `EngineClientResolver` + 共享实例代码包本地拒绝 | **已落地并上机（47 号）**：路由单测（两租户解析出两 client，URL/token 断言）；含 `custom_strategy_code` 且无专属实例 → 409 且**未发出 HTTP**（反证：删拒绝分支 → 门侧测试变红，已跑）；wizard/confirm 两入口同一解析结果；生命周期按 run 记录的实例路由，消失即拒不清空 | 迁移 029（已落地） |
 | P26b | D-3 生成 key 租户化（(b) 镜像方案） | resolver 输入含账号；A/B 各配不同 model key 的 run 请求体断言；未配置回退默认 + 行为与今天 diff 为零 | P26a |
 | P26c | D-4 token 生成/注入 + compose 白名单模板（`docker-compose.tenant-engines.yml` 样例）+ 文档 | 拿 A token 打共享实例 401（上机判据，本地 fake 断言 header 值不同即可） | P26a |
 | P26d | 上机判据全跑（§5）+ **生产开闸条件写入 AGENTS/上线清单** | 见 §5 表 | P26a–c、47 号先完成 |
