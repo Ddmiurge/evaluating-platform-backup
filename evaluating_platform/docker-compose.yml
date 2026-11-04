@@ -293,6 +293,52 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── P26d · 测试企业账号（p8-test@demo.com）的专属引擎（主理人 2026-11-04 建）──
+  # 与共享引擎同镜像同沙箱同 fail-closed 断言，差别只有三样：独立数据卷、独立
+  # bearer（登记 API 生成、只进 .env）、代码包开关写死为 1（共享那台留给发布校验，
+  # 代码执行只来这里）。MACLAW_TENANT_ENGINES=1 之前 BFF 不会路由到它——现在起
+  # 它是闲置的，这是特性：登记 + 开闸后才上岗。
+  # 登记 base_url 填：http://promptfoo-engine-p8test:8090
+  promptfoo-engine-p8test:
+    image: evaluating_platform-promptfoo-engine:latest
+    container_name: ep_promptfoo_engine_p8test
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /home/node/.promptfoo:rw,noexec,nosuid,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    dns:
+      - 10.95.38.38
+    environment:
+      PROMPTFOO_DISABLE_REMOTE_GENERATION: "1"
+      PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: "1"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+      PROMPTFOO_DISABLE_SHARE: "1"
+      PROMPTFOO_CACHE_ENABLED: "0"
+      MACLAW_STRATEGY_CODE_PACKAGES: "1"
+      MACLAW_STRATEGY_CODE_TIMEOUT_MS: "${MACLAW_STRATEGY_CODE_TIMEOUT_MS:-20000}"
+      REQUEST_TIMEOUT_MS: "180000"
+      PROMPTFOO_ENGINE_READONLY_ROOT: "1"
+      PROMPTFOO_ENGINE_SANDBOX_PROBE: "${PROMPTFOO_ENGINE_SANDBOX_PROBE:-0}"
+      # 登记成功后把返回的 token 写进部署 .env 的 P8TEST_ENGINE_TOKEN 并 recreate
+      # 本服务；占位值只保证能起（engine 要求 ≥16 字符），不保证能被 BFF 调用。
+      PROMPTFOO_ENGINE_BEARER_TOKEN: "${P8TEST_ENGINE_TOKEN:-p8test-placeholder-change-me-0123456789}"
+      PROMPTFOO_ENGINE_PORT: "8090"
+      PROMPTFOO_ENGINE_DATA_ROOT: /data/runs
+    expose:
+      - "8090"
+    volumes:
+      - promptfoo_engine_data_p8test:/data/runs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
   redis_data:
@@ -300,6 +346,7 @@ volumes:
   maclaw_data:
   hubcenter_data:
   promptfoo_engine_data:
+  promptfoo_engine_data_p8test:
 
 networks:
   default:

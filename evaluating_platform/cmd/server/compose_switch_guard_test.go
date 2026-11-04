@@ -108,7 +108,7 @@ func TestComposeEngineCarriesSiteDNS(t *testing.T) {
 		t.Fatalf("read compose: %v", err)
 	}
 	source := string(raw)
-	for _, service := range []string{"maclaw-runtime", "backend", "promptfoo-engine"} {
+	for _, service := range []string{"maclaw-runtime", "backend", "promptfoo-engine", "promptfoo-engine-p8test"} {
 		block := composeServiceBlock(t, source, service)
 		if !strings.Contains(block, "dns:") || !strings.Contains(block, "10.95.38.38") {
 			t.Fatalf("compose service %q must carry dns: 10.95.38.38 (the daemon's external DNS is unreachable on this network; 43 §8.1)", service)
