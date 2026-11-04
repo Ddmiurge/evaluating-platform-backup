@@ -1,6 +1,6 @@
 # 开发阶段与现状
 
-> 更新时间：2026-11-03｜已上机代码：`e8a09ce`（P26b+P26c，49 号全绿零缺陷）｜本地待部署：**P26c.1**（管理门户专属引擎面板 + 账号列表徽标）｜最近上机记录：`records/47`（P26a）、`records/48`（P26a.1）、`records/49`（P26b/c 部署冒烟）
+> 更新时间：2026-11-03｜已上机代码：`e8a09ce`（P26b+P26c，49 号全绿零缺陷）｜本地待部署：**P26c.1 + P27**（管理门户面板；BindEnv↔compose 泛化守卫）｜最近上机记录：`records/47`（P26a）、`records/48`（P26a.1）、`records/49`（P26b/c 部署冒烟）
 >
 > 这份文档回答三个问题：**现在到哪一步了、能做什么、还剩什么**。
 > 「为什么这么做」在 `../../audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md`，
@@ -44,6 +44,8 @@
 | **P25** | `error_brief` 进 run 详情 DTO + 向导/历史展示「失败原因」（43–45 号连续三轮点名）；compose 给 `promptfoo-engine` 补齐 `dns: 10.95.38.38`（`maclaw-runtime`/`backend` 早有、唯引擎漏——43 §8.1 三轮靠 /var/tmp override 的根因） | `46`（两判据闭环；**但 §5 原计划的 ②开闸③代码包端到端未被执行**，见下） |
 | **P26a** | 租户引擎注册表（迁移 029）、`EngineInstanceRegistry` 按 run 发起方路由（wizard/confirm 同一解析）、代码包双条件闸（开关 AND 注册表，缺专属实例 409 不落库不发引擎）、生命周期粘在起跑实例、run DTO 不泄漏实例 URL；`MACLAW_TENANT_ENGINES` 默认关，关=逐字节现状 | `47`（默认关=P25 逐字节、双条件闸 409 不落行、开闸后代码包两条入口端到端全通）；47 号发现 backend compose 漏透传开关 → **P26a.1 修** |
 | **P26c** | 专属引擎登记：`PUT/DELETE /admin/maclaw/accounts/:userId/engine-instance`（token 平台生成、明文仅响应一次、库里只有密文；登记前探活）；`maclaw_account_mappings` 三列的专用写路径（不与 provisioning Upsert 互相冲掉）；compose 白名单模板 `docker-compose.tenant-engines.yml`（独立卷/独立 token/引擎开关只开专属实例/dns 红线注释） | `49`（登记 API 冒烟过；专属实例与跨实例判据仍未跑，见 §5） |
+| **P26c.1** | 管理门户「用户与租户」：专属引擎列（共享/已登记/摘除）、登记 Modal（客户端预检镜像后端规则）、token 一次性展示弹窗、「模型镜像」徽标（`model_override` 单查询）；账号配置保存 `mirror_saved:false` → 橙色警告；源级镜像守卫 + FE 纯模块测试 | 本地，待上机（并入 50 号） |
+| **P27** | 编排守卫泛化：`TestAllBindEnvKeysAppearInCompose` 枚举 pkg/config 全部 BindEnv（25 键）逐一要求 compose 透传，例外须进带注释的豁免表（当前空表）；backend 补 `SERVER_PORT` 透传；反证（删一行→红且点名）已跑 | 本地（无运行时行为变更） |
 | **P26b** | 租户生成 key（D-3=b）：`maclaw_model_overrides` 镜像表（迁移 030）；admin 保存账号模型配置成功后镜像实际下发的完整配置；两扇门 `ResolveEngineGenerationCredentialForUser`（无镜像=平台默认，逐字节现状；镜像坏行=拒绝 run，**绝不**静默用平台 key）；响应新增 `mirror_saved` 状态 | `49`（空表回退默认已验；**镜像写入待一次真实保存**，会动租户配置需点头） |
 | **P26a.1** | backend compose 补 `MACLAW_TENANT_ENGINES: "${...:-0}"` 透传（46 引擎漏 dns、47 backend 漏此键，同一类「新开关没接进编排」）；AGENTS 编排段规约 + 两个 CI 编排守卫（反证上机红/绿） | `48`（双向核对进容器、真实部署复现双条件闸；**端到端复跑被 mimo 402 阻塞**，同日切 DeepSeek 官方后普通评测 2/2 通过，代码包端到端待补） |
 
@@ -104,7 +106,7 @@
 1b. **部署备忘（48 号 §5 排查成果）**：`.env`/`configs/*.yaml` 的 `LLM_BASE_URL/LLM_MODEL/LLM_API_KEY` 是**无消费点的遗留占位**——真实的生成/判定模型只认管理员门户配置（`maclaw_model_defaults` + 账号级 config）；且**判定与生成共用同一套 key**，欠费/换供应商会同时打两条链路（mimo 402 那次即整链全挂）。排障别从 `LLM_*` 入手；
 2. **46 / 47 号已闭环**（记录备查，不再作为待办）：DNS 由仓库 compose 承担（不带 override 重建、端到端 2/2 成功）；`error_brief` 进 run DTO 且进度/SSE 禁令未扩散；代码包两条入口端到端真跑（`custom:code:*`、报告无 `file://`）；P26a 双条件闸 409 不落行、默认关 = P25 逐字节。
 3. **租户隔离 G-1~G-3（P26b/c/d）**：设计稿 `tenant-isolation-g1-g3.md`——P26a 已落地并上机（47 号）；未做的是 P26b 生成 key 按租户、P26c 实例级 token 供给 + 专属实例 compose 白名单、P26d 跨租户判据。**生产开闸的资格线**：这三项没做之前「共享部署不放代码包」的结论不变，47 号的开闸只适用于 ai02 这台验证机；
-4. **部署脚本自检**：`df -h /var` 低于阈值即停；部署后探测引擎能否解析生成模型域名；**并把「新 env 必须 compose 透传」做成自动检查**（比对 `pkg/config` 的 `BindEnv` 键与 compose 渲染出的容器环境，缺失即停——46/47 两轮都是这条）；
+4. **部署脚本自检**：`df -h /var` 低于阈值即停；部署后探测引擎能否解析生成模型域名；**「新 env 必须 compose 透传」已由 P27 泛化守卫在 CI 承担**（BindEnv 全键 ↔ compose 成员检查，反证已跑），脚本只剩磁盘与探活两条；
 5. **混合场景上机验证**：用确定性靶机桩（前 N 次正常、之后拒连）补上唯一未上机的分支；
 6. 目标侧 300 秒队列超时（Dify）—— 运维/靶机配置；
 7. 体验与体积：报告卡摘要、PDF 字体子集化；复验遗留的临时代码策略包（`p22lazy`/`p22hang`）可按需下架（`p47file`、`p18upper` 留作后续回归固定素材）。
