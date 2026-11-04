@@ -115,3 +115,68 @@ func TestComposeEngineCarriesSiteDNS(t *testing.T) {
 		}
 	}
 }
+
+// TestAllBindEnvKeysAppearInCompose is the GENERALIZATION of the point guard
+// above: every environment variable the platform binds in pkg/config must be
+// reachable in the deployment orchestration — the 46/47 class (engine missing
+// dns, backend missing MACLAW_TENANT_ENGINES) is only structurally dead once
+// the check is exhaustive rather than curated. An exception must be an
+// explicit, justified entry in bindEnvComposeExemptions; empty today on
+// purpose.
+var bindEnvComposeExemptions = map[string]string{
+	// env -> why compose legitimately never mentions it. Adding an entry here
+	// is a review-level decision, same weight as deleting a guard assertion.
+}
+
+func TestAllBindEnvKeysAppearInCompose(t *testing.T) {
+	cfgRaw, err := os.ReadFile(filepath.Join("..", "..", "pkg", "config", "config.go"))
+	if err != nil {
+		t.Fatalf("read pkg/config/config.go: %v", err)
+	}
+	composeRaw, err := os.ReadFile(filepath.Join("..", "..", "docker-compose.yml"))
+	if err != nil {
+		t.Fatalf("read docker-compose.yml: %v", err)
+	}
+	compose := string(composeRaw)
+	bound := map[string]bool{}
+	for _, line := range strings.Split(string(cfgRaw), "\n") {
+		i := strings.Index(line, "BindEnv(")
+		if i < 0 {
+			continue
+		}
+		quotes := []string{}
+		run := ""
+		in := false
+		for _, r := range line[i+len("BindEnv("):] {
+			switch {
+			case r == '"':
+				if in {
+					quotes = append(quotes, run)
+					run = ""
+				}
+				in = !in
+			case in:
+				run += string(r)
+			}
+		}
+		if len(quotes) >= 2 && quotes[1] != "" {
+			bound[quotes[1]] = true
+		}
+	}
+	if len(bound) < 20 {
+		t.Fatalf("BindEnv inventory implausibly small (%d): parser broken?", len(bound))
+	}
+	missing := []string{}
+	for env := range bound {
+		if strings.Contains(compose, env) {
+			continue
+		}
+		if _, ok := bindEnvComposeExemptions[env]; ok {
+			continue
+		}
+		missing = append(missing, env)
+	}
+	if len(missing) > 0 {
+		t.Fatalf("pkg/config binds env vars that docker-compose.yml never passes — they can only be set by hand into containers, and forgetting one is the 46/47 incident class: %v (exempt explicitly in bindEnvComposeExemptions with a justification if a var is genuinely non-deployment)", missing)
+	}
+}
