@@ -1082,3 +1082,7 @@ GET /api/v1/maclaw/engine/runs/:id/report
 ## 租户生成 key 镜像（P26b，2026-11-04，本地待上机）
 
 引擎 generation 凭据从「全平台一把」改为「按 run 发起方解析」：`maclaw_model_overrides`（`user:<uuid>` → 加密 RuntimeAppConfig）由管理员门户账号配置保存路径单点写入；`ResolveEngineGenerationCredentialForUser` 供两扇门（wizard + confirm）使用，无镜像的账号行为逐字节不变。**回填**：管理员把某账号的模型配置重新保存一次即生成镜像（或等 P26c 的登记流一起处理）。判定链（redteam judge）仍读平台默认——本批刻意不动，判定与生成是否同租户化是独立决定。
+
+## 专属引擎登记（P26c，2026-11-04，本地待上机）
+
+管理员 `PUT /admin/maclaw/accounts/:userId/engine-instance` 绑定专属引擎：校验 URL（http(s)、禁内嵌凭据/查询/片段）→ **先探活**（错地址在登记时暴露，不等第一个 run 提交才发现）→ 生成 48 位 hex token，明文只出现在登记响应一次，库里只有 `maclaw_account_mappings.engine_token_ciphertext`（crypto master key 加密）；重登记即轮换，`DELETE` 摘除回共享。引擎侧不需改代码（`bearerAuth` 本来就是逐容器一把）；起实例用 `docker-compose.tenant-engines.yml` 模板（独立卷、独立 token、`MACLAW_STRATEGY_CODE_PACKAGES` 只开在专属实例、dns 红线）。双条件闸的另一半（`MACLAW_TENANT_ENGINES=1`）在 backend `.env`，主 compose 已透传。

@@ -1,6 +1,6 @@
 # 租户隔离 G-1~G-3（P26 立项）设计稿
 
-> 状态：**P26a/P26a.1 已落地并上机（47/48 号）；P26b 已落地（本地，待上机）；P26c/d 未做**（2026-11-04）。47 号另发现 backend compose 漏透传 `MACLAW_TENANT_ENGINES`（P26a.1 已修）。
+> 状态：**P26a/a.1 上机收口（47/48）；P26b + P26c（登记 API + 实例 token + compose 白名单模板）已落地（本地，待上机）；P26d 跨租户判据未做**（2026-11-04）。47 号另发现 backend compose 漏透传 `MACLAW_TENANT_ENGINES`（P26a.1 已修）。
 > 已落地范围（默认关，`MACLAW_TENANT_ENGINES=0` 时逐字节等同 P25 行为）：迁移 029
 > （映射表 `engine_base_url/token_ciphertext/token_key_id` + run 表 `engine_base_url`）、
 > `EngineInstanceRegistry`、wizard 与 confirm 两扇门的按用户路由 + 代码包双条件拒绝、

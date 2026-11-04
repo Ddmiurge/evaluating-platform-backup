@@ -188,3 +188,31 @@ func (r *MaclawAccountMappingRepository) Count(ctx context.Context) (int, error)
 	}
 	return count, nil
 }
+
+// ── P26c · 专属引擎登记（maclaw.EngineInstanceStore 实现）────────────────────
+// 只写路由三列，不触碰其余列（provisioning 的 Upsert 同样不列这些列——
+// 登记值不会被账号同步冲掉）。返回 false = 账号没有 mapping 行。
+
+func (r *MaclawAccountMappingRepository) SetEngineInstance(ctx context.Context, id uuid.UUID, baseURL string, tokenCiphertext []byte, keyID string) (bool, error) {
+	res, err := r.pool.Exec(ctx, `
+		UPDATE maclaw_account_mappings
+		SET engine_base_url = $2, engine_token_ciphertext = $3, engine_token_key_id = $4, updated_at = NOW()
+		WHERE platform_user_id = $1
+	`, id, baseURL, tokenCiphertext, keyID)
+	if err != nil {
+		return false, fmt.Errorf("set maclaw engine instance registration: %w", err)
+	}
+	return res.RowsAffected() > 0, nil
+}
+
+func (r *MaclawAccountMappingRepository) ClearEngineInstance(ctx context.Context, id uuid.UUID) (bool, error) {
+	res, err := r.pool.Exec(ctx, `
+		UPDATE maclaw_account_mappings
+		SET engine_base_url = '', engine_token_ciphertext = NULL, engine_token_key_id = '', updated_at = NOW()
+		WHERE platform_user_id = $1
+	`, id)
+	if err != nil {
+		return false, fmt.Errorf("clear maclaw engine instance registration: %w", err)
+	}
+	return res.RowsAffected() > 0, nil
+}

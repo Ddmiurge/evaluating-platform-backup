@@ -242,6 +242,7 @@ func main() {
 		maclawHubConfigService,
 		cfg.Maclaw.RuntimeMode,
 	)
+	adminMaclawHandler.SetEngineInstanceAdmin(maclawpkg.NewEngineInstanceAdmin(maclawAccountMappingRepo, keyStore)) // P26c
 
 	legacyGone := func(c *gin.Context) {
 		c.JSON(http.StatusGone, gin.H{
@@ -453,6 +454,9 @@ func main() {
 			adminGroup.PUT("/maclaw/model-default", adminMaclawHandler.UpdateDefaultModelConfig)
 			adminGroup.POST("/maclaw/model-default/validate", adminMaclawHandler.ValidateDefaultModelConfig)
 			adminGroup.POST("/maclaw/model-default/test", adminMaclawHandler.TestDefaultModelConfig)
+			// P26c · dedicated engine instance registration (token plaintext shown once)
+			adminGroup.PUT("/maclaw/accounts/:userId/engine-instance", adminMaclawHandler.RegisterAccountEngine)
+			adminGroup.DELETE("/maclaw/accounts/:userId/engine-instance", adminMaclawHandler.UnregisterAccountEngine)
 			adminGroup.GET("/maclaw/hub-config", adminMaclawHandler.GetHubConfig)
 			adminGroup.PUT("/maclaw/hub-config", adminMaclawHandler.UpdateHubConfig)
 			adminGroup.POST("/maclaw/hub-config/sync", adminMaclawHandler.SyncHubConfig)

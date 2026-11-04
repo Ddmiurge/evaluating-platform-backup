@@ -1,6 +1,6 @@
 # 开发阶段与现状
 
-> 更新时间：2026-11-03｜已上机代码：`b086226`（P26a.1，48 号闭环；真实部署即可开注册表，旁路容器退役）｜本地待部署：**P26b**（租户生成 key 镜像）｜最近上机记录：`records/46`（P25）、`records/47`（P26a）、`records/48`（P26a.1 + mimo 402 与 provider 切换）
+> 更新时间：2026-11-03｜已上机代码：`b086226`（P26a.1，48 号闭环；真实部署即可开注册表，旁路容器退役）｜本地待部署：**P26b + P26c**（租户生成 key 镜像；专属引擎登记与 compose 白名单）｜最近上机记录：`records/46`（P25）、`records/47`（P26a）、`records/48`（P26a.1 + mimo 402 与 provider 切换）
 >
 > 这份文档回答三个问题：**现在到哪一步了、能做什么、还剩什么**。
 > 「为什么这么做」在 `../../audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md`，
@@ -43,6 +43,7 @@
 | **P24** | 策略包文件上传入口（`.js/.mjs` ≤256KB、`.yaml/.yml` ≤128KB 客户端预检 + 纯文本回显，文件名建议 variant）；上限与后端常量同源，镜像守卫钉死 | `45`（五判据成立；js 发布 409 是开关行为，非缺陷） |
 | **P25** | `error_brief` 进 run 详情 DTO + 向导/历史展示「失败原因」（43–45 号连续三轮点名）；compose 给 `promptfoo-engine` 补齐 `dns: 10.95.38.38`（`maclaw-runtime`/`backend` 早有、唯引擎漏——43 §8.1 三轮靠 /var/tmp override 的根因） | `46`（两判据闭环；**但 §5 原计划的 ②开闸③代码包端到端未被执行**，见下） |
 | **P26a** | 租户引擎注册表（迁移 029）、`EngineInstanceRegistry` 按 run 发起方路由（wizard/confirm 同一解析）、代码包双条件闸（开关 AND 注册表，缺专属实例 409 不落库不发引擎）、生命周期粘在起跑实例、run DTO 不泄漏实例 URL；`MACLAW_TENANT_ENGINES` 默认关，关=逐字节现状 | `47`（默认关=P25 逐字节、双条件闸 409 不落行、开闸后代码包两条入口端到端全通）；47 号发现 backend compose 漏透传开关 → **P26a.1 修** |
+| **P26c** | 专属引擎登记：`PUT/DELETE /admin/maclaw/accounts/:userId/engine-instance`（token 平台生成、明文仅响应一次、库里只有密文；登记前探活）；`maclaw_account_mappings` 三列的专用写路径（不与 provisioning Upsert 互相冲掉）；compose 白名单模板 `docker-compose.tenant-engines.yml`（独立卷/独立 token/引擎开关只开专属实例/dns 红线注释） | 本地，待上机（模板启用与跨实例判据在 49/50 号） |
 | **P26b** | 租户生成 key（D-3=b）：`maclaw_model_overrides` 镜像表（迁移 030）；admin 保存账号模型配置成功后镜像实际下发的完整配置；两扇门 `ResolveEngineGenerationCredentialForUser`（无镜像=平台默认，逐字节现状；镜像坏行=拒绝 run，**绝不**静默用平台 key）；响应新增 `mirror_saved` 状态 | 本地，待上机 |
 | **P26a.1** | backend compose 补 `MACLAW_TENANT_ENGINES: "${...:-0}"` 透传（46 引擎漏 dns、47 backend 漏此键，同一类「新开关没接进编排」）；AGENTS 编排段规约 + 两个 CI 编排守卫（反证上机红/绿） | `48`（双向核对进容器、真实部署复现双条件闸；**端到端复跑被 mimo 402 阻塞**，同日切 DeepSeek 官方后普通评测 2/2 通过，代码包端到端待补） |
 

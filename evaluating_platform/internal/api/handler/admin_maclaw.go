@@ -25,6 +25,7 @@ type AdminMaclawHandler struct {
 	// the publication left the expert list showing 「published」 for a package no
 	// enterprise could use (2026-10-26).
 	resourceRepo  *repository.MaclawResourceRecordRepository
+	engineAdmin   *maclaw.EngineInstanceAdmin
 	provider      maclaw.GatewayProvider
 	configService *maclaw.RuntimeConfigService
 	hubService    *maclaw.MaclawHubConfigService
@@ -760,4 +761,65 @@ func writeSafeMaclawAdminError(c *gin.Context, err error) {
 		status = http.StatusBadGateway
 	}
 	c.JSON(status, gin.H{"error": "maclaw admin operation failed", "code": "maclaw_admin_operation_failed"})
+}
+
+// ── P26c · 专属引擎登记（设计稿 §D-2/D-4）──────────────────────────────────
+// 明文 token 只在这里出现一次（响应），存储永远是密文；登记前探活，
+// 「配了地址但引擎不存在」在登记时暴露而不是第一个 run 提交时。
+
+func (h *AdminMaclawHandler) SetEngineInstanceAdmin(admin *maclaw.EngineInstanceAdmin) {
+	if h != nil {
+		h.engineAdmin = admin
+	}
+}
+
+func (h *AdminMaclawHandler) RegisterAccountEngine(c *gin.Context) {
+	if h.engineAdmin == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "engine instance admin is not configured", "code": "engine_instance_admin_unconfigured"})
+		return
+	}
+	userID, err := uuid.Parse(strings.TrimSpace(c.Param("userId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id", "code": "invalid_user"})
+		return
+	}
+	var in struct {
+		BaseURL string `json:"base_url"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "code": "invalid_request"})
+		return
+	}
+	token, err := h.engineAdmin.Register(c.Request.Context(), userID, in.BaseURL)
+	if err != nil {
+		code := "engine_instance_unavailable"
+		status := http.StatusConflict
+		if _, verr := maclaw.ValidateEngineInstanceBaseURL(in.BaseURL); verr != nil {
+			code, status = "engine_instance_url_invalid", http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error(), "code": code})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"registered": true,
+		"token":      token,
+		"note":       "token 仅此一次明文返回：写入部署 .env 并创建该租户的引擎服务块（见 docker-compose.tenant-engines.yml 模板），然后才可开启 MACLAW_TENANT_ENGINES。",
+	})
+}
+
+func (h *AdminMaclawHandler) UnregisterAccountEngine(c *gin.Context) {
+	if h.engineAdmin == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "engine instance admin is not configured", "code": "engine_instance_admin_unconfigured"})
+		return
+	}
+	userID, err := uuid.Parse(strings.TrimSpace(c.Param("userId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id", "code": "invalid_user"})
+		return
+	}
+	if err := h.engineAdmin.Unregister(c.Request.Context(), userID); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "engine_instance_unavailable"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"registered": false})
 }

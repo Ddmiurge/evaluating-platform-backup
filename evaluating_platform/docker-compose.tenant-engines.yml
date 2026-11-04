@@ -1,0 +1,47 @@
+# P26c · 专属引擎实例白名单（模板，默认零启用）
+# docs/architecture/tenant-isolation-g1-g3.md §D-1（静态声明制）/ §D-4（实例级 token）
+#
+# 用法（每个需要跑代码策略的企业租户一块）：
+#   1. 管理员门户登记：PUT /admin/maclaw/accounts/<userId>/engine-instance
+#      body {"base_url":"http://promptfoo-engine-acme:8090"} —— 响应里的 token 明文只出现一次；
+#   2. 把 token 写进部署目录 .env：ACME_ENGINE_TOKEN=<登记返回的 token>
+#   3. 取消注释下面的服务块（改 image/名字按租户），启动：
+#      docker compose -f docker-compose.yml -f docker-compose.tenant-engines.yml up -d
+#   4. backend .env 置 MACLAW_TENANT_ENGINES=1（双条件闸的另一半由登记表提供）。
+#
+# 红线（46/47/48 号教训）：
+#   - dns: 必须与主 compose 同一站点解析器（主文件有 CI 守卫；本模板没人替你守，漏了
+#     就是这个租户「Generated 0 tests」）；
+#   - 每实例独立 named volume（数据面隔离是 G-1 的本体）；
+#   - MACLAW_STRATEGY_CODE_PACKAGES 只开在专属实例上，共享实例保持 0；
+#   - 镜像与主引擎同版本，别拿旧镜像起新实例。
+#
+# services:
+#   promptfoo-engine-acme:
+#     build:
+#       context: ./promptfoo_engine
+#       dockerfile: Dockerfile
+#     image: evaluating_platform-promptfoo-engine:latest
+#     container_name: ep_promptfoo_engine_acme
+#     restart: unless-stopped
+#     read_only: true
+#     tmpfs:
+#       - /tmp:rw,noexec,nosuid,size=256m
+#       - /home/node/.promptfoo:rw,noexec,nosuid,size=512m
+#     cap_drop:
+#       - ALL
+#     security_opt:
+#       - no-new-privileges:true
+#     dns:
+#       - 10.95.38.38
+#     environment:
+#       PROMPTFOO_ENGINE_BEARER_TOKEN: "${ACME_ENGINE_TOKEN}"
+#       PROMPTFOO_CACHE_ENABLED: "0"
+#       REQUEST_TIMEOUT_MS: "180000"
+#       MACLAW_STRATEGY_CODE_PACKAGES: "1"
+#       PROMPTFOO_ENGINE_DATA_ROOT: /data/runs
+#     volumes:
+#       - promptfoo_engine_data_acme:/data/runs
+#
+# volumes:
+#   promptfoo_engine_data_acme:
