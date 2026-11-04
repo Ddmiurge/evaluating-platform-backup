@@ -1085,4 +1085,4 @@ GET /api/v1/maclaw/engine/runs/:id/report
 
 ## 专属引擎登记（P26c，2026-11-04，本地待上机）
 
-管理员 `PUT /admin/maclaw/accounts/:userId/engine-instance` 绑定专属引擎：校验 URL（http(s)、禁内嵌凭据/查询/片段）→ **先探活**（错地址在登记时暴露，不等第一个 run 提交才发现）→ 生成 48 位 hex token，明文只出现在登记响应一次，库里只有 `maclaw_account_mappings.engine_token_ciphertext`（crypto master key 加密）；重登记即轮换，`DELETE` 摘除回共享。引擎侧不需改代码（`bearerAuth` 本来就是逐容器一把）；起实例用 `docker-compose.tenant-engines.yml` 模板（独立卷、独立 token、`MACLAW_STRATEGY_CODE_PACKAGES` 只开在专属实例、dns 红线）。双条件闸的另一半（`MACLAW_TENANT_ENGINES=1`）在 backend `.env`，主 compose 已透传。
+管理员 `PUT /admin/maclaw/accounts/:userId/engine-instance` 绑定专属引擎：校验 URL（http(s)、禁内嵌凭据/查询/片段）→ **先探活**（错地址在登记时暴露，不等第一个 run 提交才发现）→ 生成 48 位 hex token，明文只出现在登记响应一次，库里只有 `maclaw_account_mappings.engine_token_ciphertext`（crypto master key 加密）；重登记即轮换，`DELETE` 摘除回共享。引擎侧不需改代码（`bearerAuth` 本来就是逐容器一把）；起实例用 `docker-compose.tenant-engines.yml` 模板（独立卷、独立 token、`MACLAW_STRATEGY_CODE_PACKAGES` 只开在专属实例、dns 红线）。双条件闸的另一半（`MACLAW_TENANT_ENGINES=1`）在 backend `.env`，主 compose 已透传。P26c.1 把这条链搬进门户：admin「用户与租户」页的专属引擎列/登记/摘除/一次性 token 弹窗，账号配置保存的 `mirror_saved:false` 会橙色警告。

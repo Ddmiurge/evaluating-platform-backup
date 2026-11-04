@@ -77,6 +77,17 @@ export interface AdminMaclawAccount {
   provisioning_status?: string
   model_config_status?: string
   last_error?: string
+  /** P26c.1 专属引擎登记状态（仅 provisioned 账号有该字段）。 */
+  engine_instance?: { registered: boolean; base_url?: string }
+  /** P26b 平台镜像存在（该账号模型配置曾在门户保存过）。 */
+  model_override?: boolean
+}
+
+/** P26c 登记响应：token 明文只出现这一次，关闭后只能重新登记轮换。 */
+export interface EngineInstanceRegistration {
+  registered: boolean
+  token: string
+  note: string
 }
 
 export interface AdminMaclawResource {
@@ -188,6 +199,15 @@ export const adminService = {
   async testDefaultModelConfig(data?: RuntimeAppConfig) {
     const res = await api.post<RuntimeConfigTestResult>('/admin/maclaw/model-default/test', data || {})
     return res.data
+  },
+
+  // ── P26c 专属引擎登记（token 明文只在登记响应出现一次）──────────────────
+  async registerAccountEngine(userId: string, baseUrl: string): Promise<EngineInstanceRegistration> {
+    const res = await api.put<EngineInstanceRegistration>(`/admin/maclaw/accounts/${userId}/engine-instance`, { base_url: baseUrl })
+    return res.data
+  },
+  async unregisterAccountEngine(userId: string): Promise<void> {
+    await api.delete(`/admin/maclaw/accounts/${userId}/engine-instance`)
   },
 
   async getAccountModelConfig(userId: string) {

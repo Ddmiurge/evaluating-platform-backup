@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -73,4 +74,30 @@ func (r *MaclawModelConfigRepository) GetOverride(ctx context.Context, userID uu
 
 func (r *MaclawModelConfigRepository) UpsertOverride(ctx context.Context, userID uuid.UUID, encrypted []byte, keyID string, updatedBy *uuid.UUID) error {
 	return upsertEncryptedConfigRow(ctx, r.pool, "maclaw_model_overrides", modelOverrideID(userID), encrypted, keyID, updatedBy, "upsert maclaw model override")
+}
+
+// ListOverrideUserIDs powers the admin account list's model-override badge
+// (P26c.1). One query, no per-row lookups.
+func (r *MaclawModelConfigRepository) ListOverrideUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM maclaw_model_overrides`)
+	if err != nil {
+		return nil, fmt.Errorf("list maclaw model overrides: %w", err)
+	}
+	defer rows.Close()
+	out := []uuid.UUID{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan maclaw model override id: %w", err)
+		}
+		if strings.HasPrefix(id, "user:") {
+			if parsed, perr := uuid.Parse(strings.TrimPrefix(id, "user:")); perr == nil {
+				out = append(out, parsed)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate maclaw model overrides: %w", err)
+	}
+	return out, nil
 }

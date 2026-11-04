@@ -981,8 +981,8 @@ func engineRunResponse(record *maclaw.EngineRunRecord, extra map[string]interfac
 		// This is the run DTO only: progress events and stage metadata keep
 		// their ban on any error text.
 		"error_brief": record.ErrorBrief,
-		"created_at":     record.CreatedAt,
-		"updated_at":     record.UpdatedAt,
+		"created_at":  record.CreatedAt,
+		"updated_at":  record.UpdatedAt,
 	}
 	plugins := make([]string, 0, len(record.Plugins))
 	for _, p := range record.Plugins {

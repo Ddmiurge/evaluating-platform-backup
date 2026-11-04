@@ -11,9 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"evaluating_platform/pkg/logger"
 	"evaluating_platform/internal/maclaw"
 	"evaluating_platform/internal/repository"
+	"evaluating_platform/pkg/logger"
 )
 
 type AdminMaclawHandler struct {
@@ -94,6 +94,15 @@ func (h *AdminMaclawHandler) ListAccounts(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list users"})
 		return
 	}
+	// P26c.1 badges: which accounts carry a model mirror / a registered
+	// dedicated engine. A failed badge query must never fail the account
+	// list — badges err toward absent.
+	var overrideSet map[uuid.UUID]bool
+	if h.configService != nil {
+		if set, berr := h.configService.UserOverrideIDSet(c.Request.Context()); berr == nil {
+			overrideSet = set
+		}
+	}
 	items := make([]gin.H, 0, len(users))
 	for _, user := range users {
 		item := gin.H{
@@ -115,7 +124,12 @@ func (h *AdminMaclawHandler) ListAccounts(c *gin.Context) {
 			item["provisioning_status"] = mapping.ProvisioningStatus
 			item["last_error"] = mapping.LastError
 			item["model_config_status"] = "unknown"
+			item["engine_instance"] = gin.H{
+				"registered": strings.TrimSpace(mapping.EngineBaseURL) != "",
+				"base_url":   mapping.EngineBaseURL,
+			}
 		}
+		item["model_override"] = overrideSet[user.ID]
 		items = append(items, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "limit": limit, "offset": offset})

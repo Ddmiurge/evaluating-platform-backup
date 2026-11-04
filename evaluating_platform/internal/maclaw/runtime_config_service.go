@@ -104,6 +104,32 @@ func (s *RuntimeConfigService) GetUserRuntimeConfig(ctx context.Context, userID 
 	return s.GetDefaultRuntimeConfig(ctx)
 }
 
+// modelOverrideLister is an OPTIONAL store capability: enumerate which
+// accounts have a mirror row (admin account-list badge, P26c.1). A store
+// without it simply reports "no badges" — never an error.
+type modelOverrideLister interface {
+	ListOverrideUserIDs(context.Context) ([]uuid.UUID, error)
+}
+
+func (s *RuntimeConfigService) UserOverrideIDSet(ctx context.Context) (map[uuid.UUID]bool, error) {
+	if !s.HasOverrideStore() {
+		return nil, nil
+	}
+	lister, ok := s.overrides.(modelOverrideLister)
+	if !ok {
+		return nil, nil
+	}
+	ids, err := lister.ListOverrideUserIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
+}
+
 // SaveUserRuntimeConfig writes the tenant mirror. Masked/empty secrets are
 // restored from the tenant's PREVIOUS effective config (its own mirror first,
 // platform default only when no mirror exists yet) — never from another

@@ -81,6 +81,11 @@ export function MaclawModelConfig({ userId, title = 'maclaw 模型配置', mode 
       } else {
         message.success('模型配置已保存')
       }
+      // P26b：runtime 已生效但平台镜像写失败 → 引擎生成 key 仍按旧配置解析，
+      // 必须说出来而不是绿着过去（下次保存会幂等收敛）。
+      if (mode === 'account' && (data as { mirror_saved?: boolean | null }).mirror_saved === false) {
+        message.warning('runtime 已更新，但平台镜像写入失败：该租户的生成模型 key 暂未生效，请重试保存或联系维护者查看后端日志。', 8)
+      }
     } catch (error) {
       message.error((error as Error).message || '保存失败')
     } finally {
