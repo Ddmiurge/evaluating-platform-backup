@@ -86,6 +86,14 @@ type EngineGenerationProvider interface {
 	GetDefaultRuntimeConfig(ctx context.Context) (*RuntimeAppConfig, error)
 }
 
+// EngineUserScopedGenerationProvider is implemented by providers that can also
+// resolve the TENANT-effective model config (P26b mirror). Optional: a
+// deployment without the override store keeps every provider path on the
+// platform default, byte-for-byte the pre-P26b behavior.
+type EngineUserScopedGenerationProvider interface {
+	GetUserRuntimeConfig(ctx context.Context, userID uuid.UUID) (*RuntimeAppConfig, error)
+}
+
 // ResolveEngineGenerationCredential resolves the current default LLM provider
 // from the platform default model config and maps it to the engine's
 // generation credential. It reuses the same provider-selection logic as the
@@ -100,6 +108,29 @@ func ResolveEngineGenerationCredential(ctx context.Context, provider EngineGener
 	if err != nil || cfg == nil {
 		return nil
 	}
+	return engineGenFromConfig(cfg)
+}
+
+// ResolveEngineGenerationCredentialForUser is the P26b per-tenant path: the
+// run's attacker model and judge share the run SUBMITTER's effective config —
+// the tenant mirror when the admin portal saved one, otherwise the platform
+// default. A mirror row that cannot be decrypted yields nil (the run is
+// refused with generation_not_configured), NOT a silent fall back to the
+// platform key: the whole point of the mirror is that a tenant's runs use
+// that tenant's key, and "wrong key, no signal" is the failure mode G-2
+// exists to remove.
+func ResolveEngineGenerationCredentialForUser(ctx context.Context, userID uuid.UUID, provider EngineGenerationProvider) *EngineGenCredential {
+	if userScoped, ok := provider.(EngineUserScopedGenerationProvider); ok && userID != uuid.Nil {
+		cfg, err := userScoped.GetUserRuntimeConfig(ctx, userID)
+		if err != nil || cfg == nil {
+			return nil
+		}
+		return engineGenFromConfig(cfg)
+	}
+	return ResolveEngineGenerationCredential(ctx, provider)
+}
+
+func engineGenFromConfig(cfg *RuntimeAppConfig) *EngineGenCredential {
 	llm, err := selectJudgeProvider(cfg)
 	if err != nil {
 		return nil

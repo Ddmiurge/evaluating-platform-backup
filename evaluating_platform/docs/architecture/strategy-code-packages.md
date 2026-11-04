@@ -361,7 +361,7 @@ strategyAction(testCases, injectVar, { ...strategy.config }, strategy.id, { gene
 
 | # | 项 | 状态 |
 |---|---|---|
-| S-2 | **G-1~G-3**：每租户引擎 / 租户级生成模型 key / 实例 token | **已立项为 P26，设计稿 `tenant-isolation-g1-g3.md`（2026-11-02）**；仍未落地。这是打开入口的硬前置（见 §2.2），验证环境开闸不依赖它（主理人 2026-11-02 拍板，见 development-status §5） |
+| S-2 | **G-1~G-3**：每租户引擎 / 租户级生成模型 key / 实例 token | **部分落地（P26a 路由 + P26b 租户生成 key，2026-11-04）**：两扇门的引擎实例路由与 generation 按发起方解析已实现（默认关/无镜像=现状逐字节不变）；每租户引擎实例供给与实例级 token 未做。仍是共享/生产开闸的硬前置（§2.2）；验证环境开闸不依赖（主理人 2026-11-02 拍板） |
 | S-3 | 发布期**引擎实测校验**（`POST /strategy-packages/validate`，子进程 import + 一次 action 调用，只回 `{ok, code, message}`） | ✅ 已做；BFF 在写发布记录**之前**调用，引擎不可达则拒绝发布 |
 | S-3b | 总开关 `MACLAW_STRATEGY_CODE_PACKAGES`（默认 off，拒绝发生在任何写盘之前） | ✅ 已做 |
 | S-4 | 运行期 wall-clock 超时（默认 20s，`MACLAW_STRATEGY_CODE_TIMEOUT_MS`）与输出 schema 校验 | ✅ 已做（见 §15.3b） |

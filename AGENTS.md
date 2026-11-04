@@ -146,7 +146,7 @@ Current Skill supply follows the resource projection model:
 管理员门户是 maclaw-only 运营治理入口：
 
 - maclaw 模型配置只在管理员门户维护。
-- 支持平台默认模型配置 + 单账号/租户覆盖。
+- 支持平台默认模型配置 + 单账号/租户覆盖。P26b 起账号覆盖有平台侧镜像（`maclaw_model_overrides`，迁移 030）：管理员保存账号模型配置 = 先推 runtime、成功后镜像「实际发出的完整配置」（不取 runtime 回显，防上游学会掩码后镜像永不收敛）；引擎 generation 凭据按 run 发起方解析（镜像优先、无镜像=平台默认、镜像不可解密=拒绝 run，绝不静默回落平台 key）。镜像写失败不阻断保存：响应带 `mirror_saved:false` + ERROR 日志，下次保存收敛。
 - 企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。
 - 管理员可以查看和治理账号、租户、发布资源、任务摘要和健康状态。
 - 管理员页面不得读取或回显 payload、credential secret、maclaw token、admin secret 或 evidence content。

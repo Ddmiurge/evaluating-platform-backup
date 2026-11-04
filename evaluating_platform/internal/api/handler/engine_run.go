@@ -581,7 +581,9 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 	// (same source as MaClaw attack generation / judge). The engine synthesizes
 	// attack cases with it, so a missing generation LLM is a hard fail-fast: no
 	// run record is created.
-	generation := maclaw.ResolveEngineGenerationCredential(c.Request.Context(), h.generationProvider)
+	// P26b: the attacker model is resolved for the RUN SUBMITTER — tenant mirror
+	// when the admin portal saved one, platform default otherwise.
+	generation := maclaw.ResolveEngineGenerationCredentialForUser(c.Request.Context(), userID, h.generationProvider)
 	if generation == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "platform generation model is not configured", "code": "generation_not_configured"})
 		return

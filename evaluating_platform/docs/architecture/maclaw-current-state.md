@@ -1078,3 +1078,7 @@ GET /api/v1/maclaw/engine/runs/:id/report
 - **默认关时逐字节等于 P25**：`Resolve` 不查表直接返回共享 client；既有全部测试不改即证明。
 
 设计稿与未做的 P26b/c/d 见 `tenant-isolation-g1-g3.md`。
+
+## 租户生成 key 镜像（P26b，2026-11-04，本地待上机）
+
+引擎 generation 凭据从「全平台一把」改为「按 run 发起方解析」：`maclaw_model_overrides`（`user:<uuid>` → 加密 RuntimeAppConfig）由管理员门户账号配置保存路径单点写入；`ResolveEngineGenerationCredentialForUser` 供两扇门（wizard + confirm）使用，无镜像的账号行为逐字节不变。**回填**：管理员把某账号的模型配置重新保存一次即生成镜像（或等 P26c 的登记流一起处理）。判定链（redteam judge）仍读平台默认——本批刻意不动，判定与生成是否同租户化是独立决定。

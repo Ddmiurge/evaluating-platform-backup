@@ -18,13 +18,35 @@ type ModelDefaultStore interface {
 	UpsertDefault(context.Context, []byte, string, *uuid.UUID) error
 }
 
+// ModelOverrideStore is the P26b tenant mirror (docs/architecture/
+// tenant-isolation-g1-g3.md D-3, option b). The single write is the admin
+// portal save; the single hot read is engine generation resolution.
+type ModelOverrideStore interface {
+	GetOverride(context.Context, uuid.UUID) (*model.MaclawModelDefault, error)
+	UpsertOverride(context.Context, uuid.UUID, []byte, string, *uuid.UUID) error
+}
+
 type RuntimeConfigService struct {
-	store    ModelDefaultStore
-	keyStore *appcrypto.KeyStore
+	store     ModelDefaultStore
+	overrides ModelOverrideStore
+	keyStore  *appcrypto.KeyStore
 }
 
 func NewRuntimeConfigService(store ModelDefaultStore, keyStore *appcrypto.KeyStore) *RuntimeConfigService {
 	return &RuntimeConfigService{store: store, keyStore: keyStore}
+}
+
+// SetOverrideStore wires the tenant mirror store. Optional by design: a
+// deployment without it keeps the platform default for every account, which is
+// exactly the pre-P26b behavior.
+func (s *RuntimeConfigService) SetOverrideStore(store ModelOverrideStore) {
+	if s != nil {
+		s.overrides = store
+	}
+}
+
+func (s *RuntimeConfigService) HasOverrideStore() bool {
+	return s != nil && s.overrides != nil
 }
 
 func (s *RuntimeConfigService) Enabled() bool {
@@ -43,6 +65,76 @@ func (s *RuntimeConfigService) GetDefaultRuntimeConfig(ctx context.Context) (*Ru
 		return nil, nil
 	}
 	return s.decryptConfig(record)
+}
+
+// GetUserOverrideRuntimeConfig returns the tenant's mirrored config.
+// (nil, false, nil) means "no mirror row" — callers fall back to the platform
+// default, which is the pre-P26b behavior. A row that EXISTS but cannot be
+// decrypted is returned as an error, never as "absent": silently using the
+// platform key where a tenant key was configured is exactly the key-scope
+// mixing the tenant gates exist to prevent, and it would fail silently.
+func (s *RuntimeConfigService) GetUserOverrideRuntimeConfig(ctx context.Context, userID uuid.UUID) (*RuntimeAppConfig, bool, error) {
+	if !s.Enabled() || !s.HasOverrideStore() || userID == uuid.Nil {
+		return nil, false, nil
+	}
+	record, err := s.overrides.GetOverride(ctx, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	if record == nil || len(record.EncryptedConfig) == 0 {
+		return nil, false, nil
+	}
+	cfg, err := s.decryptConfig(record)
+	if err != nil {
+		return nil, true, err
+	}
+	return cfg, true, nil
+}
+
+// GetUserRuntimeConfig is the tenant-aware effective model config: mirror row
+// when present, platform default otherwise.
+func (s *RuntimeConfigService) GetUserRuntimeConfig(ctx context.Context, userID uuid.UUID) (*RuntimeAppConfig, error) {
+	cfg, present, err := s.GetUserOverrideRuntimeConfig(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if present {
+		return cfg, nil
+	}
+	return s.GetDefaultRuntimeConfig(ctx)
+}
+
+// SaveUserRuntimeConfig writes the tenant mirror. Masked/empty secrets are
+// restored from the tenant's PREVIOUS effective config (its own mirror first,
+// platform default only when no mirror exists yet) — never from another
+// tenant's row.
+func (s *RuntimeConfigService) SaveUserRuntimeConfig(ctx context.Context, userID uuid.UUID, next RuntimeAppConfig, updatedBy *uuid.UUID) (*RuntimeUserConfig, *RuntimeAppConfig, error) {
+	if !s.Enabled() || !s.HasOverrideStore() || userID == uuid.Nil {
+		return nil, nil, ErrNotConfigured
+	}
+	previous, _, err := s.GetUserOverrideRuntimeConfig(ctx, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if previous == nil {
+		previous, _ = s.GetDefaultRuntimeConfig(ctx)
+	}
+	if previous != nil {
+		next = MergeRuntimeConfigSecrets(*previous, next)
+	}
+	keyID, key := s.keyStore.CurrentKey()
+	data, err := json.Marshal(next)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal maclaw model override: %w", err)
+	}
+	encrypted, err := appcrypto.Encrypt(data, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encrypt maclaw model override: %w", err)
+	}
+	if err := s.overrides.UpsertOverride(ctx, userID, encrypted, keyID, updatedBy); err != nil {
+		return nil, nil, err
+	}
+	return &RuntimeUserConfig{AppConfig: MaskRuntimeAppConfig(next)}, &next, nil
 }
 
 func (s *RuntimeConfigService) GetMaskedDefaultRuntimeConfig(ctx context.Context) (*RuntimeUserConfig, error) {

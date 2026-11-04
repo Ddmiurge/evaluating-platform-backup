@@ -117,6 +117,7 @@ func main() {
 		keyStore = ks
 	}
 	maclawRuntimeConfigService := maclawpkg.NewRuntimeConfigService(maclawModelConfigRepo, keyStore)
+	maclawRuntimeConfigService.SetOverrideStore(maclawModelConfigRepo) // P26b tenant mirror
 	maclawHubConfigService := maclawpkg.NewMaclawHubConfigService(maclawHubConfigRepo, keyStore)
 	maclawTargetConfigService := maclawpkg.NewTargetConfigService(maclawTargetConfigRepo, keyStore)
 	maclawRedteamArtifactService := maclawpkg.NewRedteamArtifactService(maclawRedteamArtifactRepo)
@@ -543,6 +544,7 @@ var migrationFiles = []string{
 	"migrations/027_engine_run_job_link.sql",
 	"migrations/028_redteam_report_engine_run_id.sql",
 	"migrations/029_tenant_engine_registry.sql",
+	"migrations/030_model_config_overrides.sql",
 }
 
 // runMigrations 按 migrationFiles 清单顺序执行迁移。

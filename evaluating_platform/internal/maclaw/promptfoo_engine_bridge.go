@@ -418,7 +418,9 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 		return nil, errors.New("no enabled target model configured")
 	}
 
-	generation := ResolveEngineGenerationCredential(ctx, b.engineGeneration)
+	// P26b: per-tenant resolution (mirror first), same rule as the wizard door —
+	// two doors, one resolution result.
+	generation := ResolveEngineGenerationCredentialForUser(ctx, userID, b.engineGeneration)
 	if generation == nil {
 		return nil, errors.New("platform generation model is not configured")
 	}

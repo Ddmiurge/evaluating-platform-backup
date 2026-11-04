@@ -131,6 +131,12 @@ type RuntimeUserConfig struct {
 	UserID    string           `json:"user_id,omitempty"`
 	AppConfig RuntimeAppConfig `json:"app_config"`
 	UpdatedAt time.Time        `json:"updated_at,omitempty"`
+	// MirrorSaved reports the P26b platform mirror state after an account
+	// config save: runtime accepted the config but the mirror write failed is
+	// the only interesting case (response stays 200, drift visible, next save
+	// converges). nil = the endpoint has no mirror concern (default config) or
+	// the deployment has no override store.
+	MirrorSaved *bool `json:"mirror_saved,omitempty"`
 }
 
 type RuntimeConfigValidationIssue struct {

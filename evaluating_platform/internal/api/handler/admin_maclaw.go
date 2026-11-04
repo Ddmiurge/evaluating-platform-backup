@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"evaluating_platform/pkg/logger"
 	"evaluating_platform/internal/maclaw"
 	"evaluating_platform/internal/repository"
 )
@@ -156,6 +157,32 @@ func (h *AdminMaclawHandler) UpdateAccountConfig(c *gin.Context) {
 		return
 	}
 	refreshMaclawInstanceReadiness(c, session)
+	// P26b mirror: persist exactly the config WE sent the runtime (browser
+	// payload already merged with the runtime's current values by
+	// mergeAccountRuntimeConfigSecrets — so every real secret is present
+	// regardless of what the browser echoed). Mirroring the runtime RESPONSE
+	// was rejected: if an upstream ever learns to mask secrets in responses,
+	// the mirror would silently store `******` and never converge. Mirror
+	// failure never fails the save — the response says so, the log says so,
+	// and the next save converges (merge is idempotent).
+	if h.configService.HasOverrideStore() {
+		if targetID, perr := uuid.Parse(strings.TrimSpace(c.Param("userId"))); perr == nil {
+			var updatedBy *uuid.UUID
+			if adminID, aerr := uuid.Parse(strings.TrimSpace(c.GetString("user_id"))); aerr == nil {
+				updatedBy = &adminID
+			}
+			mirrorSaved := true
+			if _, _, merr := h.configService.SaveUserRuntimeConfig(c.Request.Context(), targetID, in, updatedBy); merr != nil {
+				mirrorSaved = false
+				logger.Error("maclaw account model config mirror failed", map[string]interface{}{
+					"target_user": targetID.String(),
+					"err":         merr.Error(),
+				})
+			}
+			flag := mirrorSaved
+			cfg.MirrorSaved = &flag
+		}
+	}
 	cfg.AppConfig = maclaw.MaskRuntimeAppConfig(cfg.AppConfig)
 	c.JSON(http.StatusOK, cfg)
 }
