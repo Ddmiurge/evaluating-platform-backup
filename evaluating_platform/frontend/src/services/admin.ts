@@ -78,7 +78,7 @@ export interface AdminMaclawAccount {
   model_config_status?: string
   last_error?: string
   /** P26c.1 专属引擎登记状态（仅 provisioned 账号有该字段）。 */
-  engine_instance?: { registered: boolean; base_url?: string }
+  engine_instance?: { registered: boolean; base_url?: string; health?: string }
   /** P26b 平台镜像存在（该账号模型配置曾在门户保存过）。 */
   model_override?: boolean
 }

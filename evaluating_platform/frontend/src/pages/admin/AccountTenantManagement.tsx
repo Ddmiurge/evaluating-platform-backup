@@ -3,7 +3,7 @@ import { Alert, Button, Drawer, Input, Modal, Popconfirm, Select, Space, Table, 
 import { SettingOutlined, ReloadOutlined } from '@ant-design/icons'
 import { adminService, type AdminMaclawAccount } from '../../services/admin'
 import { MaclawModelConfig } from './MaclawModelConfig'
-import { ENGINE_TOKEN_ONCE_NOTICE, normalizeEngineBaseUrl, validateEngineBaseUrl } from './engineInstanceForm'
+import { ENGINE_TOKEN_ONCE_NOTICE, engineInstanceHealthTag, normalizeEngineBaseUrl, validateEngineBaseUrl } from './engineInstanceForm'
 
 const { Text, Title, Paragraph } = Typography
 
@@ -112,9 +112,15 @@ export function AccountTenantManagement() {
             render: (_, row) => {
               if (!row.maclaw_tenant_id) return <Text type="secondary">-</Text>
               if (row.engine_instance?.registered) {
+                const health = engineInstanceHealthTag(row.engine_instance.health)
                 return (
                   <Space size={4}>
                     <TooltiplessUrl url={row.engine_instance.base_url} />
+                    {health && (
+                      <Tag color={health.color} title={health.hint || health.label}>
+                        {health.label}
+                      </Tag>
+                    )}
                     <Popconfirm title="摘除后该账号回落到共享引擎（代码策略将被双条件闸拒绝）。" okText="摘除" cancelText="取消" onConfirm={() => void unregister(row)}>
                       <Button size="small" danger type="link">摘除</Button>
                     </Popconfirm>

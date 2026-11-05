@@ -34,6 +34,17 @@ func TestFrontendAdminEnginePanelMatchesBackendKeys(t *testing.T) {
 			t.Fatalf("account page must keep using %q", literal)
 		}
 	}
+	feForm := read("..", "..", "..", "frontend", "src", "pages", "admin", "engineInstanceForm.ts")
+	if !strings.Contains(feForm, "token_mismatch") {
+		t.Fatal("engineInstanceForm must keep the token_mismatch literal (P26c.2 probe state)")
+	}
+	probeSrc, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "..", "..", "maclaw", "engine_instance_admin.go"))
+	if err != nil {
+		t.Fatalf("read engine_instance_admin.go: %v", err)
+	}
+	if !strings.Contains(string(probeSrc), "token_mismatch") {
+		t.Fatal("backend probe must keep the token_mismatch literal (51 §8.1 silent-401 state)")
+	}
 	handlerSrc := read("admin_maclaw.go")
 	for _, literal := range []string{`"engine_instance"`, `"model_override"`} {
 		if !strings.Contains(handlerSrc, literal) {

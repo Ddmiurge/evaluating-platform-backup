@@ -23,13 +23,13 @@ import (
 // back to shared.
 
 type adminStore struct {
-	mapping     *model.MaclawAccountMapping
-	setCalls    int
-	cleared     int
-	lastBase    string
-	lastCipher  []byte
-	lastKeyID   string
-	setErr      error
+	mapping    *model.MaclawAccountMapping
+	setCalls   int
+	cleared    int
+	lastBase   string
+	lastCipher []byte
+	lastKeyID  string
+	setErr     error
 }
 
 func (s *adminStore) GetByPlatformUserID(context.Context, uuid.UUID) (*model.MaclawAccountMapping, error) {
@@ -159,4 +159,105 @@ func TestUnregisterClears(t *testing.T) {
 
 func bytesContains(hay, needle []byte) bool {
 	return strings.Contains(string(hay), string(needle))
+}
+
+// ── P26c.2 Probe ─────────────────────────────────────────────────────────────
+// The 51 §8.1 scenario made visible: registration rotated the token, the
+// container still runs the OLD one until .env is updated + recreated. Probe
+// must say token_mismatch there — the state that used to be an invisible 401
+// on the first routed run.
+
+func encryptFixtureToken(t *testing.T, plaintext string) []byte {
+	t.Helper()
+	key, err := hex.DecodeString(strings.Repeat("7a", 32)) // same master key as newAdminFixture
+	if err != nil {
+		t.Fatalf("decode fixture key: %v", err)
+	}
+	cipher, err := appcrypto.Encrypt([]byte(plaintext), key)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	return cipher
+}
+
+// authEchoServer requires the EXACT bearer; wrong → 401, right → 404 (the
+// "run does not exist" answer that follows a passed auth check).
+func authEchoServer(t *testing.T, wantToken string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+wantToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestProbeStates(t *testing.T) {
+	ctx := context.Background()
+	user := uuid.New()
+
+	t.Run("unregistered", func(t *testing.T) {
+		store := &adminStore{mapping: &model.MaclawAccountMapping{}}
+		a := newAdminFixture(t, store, "")
+		got, err := a.Probe(ctx, user)
+		if err != nil || got != EngineInstanceHealthUnregistered {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	})
+
+	t.Run("incomplete (address, no token)", func(t *testing.T) {
+		store := &adminStore{mapping: &model.MaclawAccountMapping{EngineBaseURL: "http://x:8090"}}
+		a := newAdminFixture(t, store, "")
+		got, err := a.Probe(ctx, user)
+		if err != nil || got != EngineInstanceHealthIncomplete {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	})
+
+	t.Run("ok (stored token matches container)", func(t *testing.T) {
+		srv := authEchoServer(t, "deployed-token")
+		store := &adminStore{mapping: &model.MaclawAccountMapping{
+			EngineBaseURL:         srv.URL,
+			EngineTokenCiphertext: encryptFixtureToken(t, "deployed-token"),
+			EngineTokenKeyID:      "k1",
+		}}
+		a := newAdminFixture(t, store, "")
+		got, err := a.Probe(ctx, user)
+		if err != nil || got != EngineInstanceHealthOK {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	})
+
+	t.Run("token_mismatch (rotated in DB, container still old)", func(t *testing.T) {
+		srv := authEchoServer(t, "deployed-token")
+		store := &adminStore{mapping: &model.MaclawAccountMapping{
+			EngineBaseURL:         srv.URL,
+			EngineTokenCiphertext: encryptFixtureToken(t, "newly-rotated-token"), // .env not updated yet
+			EngineTokenKeyID:      "k1",
+		}}
+		a := newAdminFixture(t, store, "")
+		got, err := a.Probe(ctx, user)
+		if err != nil || got != EngineInstanceHealthTokenMismatch {
+			t.Fatalf("got=%q err=%v — this is the silent-401 state from 51 §8.1", got, err)
+		}
+	})
+
+	t.Run("unreachable (container down)", func(t *testing.T) {
+		srv := authEchoServer(t, "t")
+		deadURL := srv.URL
+		srv.Close() // no listener anymore
+		store := &adminStore{mapping: &model.MaclawAccountMapping{
+			EngineBaseURL:         deadURL,
+			EngineTokenCiphertext: encryptFixtureToken(t, "t"),
+			EngineTokenKeyID:      "k1",
+		}}
+		a := newAdminFixture(t, store, "")
+		got, err := a.Probe(ctx, user)
+		if err != nil || got != EngineInstanceHealthUnreachable {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	})
 }

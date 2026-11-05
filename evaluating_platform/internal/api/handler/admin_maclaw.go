@@ -124,10 +124,22 @@ func (h *AdminMaclawHandler) ListAccounts(c *gin.Context) {
 			item["provisioning_status"] = mapping.ProvisioningStatus
 			item["last_error"] = mapping.LastError
 			item["model_config_status"] = "unknown"
-			item["engine_instance"] = gin.H{
-				"registered": strings.TrimSpace(mapping.EngineBaseURL) != "",
+			registered := strings.TrimSpace(mapping.EngineBaseURL) != ""
+			engineInstance := gin.H{
+				"registered": registered,
 				"base_url":   mapping.EngineBaseURL,
 			}
+			// P26c.2: registered instances get ONE authenticated probe so the
+			// account list shows whether the container actually holds the
+			// CURRENT token (registered-but-stale-Env would otherwise look
+			// identical to healthy and fail only at the first routed run).
+			// Probe failure errs toward omitting the badge, never the list.
+			if registered && h.engineAdmin != nil {
+				if health, perr := h.engineAdmin.Probe(c.Request.Context(), user.ID); perr == nil {
+					engineInstance["health"] = string(health)
+				}
+			}
+			item["engine_instance"] = engineInstance
 		}
 		item["model_override"] = overrideSet[user.ID]
 		items = append(items, item)

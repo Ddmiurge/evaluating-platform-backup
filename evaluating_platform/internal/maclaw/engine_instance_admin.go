@@ -138,3 +138,65 @@ func (a *EngineInstanceAdmin) Unregister(ctx context.Context, userID uuid.UUID) 
 	_, err := a.store.ClearEngineInstance(ctx, userID)
 	return err
 }
+
+// ── P26c.2 · 实例可用性探活（51 号 §8.1 的静默 401 → 面板可见）──────────────
+// 重新登记会轮换 token，而 token 要等 .env 更新 + recreate 才进容器；中间这段
+// 窗口里登记状态是"已登记"但每一次路由过来的 run 都会 401——51 号原话「两次
+// token 不一致时 BFF 调用会 401」，没人看得见。探活用存储的密文 token 打一次
+// 带鉴权的只读端点，把这段窗口变成状态。
+
+type EngineInstanceHealth string
+
+const (
+	EngineInstanceHealthOK            EngineInstanceHealth = "ok"             // token 已部署，实例应答
+	EngineInstanceHealthTokenMismatch EngineInstanceHealth = "token_mismatch" // 登记过但容器还是旧 token → 更新 .env 后 recreate
+	EngineInstanceHealthUnreachable   EngineInstanceHealth = "unreachable"    // 容器没起/挂了
+	EngineInstanceHealthIncomplete    EngineInstanceHealth = "incomplete"     // 半登记（有地址没 token 密文）
+	EngineInstanceHealthUnregistered  EngineInstanceHealth = "unregistered"   // 未登记
+)
+
+// Probe run id is deliberately not `er-…` shaped: real run ids are er-<uuid>,
+// so this can never collide with a real record.
+const engineInstanceProbeRunID = "health-probe-never-a-real-run"
+
+// Probe asks the registered instance one authenticated read-only question.
+// It never mutates anything on the instance; a run id that does not exist
+// answers 404 AFTER the bearer check, which is exactly the signal we need:
+// 401 = the container still runs an older token, anything else = auth passed.
+func (a *EngineInstanceAdmin) Probe(ctx context.Context, userID uuid.UUID) (EngineInstanceHealth, error) {
+	if a == nil || a.store == nil || a.keys == nil {
+		return "", ErrNotConfigured
+	}
+	mapping, err := a.store.GetByPlatformUserID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if mapping == nil || strings.TrimSpace(mapping.EngineBaseURL) == "" {
+		return EngineInstanceHealthUnregistered, nil
+	}
+	if len(mapping.EngineTokenCiphertext) == 0 || strings.TrimSpace(mapping.EngineTokenKeyID) == "" {
+		return EngineInstanceHealthIncomplete, nil
+	}
+	key, err := a.keys.GetKey(mapping.EngineTokenKeyID)
+	if err != nil {
+		return "", err
+	}
+	token, err := appcrypto.Decrypt(mapping.EngineTokenCiphertext, key)
+	if err != nil {
+		return "", err
+	}
+	// Short timeout: this runs inside the admin account LIST. A dead instance
+	// must not stall the page for long, and a healthy one answers in ms.
+	client := NewPromptfooEngineClient(strings.TrimSpace(mapping.EngineBaseURL), string(token), 3)
+	_, probeErr := client.GetRun(ctx, engineInstanceProbeRunID)
+	switch {
+	case probeErr == nil, errors.Is(probeErr, ErrEngineNotFound):
+		return EngineInstanceHealthOK, nil
+	case errors.Is(probeErr, ErrEngineUnauthorized):
+		return EngineInstanceHealthTokenMismatch, nil
+	case errors.Is(probeErr, ErrEngineUnavailable):
+		return EngineInstanceHealthUnreachable, nil
+	default:
+		return "", probeErr
+	}
+}
