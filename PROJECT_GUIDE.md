@@ -17,6 +17,7 @@
 |---|---|
 | 开发到哪一步、能做什么、还剩什么 | `evaluating_platform/docs/architecture/development-status.md` |
 | 当前运行形态与安全边界 | `evaluating_platform/docs/architecture/maclaw-current-state.md` |
+| 平台有哪些攻击手段（插件/策略/技能全量分类） | `evaluating_platform/docs/attack-capability-inventory.md` |
 | 为什么这么做（逐批决策与缺陷） | `audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md` |
 | 上机跑成什么样 | `records/`（索引在 `records/README.md`） |
 | 一次性故障调查 | `audits/` |
