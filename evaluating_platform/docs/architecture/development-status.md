@@ -128,7 +128,6 @@
 | `maclaw-current-state.md` | 当前运行形态、数据流与安全边界 |
 | `custom-plugin-publication.md` | 专家自定义插件/策略发布链路 |
 | `strategy-code-packages.md` | 策略代码包（设计 + P18–P24 实施状态 + 边界） |
-| `../attack-capability-inventory.md` | **攻击能力清单**：116 插件 / 27 策略 / 8 技能全量分类与跨层手法索引 |
 | `tenant-isolation-g1-g3.md` | **P26 立项**：租户隔离设计稿（代码包生产开闸的资格线） |
 | `agent-target-preparation-guide.md` | 智能体目标接入 |
 | `production-cutover-checklist.md` | 上线与回滚 |
