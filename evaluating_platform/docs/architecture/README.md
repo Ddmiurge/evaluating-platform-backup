@@ -10,6 +10,7 @@ MaClawSrv 主路径文档。
 | `custom-plugin-publication.md` | 专家自定义插件 / 策略发布链路 |
 | `strategy-code-packages.md` | **策略代码包设计稿**（可上传 JS、可执行；含租户隔离前置条件与实测清单） |
 | `tenant-isolation-g1-g3.md` | **P26 立项：租户隔离设计稿**（每租户引擎 / 生成 key 按租户 / 实例级 token；代码包在生产开闸的资格线） |
+| `embedded-plugin-track.md` | **内嵌插件轨道设计稿（P28 候选，待评审）**：专家上传→自动关卡→管理员审批→批量构建→全员可用；含修改循环与三张时序图 |
 | `agent-target-preparation-guide.md` | 智能体目标接入 |
 | `production-cutover-checklist.md` | 上线前配置、验证和回滚检查 |
 | `legacy-retirement-plan.md` | 旧链路退役范围、tombstone 和保留项 |
