@@ -128,6 +128,7 @@
 | `maclaw-current-state.md` | 当前运行形态、数据流与安全边界 |
 | `custom-plugin-publication.md` | 专家自定义插件/策略发布链路 |
 | `strategy-code-packages.md` | 策略代码包（设计 + P18–P24 实施状态 + 边界） |
+| `embedded-plugin-track.md` | **内嵌插件轨道设计稿（待评审）**：第三级放开的评审制交付通道，含修改循环与时序图 |
 | `tenant-isolation-g1-g3.md` | **P26 立项**：租户隔离设计稿（代码包生产开闸的资格线） |
 | `agent-target-preparation-guide.md` | 智能体目标接入 |
 | `production-cutover-checklist.md` | 上线与回滚 |
