@@ -119,6 +119,13 @@ func (b *RedteamToolBridge) SetPromptfooEngine(runner PromptfooEngineRunner, run
 	b.engineGeneration = generation
 }
 
+// SetEmbeddedLifecycle wires the P28 state-machine gate (confirm door).
+func (b *RedteamToolBridge) SetEmbeddedLifecycle(lifecycle *EmbeddedPluginLifecycle) {
+	if b != nil {
+		b.embeddedLifecycle = lifecycle
+	}
+}
+
 // SetEngineInstances wires the P26a tenant engine registry into the bridge.
 // Optional: nil or a disabled registry leaves every confirmed run on the shared
 // engineRunner — pre-P26 behavior, which is what lets the routing ship before
@@ -365,6 +372,17 @@ func (b *RedteamToolBridge) PreparePromptfooEngineRun(ctx context.Context, userI
 	customPlugins := capabilities.CustomPlugins
 	customStrategies := capabilities.CustomStrategies
 	customStrategyCode := capabilities.CustomStrategyCode
+	// P28: the confirm door runs the SAME embedded-selection gate (one resolver
+	// family — the wizard's lesson applied to a new channel).
+	if b.embeddedLifecycle != nil {
+		ids := make([]string, 0, len(plugins))
+		for _, p := range plugins {
+			ids = append(ids, p.ID)
+		}
+		if err := b.embeddedLifecycle.GuardEmbeddedPluginSelection(ctx, userID, ids); err != nil {
+			return nil, err
+		}
+	}
 	// P26a code strategy gate, placed at the same seam as package governance:
 	// before credentials are materialized and before the run record is
 	// persisted, so a refused code strategy leaves no half-created run. With

@@ -102,6 +102,7 @@ type engineResultCompiler interface {
 type EngineRunHandler struct {
 	engine             engineClient
 	instances          *maclaw.EngineInstanceRegistry
+	embeddedLifecycle  *maclaw.EmbeddedPluginLifecycle
 	runs               *maclaw.EngineRunService
 	targetConfig       engineTargetProvider
 	generationProvider maclaw.EngineGenerationProvider
@@ -158,6 +159,13 @@ func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.Engi
 // SetEngineInstances wires the P26a tenant engine registry. Optional: nil or a
 // disabled registry leaves every run on the shared client — pre-P26 behavior,
 // byte-for-byte. This is what lets the routing ship before the instances do.
+// SetEmbeddedLifecycle wires the P28 state-machine gate (wizard door).
+func (h *EngineRunHandler) SetEmbeddedLifecycle(lifecycle *maclaw.EmbeddedPluginLifecycle) {
+	if h != nil {
+		h.embeddedLifecycle = lifecycle
+	}
+}
+
 func (h *EngineRunHandler) SetEngineInstances(registry *maclaw.EngineInstanceRegistry) {
 	if h != nil {
 		h.instances = registry
@@ -424,6 +432,14 @@ func writeEnginePreflightRejection(c *gin.Context, err error) bool {
 		return true
 	}
 
+	var embeddedRefusal *maclaw.EmbeddedSelectionRefusalError
+	if errors.As(err, &embeddedRefusal) {
+		// P28: embedded plugin not open to this caller right now (testing /
+		// pending / disabled) — 409 with the state machine's own wording.
+		c.JSON(http.StatusConflict, gin.H{"error": embeddedRefusal.Message, "code": embeddedRefusal.Code})
+		return true
+	}
+
 	var noDedicated *maclaw.EngineCodeStrategyNoDedicatedError
 	if errors.As(err, &noDedicated) {
 		// P26a: code strategy without a dedicated tenant engine. 409 like every
@@ -615,6 +631,20 @@ func (h *EngineRunHandler) CreateRun(c *gin.Context) {
 		customPlugins = resolved.CustomPlugins
 		customStrategies = resolved.CustomStrategies
 		customStrategyCode = resolved.CustomStrategyCode
+	}
+
+	// P28: embedded-plugin selection gate — the state machine decides (testing /
+	// pending / disabled), one dispatcher for both doors. Ids that are not
+	// embedded pass straight through; this gate only ever ADDS refusals.
+	if h.embeddedLifecycle != nil {
+		ids := make([]string, 0, len(plugins))
+		for _, p := range plugins {
+			ids = append(ids, p.ID)
+		}
+		if err := h.embeddedLifecycle.GuardEmbeddedPluginSelection(c.Request.Context(), userID, ids); err != nil {
+			writeEnginePreflightRejection(c, err)
+			return
+		}
 	}
 
 	// P26a code strategy gate, placed at the same seam as package governance:

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@libsql/client": "0.17.4",
+    "adm-zip": "^0.6.1",
     "drizzle-orm": "0.45.2",
     "express": "^4.21.2",
     "promptfoo": "0.123.0",

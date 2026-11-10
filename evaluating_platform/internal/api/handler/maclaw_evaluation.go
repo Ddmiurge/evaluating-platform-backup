@@ -7,10 +7,13 @@ import (
 	"strconv"
 	"strings"
 
+	"encoding/json"
 	"github.com/gin-gonic/gin"
+
 	"github.com/google/uuid"
 
 	"evaluating_platform/internal/maclaw"
+	"evaluating_platform/internal/repository"
 	"evaluating_platform/pkg/logger"
 )
 
@@ -22,6 +25,19 @@ type MaclawEvaluationHandler struct {
 	runtimeMode        string
 	engineJobs         *maclaw.PlatformEngineJobStore
 	engineRunService   *maclaw.EngineRunService
+	// P28: embedded-plugin state machine. Optional — nil means embedded uploads
+	// are refused upstream (the store's prober wiring) and no state hooks run.
+	embeddedLifecycle *maclaw.EmbeddedPluginLifecycle
+	embeddedRepo      *repository.MaclawEmbeddedPluginRepository
+}
+
+// SetEmbeddedTools wires the P28 state spine (store + lifecycle) into the
+// evaluation handler: upload hooks (record/reject) and the expert list.
+func (h *MaclawEvaluationHandler) SetEmbeddedTools(lifecycle *maclaw.EmbeddedPluginLifecycle, repo *repository.MaclawEmbeddedPluginRepository) {
+	if h != nil {
+		h.embeddedLifecycle = lifecycle
+		h.embeddedRepo = repo
+	}
 }
 
 func NewMaclawEvaluationHandler(gateway maclaw.EvaluationGateway) *MaclawEvaluationHandler {
@@ -130,8 +146,32 @@ func (h *MaclawEvaluationHandler) CreateResource(c *gin.Context) {
 	}
 	out, err := gateway.SaveEvaluationResource(c.Request.Context(), in)
 	if err != nil {
+		// P28: an embedded package that failed the gates still gets a STATE row
+		// (rejected + reason) so the expert sees it in the revision loop — the
+		// invalid payload itself was never written (the store exit refused it).
+		if verr, ok := err.(*maclaw.EmbeddedPluginValidationError); ok && h.embeddedLifecycle != nil {
+			if m := maclaw.PeekEmbeddedManifest(in.Payload); m != nil {
+				gate := maclaw.EmbeddedAutoGateSummary{Passed: false, Reason: verr.Message}
+				_ = h.embeddedLifecycle.RecordRejection(c.Request.Context(), uuid.MustParse(c.GetString("user_id")), m.ID, "1", m.Name, gate)
+			}
+		}
 		writeMaclawError(c, err)
 		return
+	}
+	if out.Kind == maclaw.EvaluationResourceKindPromptfooEmbeddedPlugin && h.embeddedLifecycle != nil {
+		// P28 success path: establish/refresh the state row (pending_initial_review,
+		// version+1 on re-upload) with the SAFE gate summary stamped by the store.
+		gate := maclaw.EmbeddedAutoGateSummary{Passed: true}
+		if out.Metadata != nil {
+			gate.TestSummary = out.Metadata["embedded_test_summary"]
+			if n, cerr := strconv.Atoi(out.Metadata["embedded_files"]); cerr == nil {
+				gate.Files = n
+			}
+		}
+		manifest := &maclaw.EmbeddedManifest{ID: out.Metadata["embedded_package_id"], Name: out.Name, Summary: out.Summary}
+		if manifest.ID != "" {
+			_ = h.embeddedLifecycle.RecordUpload(c.Request.Context(), uuid.MustParse(c.GetString("user_id")), out.ID, manifest, gate, in.ID != "")
+		}
 	}
 	if h.resourceProjection != nil && h.provider != nil {
 		session, ok := resolveMaclawGatewaySession(c, h.provider)
@@ -818,4 +858,45 @@ func isEnterpriseLikeRole(role string) bool {
 
 func isEvaluationRunJob(job *maclaw.EvaluationJob) bool {
 	return job != nil && job.Kind == maclaw.EvaluationJobKindRun
+}
+
+// ListEmbeddedPlugins is the expert portal's P28 list: STATE-first, because a
+// package that failed the gates has no resource row at all (the invalid
+// payload is never stored) yet must still appear with its reason — the
+// revision loop is driven from this list.
+func (h *MaclawEvaluationHandler) ListEmbeddedPlugins(c *gin.Context) {
+	userID, err := uuid.Parse(strings.TrimSpace(c.GetString("user_id")))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id", "code": "invalid_user"})
+		return
+	}
+	if h.embeddedRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "embedded plugin store is not configured", "code": "embedded_not_configured"})
+		return
+	}
+	rows, err := h.embeddedRepo.ListByOwner(c.Request.Context(), userID, 200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list embedded plugins"})
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		gate := map[string]any{}
+		if len(row.AutoGate) > 0 {
+			_ = json.Unmarshal(row.AutoGate, &gate)
+		}
+		items = append(items, gin.H{
+			"package_id":    row.PackageID,
+			"resource_id":   row.ResourceID,
+			"name":          row.Name,
+			"summary":       row.Summary,
+			"state":         row.State,
+			"state_label":   maclaw.EmbeddedStateLabel(row.State),
+			"version":       row.Version,
+			"auto_gate":     gate,
+			"review_reason": row.ReviewReason,
+			"updated_at":    row.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
 }

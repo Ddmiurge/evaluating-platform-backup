@@ -96,6 +96,8 @@ func main() {
 	composedAttackRepo := repository.NewComposedAttackRepository(pgPool)
 	tplRepo := repository.NewTemplateRepository(pgPool)
 	maclawAccountMappingRepo := repository.NewMaclawAccountMappingRepository(pgPool)
+	maclawEmbeddedRepo := repository.NewMaclawEmbeddedPluginRepository(pgPool) // P28
+	embeddedLifecycle := maclawpkg.NewEmbeddedPluginLifecycle(maclawEmbeddedRepo)
 	maclawResourcePublicationRepo := repository.NewMaclawResourcePublicationRepository(pgPool)
 	maclawResourceShadowRepo := repository.NewMaclawResourceShadowRepository(pgPool)
 	maclawSkillPublicationRepo := repository.NewMaclawSkillPublicationRepository(pgPool)
@@ -161,6 +163,7 @@ func main() {
 	)
 	maclawEvaluationHandler := handler.NewMaclawEvaluationHandlerWithProviderAndProjection(maclawProvider, maclawProjection)
 	maclawEvaluationHandler.SetRuntimeMode(cfg.Maclaw.RuntimeMode)
+	maclawEvaluationHandler.SetEmbeddedTools(embeddedLifecycle, maclawEmbeddedRepo) // P28 upload hooks + expert list
 	engineRunRepo := repository.NewEngineRunRepository(pgPool)
 	engineRunService := maclawpkg.NewEngineRunService(engineRunRepo)
 	engineClient := maclawpkg.NewPromptfooEngineClient(cfg.Maclaw.EngineBaseURL, cfg.Maclaw.EngineBearerToken, cfg.Maclaw.EngineTimeoutSeconds)
@@ -183,8 +186,10 @@ func main() {
 	// when the registry is on, only the shared engine's MACLAW_STRATEGY_CODE_PACKAGES
 	// gates publication validation.
 	maclawResourceStoreService.SetCodeStrategyProber(engineClient)
+	maclawResourceStoreService.SetEmbeddedPluginProber(engineClient) // P28: runs the package's own tests at the store exit
 	engineRunHandler := handler.NewEngineRunHandler(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
 	engineRunHandler.SetEngineInstances(engineInstances)
+	engineRunHandler.SetEmbeddedLifecycle(embeddedLifecycle) // P28 gate
 	maclawSkillHandler := handler.NewMaclawSkillHandlerWithProviderProjectionAndHub(maclawProvider, maclawSkillProjection, maclawHubConfigService)
 	maclawMCPHandler := handler.NewMaclawMCPHandler(maclawProvider)
 	maclawCapabilityCatalog.SetPlatformDataStores(sampleRepo, tplRepo, composedAttackRepo)
@@ -199,6 +204,7 @@ func main() {
 	// Phase 1: expose the promptfoo engine to MaClaw through the bridge MCP tools.
 	redteamToolBridge.SetPromptfooEngine(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
 	redteamToolBridge.SetEngineInstances(engineInstances)
+	redteamToolBridge.SetEmbeddedLifecycle(embeddedLifecycle) // P28 gate
 	// U10: resolve expert-published YAML plugin packages and apply admin
 	// governance (启停/下架/归档 → 引擎立即不可用).
 	//
@@ -243,6 +249,7 @@ func main() {
 		cfg.Maclaw.RuntimeMode,
 	)
 	adminMaclawHandler.SetEngineInstanceAdmin(maclawpkg.NewEngineInstanceAdmin(maclawAccountMappingRepo, keyStore)) // P26c
+	adminMaclawHandler.SetEmbeddedReviewTools(maclawEmbeddedRepo, embeddedLifecycle)                                // P28
 
 	legacyGone := func(c *gin.Context) {
 		c.JSON(http.StatusGone, gin.H{
@@ -418,6 +425,7 @@ func main() {
 			expert.GET("/external-mcp-servers/:id/tools", legacyGone)
 
 			expert.POST("/maclaw/evaluation/resources", maclawEvaluationHandler.CreateResource)
+			expert.GET("/maclaw/evaluation/embedded-plugins", maclawEvaluationHandler.ListEmbeddedPlugins) // P28
 			expert.POST("/maclaw/evaluation/resources/:id/archive", maclawEvaluationHandler.ArchiveResource)
 			expert.POST("/maclaw/skills/import", maclawSkillHandler.Import)
 			expert.POST("/maclaw/skills/install", maclawSkillHandler.Install)
@@ -456,6 +464,13 @@ func main() {
 			adminGroup.POST("/maclaw/model-default/test", adminMaclawHandler.TestDefaultModelConfig)
 			// P26c · dedicated engine instance registration (token plaintext shown once)
 			adminGroup.PUT("/maclaw/accounts/:userId/engine-instance", adminMaclawHandler.RegisterAccountEngine)
+			// P28 · 内嵌插件审批（状态机动作 + 测试白名单）
+			adminGroup.GET("/maclaw/embedded-plugins", adminMaclawHandler.GetEmbeddedPlugins)
+			adminGroup.POST("/maclaw/embedded-plugins/:packageId/review", adminMaclawHandler.ReviewEmbeddedPlugin)
+			adminGroup.POST("/maclaw/embedded-plugins/:packageId/:action", adminMaclawHandler.BuildLifecycleEmbedded)
+			adminGroup.GET("/maclaw/embedded-testers", adminMaclawHandler.ListEmbeddedTesters)
+			adminGroup.PUT("/maclaw/embedded-testers/:userId", adminMaclawHandler.AddEmbeddedTester)
+			adminGroup.DELETE("/maclaw/embedded-testers/:userId", adminMaclawHandler.RemoveEmbeddedTester)
 			adminGroup.DELETE("/maclaw/accounts/:userId/engine-instance", adminMaclawHandler.UnregisterAccountEngine)
 			adminGroup.GET("/maclaw/hub-config", adminMaclawHandler.GetHubConfig)
 			adminGroup.PUT("/maclaw/hub-config", adminMaclawHandler.UpdateHubConfig)
@@ -549,6 +564,7 @@ var migrationFiles = []string{
 	"migrations/028_redteam_report_engine_run_id.sql",
 	"migrations/029_tenant_engine_registry.sql",
 	"migrations/030_model_config_overrides.sql",
+	"migrations/031_embedded_plugins.sql",
 }
 
 // runMigrations 按 migrationFiles 清单顺序执行迁移。

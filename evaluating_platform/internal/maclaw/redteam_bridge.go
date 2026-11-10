@@ -40,6 +40,7 @@ type RedteamToolBridge struct {
 	targetConcurrency int
 	engineRunner      PromptfooEngineRunner
 	engineInstances   *EngineInstanceRegistry
+	embeddedLifecycle *EmbeddedPluginLifecycle
 	engineRuns        *EngineRunService
 	engineTargets     EngineTargetProvider
 	engineGeneration  EngineGenerationProvider

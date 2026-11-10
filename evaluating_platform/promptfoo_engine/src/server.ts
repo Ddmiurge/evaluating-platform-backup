@@ -14,6 +14,7 @@ import express from 'express';
 import { ENGINE_WORKER_COUNT, assertNoRemoteGenerationConsent, assertSandboxInvariants, loadEnv } from './env.js';
 import { bearerAuth } from './auth.js';
 import { createStrategyPackagesRouter } from './routes/strategyPackages.js';
+import { createEmbeddedPackagesRouter } from './routes/embeddedPackages.js';
 import { TaskManager } from './manager/taskManager.js';
 import { WorkdirManager } from './manager/workdir.js';
 import { createRunsRouter } from './routes/runs.js';
@@ -143,6 +144,9 @@ async function main(): Promise<void> {
   app.use(createRunsRouter(manager));
   // P19 · publication-time probe for CODE strategy packages (design §6.1).
   app.use(createStrategyPackagesRouter());
+  // P28: embedded-plugin publication validation (runs the package's own tests
+  // in a bounded child process — same trust posture as the strategy probe).
+  app.use(createEmbeddedPackagesRouter());
 
   // U10: the sandbox report, behind the same bearer auth as the run routes.
   //

@@ -55,6 +55,14 @@ func (s *ResourceProjectionService) RecordExpertResource(ctx context.Context, id
 	if s == nil || s.publications == nil || resource == nil || strings.TrimSpace(identity.Role) != "expert" {
 		return nil
 	}
+	// P28: an embedded plugin package is NEVER published — pre-bake it must be
+	// invisible to every other tenant (its id only enters the plugin catalog
+	// after a successful build, as a builtin-style id). Publishing it here would
+	// leak an unreviewed package into the enterprise catalogue and the P23
+	// expert cross-browse.
+	if resource.Kind == EvaluationResourceKindPromptfooEmbeddedPlugin {
+		return nil
+	}
 	expertID, err := uuid.Parse(strings.TrimSpace(identity.UserID))
 	if err != nil {
 		return fmt.Errorf("parse expert user id: %w", err)

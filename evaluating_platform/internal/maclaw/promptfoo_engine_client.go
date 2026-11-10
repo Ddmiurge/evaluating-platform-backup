@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -803,4 +804,61 @@ func escapePathSegment(s string) string {
 		}
 		return -1
 	}, s)
+}
+
+// ── P28 · embedded-plugin package probe (runs the package's own tests) ──────
+
+type EmbeddedPluginProbeError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// EmbeddedPluginProbeResult is the SAFE verdict: pass/fail + a bounded test
+// summary (e.g. "12 passed · 0.8s"). Never file contents, never paths beyond
+// what the engine's own sanitizer keeps.
+type EmbeddedPluginProbeResult struct {
+	OK          bool                       `json:"ok"`
+	Errors      []EmbeddedPluginProbeError `json:"errors,omitempty"`
+	TestSummary string                     `json:"test_summary,omitempty"`
+}
+
+// ValidateEmbeddedPlugin asks the engine to run the package's tests in a
+// bounded, offline subprocess. The ORIGINAL zip travels base64 (fits the
+// engine's 1MB JSON cap at our 512KB zip cap) and the engine unzips it
+// independently — both sides validate, the U10 doctrine. Mirrors
+// ValidateCodeStrategy's transport: 200 / 422 / 409 all carry a structured
+// verdict; only transport/auth failures are hard errors.
+func (c *PromptfooEngineClient) ValidateEmbeddedPlugin(ctx context.Context, zipRaw []byte, testEntry string) (*EmbeddedPluginProbeResult, error) {
+	if !c.Enabled() {
+		return nil, ErrEngineUnavailable
+	}
+	body, err := json.Marshal(map[string]any{
+		"zip":        base64.StdEncoding.EncodeToString(zipRaw),
+		"test_entry": testEntry,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/embedded-packages/validate", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, ErrEngineUnavailable
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusUnprocessableEntity, http.StatusConflict:
+		var out EmbeddedPluginProbeResult
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("promptfoo_engine: decode embedded probe: %w", err)
+		}
+		return &out, nil
+	case http.StatusUnauthorized:
+		return nil, ErrEngineUnauthorized
+	default:
+		return nil, fmt.Errorf("promptfoo_engine: embedded probe failed with status %d", resp.StatusCode)
+	}
 }

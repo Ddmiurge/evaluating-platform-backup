@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -24,12 +25,14 @@ type AdminMaclawHandler struct {
 	// resourceRepo lets governance reach the expert's own row. Archiving only
 	// the publication left the expert list showing 「published」 for a package no
 	// enterprise could use (2026-10-26).
-	resourceRepo  *repository.MaclawResourceRecordRepository
-	engineAdmin   *maclaw.EngineInstanceAdmin
-	provider      maclaw.GatewayProvider
-	configService *maclaw.RuntimeConfigService
-	hubService    *maclaw.MaclawHubConfigService
-	runtimeMode   string
+	resourceRepo      *repository.MaclawResourceRecordRepository
+	engineAdmin       *maclaw.EngineInstanceAdmin
+	embeddedRepo      *repository.MaclawEmbeddedPluginRepository
+	embeddedLifecycle *maclaw.EmbeddedPluginLifecycle
+	provider          maclaw.GatewayProvider
+	configService     *maclaw.RuntimeConfigService
+	hubService        *maclaw.MaclawHubConfigService
+	runtimeMode       string
 }
 
 func NewAdminMaclawHandler(
@@ -793,6 +796,14 @@ func writeSafeMaclawAdminError(c *gin.Context, err error) {
 // 明文 token 只在这里出现一次（响应），存储永远是密文；登记前探活，
 // 「配了地址但引擎不存在」在登记时暴露而不是第一个 run 提交时。
 
+// SetEmbeddedReviewTools wires the P28 review surface (state rows + machine).
+func (h *AdminMaclawHandler) SetEmbeddedReviewTools(repo *repository.MaclawEmbeddedPluginRepository, lifecycle *maclaw.EmbeddedPluginLifecycle) {
+	if h != nil {
+		h.embeddedRepo = repo
+		h.embeddedLifecycle = lifecycle
+	}
+}
+
 func (h *AdminMaclawHandler) SetEngineInstanceAdmin(admin *maclaw.EngineInstanceAdmin) {
 	if h != nil {
 		h.engineAdmin = admin
@@ -848,4 +859,192 @@ func (h *AdminMaclawHandler) UnregisterAccountEngine(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"registered": false})
+}
+
+// ── P28 · 内嵌插件审批 ─────────────────────────────────────────────────────
+
+func (h *AdminMaclawHandler) adminActor(c *gin.Context) (uuid.UUID, bool) {
+	id, err := uuid.Parse(strings.TrimSpace(c.GetString("user_id")))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id", "code": "invalid_user"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func (h *AdminMaclawHandler) writeEmbeddedError(c *gin.Context, err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, repository.ErrEmbeddedStateConflict) {
+		c.JSON(http.StatusConflict, gin.H{"error": "该包状态已被其他人变更，请刷新后重试。", "code": "embedded_state_conflict"})
+		return
+	}
+	var verr *maclaw.EmbeddedPluginValidationError
+	if errors.As(err, &verr) {
+		c.JSON(http.StatusConflict, gin.H{"error": verr.Message, "code": verr.Code})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "embedded plugin operation failed"})
+}
+
+// GetEmbeddedPlugins: the admin review queue (optional ?state= filter).
+func (h *AdminMaclawHandler) GetEmbeddedPlugins(c *gin.Context) {
+	if h.embeddedRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "embedded plugin store is not configured", "code": "embedded_not_configured"})
+		return
+	}
+	rows, err := h.embeddedRepo.ListAll(c.Request.Context(), strings.TrimSpace(c.Query("state")), 200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list embedded plugins"})
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		gate := map[string]any{}
+		if len(row.AutoGate) > 0 {
+			_ = json.Unmarshal(row.AutoGate, &gate)
+		}
+		items = append(items, gin.H{
+			"package_id":    row.PackageID,
+			"resource_id":   row.ResourceID,
+			"owner_user_id": row.OwnerUserID.String(),
+			"name":          row.Name,
+			"summary":       row.Summary,
+			"state":         row.State,
+			"state_label":   maclaw.EmbeddedStateLabel(row.State),
+			"version":       row.Version,
+			"auto_gate":     gate,
+			"review_reason": row.ReviewReason,
+			"updated_at":    row.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// ReviewEmbeddedPlugin: 初审 approve / 需修改 changes（意见必填，状态机也强制）。
+// approve 时按规则 4 重查 id 是否已被目录占用（目录可能在上传后长出同名 id）。
+func (h *AdminMaclawHandler) ReviewEmbeddedPlugin(c *gin.Context) {
+	actor, ok := h.adminActor(c)
+	if !ok {
+		return
+	}
+	packageID := strings.TrimSpace(c.Param("packageId"))
+	var in struct {
+		Action string `json:"action"`
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "code": "invalid_request"})
+		return
+	}
+	var err error
+	switch in.Action {
+	case "approve":
+		if h.embeddedRepo != nil {
+			if row, rerr := h.embeddedRepo.GetByPackageID(c.Request.Context(), packageID); rerr == nil && row != nil && maclaw.EmbeddedPluginIDReserved(row.PackageID) {
+				c.JSON(http.StatusConflict, gin.H{"error": "该 id 与现有插件目录冲突（内置或已下线），无法批准。", "code": "embedded_id_conflict"})
+				return
+			}
+		}
+		err = h.embeddedLifecycle.InitialApprove(c.Request.Context(), packageID, actor, strings.TrimSpace(in.Reason))
+	case "changes":
+		err = h.embeddedLifecycle.RequestChanges(c.Request.Context(), packageID, actor, in.Reason)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be approve|changes", "code": "invalid_action"})
+		return
+	}
+	if err != nil {
+		h.writeEmbeddedError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "state": in.Action})
+}
+
+// BuildLifecycleEmbedded: request-build / final-approve / disable / enable /
+// remove / unmark — thin wrappers over the state machine (rule 5: two-stage
+// approval, final approve is manual and only valid from `testing`).
+func (h *AdminMaclawHandler) BuildLifecycleEmbedded(c *gin.Context) {
+	actor, ok := h.adminActor(c)
+	if !ok {
+		return
+	}
+	packageID := strings.TrimSpace(c.Param("packageId"))
+	action := strings.TrimSpace(c.Param("action")) // routed as .../:packageId/:action
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&in) // body optional except where the state machine demands it
+	var err error
+	switch action {
+	case "request-build":
+		err = h.embeddedLifecycle.RequestBuild(c.Request.Context(), packageID, actor)
+	case "final-approve":
+		err = h.embeddedLifecycle.FinalApprove(c.Request.Context(), packageID, actor, strings.TrimSpace(in.Reason))
+	case "disable":
+		err = h.embeddedLifecycle.Disable(c.Request.Context(), packageID, actor, strings.TrimSpace(in.Reason))
+	case "enable":
+		err = h.embeddedLifecycle.Enable(c.Request.Context(), packageID, actor)
+	case "remove":
+		err = h.embeddedLifecycle.MarkRemove(c.Request.Context(), packageID, actor, strings.TrimSpace(in.Reason))
+	case "unmark":
+		err = h.embeddedLifecycle.UnmarkRemove(c.Request.Context(), packageID, actor)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown action", "code": "invalid_action"})
+		return
+	}
+	if err != nil {
+		h.writeEmbeddedError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// Tester whitelist (D-9/option a): who can see & select a `testing` package.
+
+func (h *AdminMaclawHandler) ListEmbeddedTesters(c *gin.Context) {
+	if h.embeddedRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "embedded plugin store is not configured", "code": "embedded_not_configured"})
+		return
+	}
+	ids, err := h.embeddedRepo.ListTesters(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list testers"})
+		return
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+func (h *AdminMaclawHandler) AddEmbeddedTester(c *gin.Context) {
+	actor, ok := h.adminActor(c)
+	if !ok {
+		return
+	}
+	target, err := uuid.Parse(strings.TrimSpace(c.Param("userId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id", "code": "invalid_user"})
+		return
+	}
+	if err := h.embeddedRepo.AddTester(c.Request.Context(), target, actor); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add tester"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *AdminMaclawHandler) RemoveEmbeddedTester(c *gin.Context) {
+	target, err := uuid.Parse(strings.TrimSpace(c.Param("userId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id", "code": "invalid_user"})
+		return
+	}
+	if err := h.embeddedRepo.RemoveTester(c.Request.Context(), target); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove tester"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

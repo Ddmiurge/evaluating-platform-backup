@@ -100,12 +100,10 @@ func ValidateAndParseCustomStrategyCodePublication(in EvaluationResourceInput) (
 		return "", "", customStrategyValidationErrorf(CustomStrategyErrCodeInvalid,
 			"代码策略体积 %d 字节，超过上限 %d 字节。代码包只应包含策略逻辑。", len(source), CustomStrategyCodeMaxBytes)
 	}
-	for _, item := range customStrategyCodeForbidden {
-		if item.pattern.MatchString(source) {
-			return "", "", customStrategyValidationErrorf(CustomStrategyErrCodeUnsafe,
-				"代码策略命中禁止项 %q：策略必须是纯函数，不得读取环境/文件、不得发起网络请求或加载外部模块。"+
-					"（这条检查提高门槛，不是隔离边界；真正的边界是运行环境的租户隔离。）", item.label)
-		}
+	if label := capabilityTokenHit(source); label != "" {
+		return "", "", customStrategyValidationErrorf(CustomStrategyErrCodeUnsafe,
+			"代码策略命中禁止项 %q：策略必须是纯函数，不得读取环境/文件、不得发起网络请求或加载外部模块。"+
+				"（这条检查提高门槛，不是隔离边界；真正的边界是运行环境的租户隔离。）", label)
 	}
 	// Shape: a default export carrying `action`. A package without it would fail
 	// inside the run, after the user paid for the probes.
@@ -161,4 +159,17 @@ func CustomStrategyCodePublicID(strategyID string) string {
 		return id
 	}
 	return "custom:code:" + variant
+}
+
+// capabilityTokenHit returns the label of the first forbidden capability token
+// in content, or "". Shared with the embedded-plugin gate (P28): both kinds of
+// expert code execute inside the key-holding engine process, so they get the
+// identical refused set — one list, one implementation, no drift.
+func capabilityTokenHit(content string) string {
+	for _, item := range customStrategyCodeForbidden {
+		if item.pattern.MatchString(content) {
+			return item.label
+		}
+	}
+	return ""
 }

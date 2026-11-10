@@ -42,10 +42,29 @@ type CodeStrategyProber interface {
 	ValidateCodeStrategy(ctx context.Context, source string) (*CodeStrategyProbeResult, error)
 }
 
+// EmbeddedPluginProber asks the engine to RUN a package's own tests (P28) —
+// the one thing only the engine can do (a bounded, offline `node` subprocess).
+// Satisfied by *PromptfooEngineClient. Without it, embedded uploads are
+// refused: an untested package must not enter the store (same doctrine as the
+// code-strategy prober).
+type EmbeddedPluginProber interface {
+	Enabled() bool
+	ValidateEmbeddedPlugin(ctx context.Context, zipRaw []byte, testEntry string) (*EmbeddedPluginProbeResult, error)
+}
+
 type ResourceStoreService struct {
-	store    ResourceStore
-	keyStore *appcrypto.KeyStore
-	prober   CodeStrategyProber
+	store          ResourceStore
+	keyStore       *appcrypto.KeyStore
+	prober         CodeStrategyProber
+	embeddedProber EmbeddedPluginProber
+}
+
+// SetEmbeddedPluginProber wires the test-running probe for embedded packages.
+func (s *ResourceStoreService) SetEmbeddedPluginProber(prober EmbeddedPluginProber) {
+	if s == nil {
+		return
+	}
+	s.embeddedProber = prober
 }
 
 // SetCodeStrategyProber wires the engine-backed verification for CODE strategy
@@ -149,6 +168,50 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 		}
 		in.Payload = canonical
 		in.Metadata = CustomStrategyPublicationMetadata(strategyID, in.Metadata)
+	} else if in.Kind == EvaluationResourceKindPromptfooEmbeddedPlugin {
+		// P28 embedded package: zip safety + manifest + capability tokens (pure,
+		// re-validating what the upload path already checked — the exit is the
+		// authoritative guard), THEN the engine runs the package's own tests.
+		// A refusal here leaves no row and no state: the handler records the
+		// rejection in the state table so the expert still sees the reason.
+		raw, err := DecodeEmbeddedPayload(in.Payload)
+		if err != nil {
+			return nil, err
+		}
+		manifest, err := ValidateEmbeddedPluginPackage(raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := ValidateEmbeddedManifestForCatalog(manifest, EmbeddedPluginIDReserved); err != nil {
+			return nil, err
+		}
+		if s.embeddedProber == nil || !s.embeddedProber.Enabled() {
+			return nil, embeddedInvalid("embedded_probe_unavailable",
+				"无法校验内嵌插件：评测引擎未接入。包内测试必须实跑通过才能入库。")
+		}
+		verdict, probeErr := s.embeddedProber.ValidateEmbeddedPlugin(ctx, raw, EmbeddedPluginTestEntry)
+		if probeErr != nil {
+			return nil, embeddedInvalid("embedded_probe_unreachable",
+				"无法校验内嵌插件：评测引擎不可达（%s）。请稍后重试；包内测试必须实跑通过才能入库。", probeErr.Error())
+		}
+		if verdict == nil || !verdict.OK {
+			msg := "包内测试未通过。"
+			if verdict != nil && len(verdict.Errors) > 0 {
+				msg = "包内测试未通过：" + verdict.Errors[0].Message
+			}
+			return nil, embeddedInvalid("embedded_tests_failed", "%s", msg)
+		}
+		// Normalize display fields from the manifest (authoritative) and stamp
+		// the SAFE gate summary into metadata — the handler reads it back to
+		// build the state row's auto_gate record.
+		in.Name = strings.TrimSpace(manifest.Name)
+		if strings.TrimSpace(in.Summary) == "" {
+			in.Summary = strings.TrimSpace(manifest.Summary)
+		}
+		if in.Metadata == nil {
+			in.Metadata = map[string]string{}
+		}
+		stampEmbeddedGateMetadata(in.Metadata, manifest, verdict)
 	}
 	userID, err := normalizeUserID(userID)
 	if err != nil {
