@@ -1,6 +1,6 @@
 ﻿# Project Guide
 
-更新时间：2026-10-26
+更新时间：2026-11-10
 
 ## 当前定位
 
@@ -17,6 +17,8 @@
 |---|---|
 | 开发到哪一步、能做什么、还剩什么 | `evaluating_platform/docs/architecture/development-status.md` |
 | 当前运行形态与安全边界 | `evaluating_platform/docs/architecture/maclaw-current-state.md` |
+| 内嵌插件轨道（P28，评审制交付） | `evaluating_platform/docs/architecture/embedded-plugin-track.md` |
+| 实施中缺陷清单（合并前审查） | `audits/`（当前：`code-review-2026-11-10-p28-embeddedbuild.md`） |
 | 为什么这么做（逐批决策与缺陷） | `audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md` |
 | 上机跑成什么样 | `records/`（索引在 `records/README.md`） |
 | 一次性故障调查 | `audits/` |
@@ -60,6 +62,7 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 - 用户管理：企业、专家、管理员账号治理，含用户删除。
 - 用户与租户：查看平台账号到 MaClaw tenant/user/instance 的映射和 provisioning 状态。
 - 资源治理：查看专家发布数据、Skill、MCP 摘要，可启用、禁用或归档安全目录项。
+- 内嵌插件审批（P28，本地实施中）：独立侧栏页，三段审批状态机（初审 → 请求构建 → 测试中白名单 → 手动最终通过）；源码审阅抽屉是**全站唯一可读包正文的窄例外（R-5）**；测试白名单管理；停用走提交闸即时 409、移除随下次构建剔除。
 - 评测与任务：查看 job/run 安全摘要，执行 cancel/retry/resume 可用动作。
 - 模型配置：维护平台默认模型配置和单账号覆盖；密钥只写入，不回显明文。
 - Hub 管理：维护统一私有 Hub URL、启用状态和允许 Skill 来源 企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。企业被测模型连接是平台侧加密 target config，入口在企业聊天页“被测对象连接”（Drawer 支持切换 LLM / 智能体两种类型）。 抽屉中的「被测系统用途」（必填）存入 `description`，并作为 promptfoo 的 run purpose —— 它被渲染进生成模板与判分 rubric，决定攻击针对什么角色。引擎取的是它，而不是评测目的（`maclaw.EngineRunPurposeForTarget`，2026-10-20：此前喂评测目的导致载荷全是「请给我一个测试用例」这类元话语、0/6 成功）。
@@ -109,6 +112,8 @@ BFF 不自己生成或猜测评测计划，也不再用关键词判断“看起�
 - `sample`：原始测试问题。
 - `template`：越狱/攻击包装模板，支持 `{{sample}}` 或 `{{question}}`。
 - `composed_attack`：已组合完成、可直接执行的攻击数据。
+
+专家内嵌插件（P28，本地实施中）：专家门户独立侧栏页「内嵌插件」（不并入「评测插件」——那页是发布即用，本轨是审批流），上传 zip 包（`manifest.yaml` + `src/` + `tests/`，解压后 ≤512KB、≤64 文件，测试须**零依赖、离线可跑**），走评审制：自动关卡 → 管理员初审 → 构建入镜像 → 测试中（白名单可见）→ 最终通过；同 id 重传 = 版本+1 不新建包，驳回/需修改原因必须可操作。设计见 `evaluating_platform/docs/architecture/embedded-plugin-track.md`。
 
 平台 MCP bridge 暴露粗粒度工具：
 

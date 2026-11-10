@@ -9,5 +9,6 @@
 | `audit-2026-10-13-engine-job-link-failure.md` | 引擎 run 与 job 未关联 |
 | `audit-2026-10-13-report-detail-boundary.md` | 报告细节（原文）的边界决策依据 |
 | `code-audit-redundancy-review-2026-10-12.md` | 冗余架构与代码审计（gstack 交付物，原在 `deliverables/`） |
+| `code-review-2026-11-10-p28-embeddedbuild.md` | P28/E-4 合并前审查：embeddedbuild 构建工具与烘焙目录 6 条缺陷（1 HIGH / 4 MEDIUM / 1 LOW；**2026-11-10 已修**——本地反证绿，DB 级反证归 E-6，仍是收口验收判据） |
 
 上机验证结果在 `../records/`；阶段计划与决策在 `../audit-2026-10-09/`。

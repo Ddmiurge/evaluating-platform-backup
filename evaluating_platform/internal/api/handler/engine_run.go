@@ -158,9 +158,6 @@ func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.Engi
 	return newEngineRunHandler(engine, runs, targets, generationProvider)
 }
 
-// SetEngineInstances wires the P26a tenant engine registry. Optional: nil or a
-// disabled registry leaves every run on the shared client — pre-P26 behavior,
-// byte-for-byte. This is what lets the routing ship before the instances do.
 // SetEmbeddedCatalog wires the baked-plugin catalog source (E-4): the wizard
 // asks it which embedded ids are selectable right now (approved → everyone,
 // testing → testers only).
@@ -190,7 +187,14 @@ func (h *EngineRunHandler) EmbeddedPluginCatalog(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read tester whitelist"})
 		return
 	}
+	// Review finding 5: a catalog baked against an older promptfoo base is
+	// hidden entirely (version is a file-level field) — a selectable id the
+	// submit gate would refuse as plugin_base_mismatch is a dead button.
 	items := make([]gin.H, 0, len(maclaw.EmbeddedPluginCatalog()))
+	if maclaw.EmbeddedCatalogBaseMismatch() {
+		c.JSON(http.StatusOK, gin.H{"items": items})
+		return
+	}
 	for _, entry := range maclaw.EmbeddedPluginCatalog() {
 		row, rerr := h.embeddedRepo.GetByPackageID(c.Request.Context(), entry.ID)
 		if rerr != nil || row == nil {
@@ -226,6 +230,9 @@ func (h *EngineRunHandler) SetEmbeddedLifecycle(lifecycle *maclaw.EmbeddedPlugin
 	}
 }
 
+// SetEngineInstances wires the P26a tenant engine registry. Optional: nil or a
+// disabled registry leaves every run on the shared client — pre-P26 behavior,
+// byte-for-byte. This is what lets the routing ship before the instances do.
 func (h *EngineRunHandler) SetEngineInstances(registry *maclaw.EngineInstanceRegistry) {
 	if h != nil {
 		h.instances = registry

@@ -1,6 +1,6 @@
 ﻿# MaClaw Current State
 
-更新时间：2026-05-22
+更新时间：2026-11-10
 
 ## 结论
 
@@ -1086,3 +1086,15 @@ GET /api/v1/maclaw/engine/runs/:id/report
 ## 专属引擎登记（P26c，2026-11-04，本地待上机）
 
 管理员 `PUT /admin/maclaw/accounts/:userId/engine-instance` 绑定专属引擎：校验 URL（http(s)、禁内嵌凭据/查询/片段）→ **先探活**（错地址在登记时暴露，不等第一个 run 提交才发现）→ 生成 48 位 hex token，明文只出现在登记响应一次，库里只有 `maclaw_account_mappings.engine_token_ciphertext`（crypto master key 加密）；重登记即轮换，`DELETE` 摘除回共享。引擎侧不需改代码（`bearerAuth` 本来就是逐容器一把）；起实例用 `docker-compose.tenant-engines.yml` 模板（独立卷、独立 token、`MACLAW_STRATEGY_CODE_PACKAGES` 只开在专属实例、dns 红线）。双条件闸的另一半（`MACLAW_TENANT_ENGINES=1`）在 backend `.env`，主 compose 已透传。P26c.1 把这条链搬进门户：admin「用户与租户」页的专属引擎列/登记/摘除/一次性 token 弹窗，账号配置保存的 `mirror_saved:false` 会橙色警告。
+
+## 内嵌插件轨道（P28，2026-11-09/10，本地实施中，未上机）
+
+三级放开第 3 级（本体代码）的**评审制**交付通道，设计稿 `embedded-plugin-track.md`（三段审批状态机 + 测试中白名单 + 构建标记 D-7~D-10；Step-0 落定 Route B = 一次性基建补丁 + 每插件纯文件投放）。已落地事实：
+
+- **存储与状态**：迁移 031（`maclaw_embedded_plugins` + `maclaw_embedded_plugin_events`）；新 kind **`pf_plugin_embedded`**——天然不进 `pf_plugin` 的企业目录 / shadow 投影 / 专家互览通道，烘焙后以内置 id 身份进目录，与资源目录彻底分家；**10 态状态机**在 `internal/maclaw/embedded_plugin_lifecycle.go`（`pending_initial_review → rejected|approved_for_build → build_requested → build_failed|testing → approved → disabled|remove_requested → removed`），每条转换边编译进方法（非法转换构造上不可能，仓储层 `state=ANY(expected)` 只是并发防撞 → 409 `embedded_state_conflict`）；重传 = 同 id 版本+1 回「待初审」、全部关卡重跑（`removed` 终态除外，复活是管理员决定不是专家上传）。
+- **上传自动关卡**：`POST /maclaw/evaluation/resources`（kind=`pf_plugin_embedded`）在存储出口跑 zip 安全（穿越 / 解压炸弹 / 上限三件套）+ 静态令牌扫描（与代码策略**同一张拒绝表**：`process.env`/`fs`/`child_process`/`fetch`/`eval`/`new Function`/远程动态 import）+ manifest 校验（id 不得撞内置 116 与已批准 id、`promptfoo_base` 必须等于冻结基座 0.123.0）+ **包内测试实跑**（零依赖、离线、引擎子进程 ≤30s，跑不过即拒）；拒绝沿用 rejection hints 模式（可操作原因）。
+- **审批面（管理员）**：`GET /admin/maclaw/embedded-plugins`（列表/按状态过滤）、`POST .../:packageId/review`（`action=approve|changes`，需修改意见必填）、`POST .../:packageId/:action`（`request-build|final-approve|disable|enable|remove|unmark`）、`GET .../:packageId/source`（**源码审阅窄例外 R-5**：全站唯一可读包正文的位置，仅审批视图；样本/模板/payload 禁令一字不动，例外条款已落 AGENTS 管理员边界）、测试白名单 `GET/PUT/DELETE /admin/maclaw/embedded-testers*`。管理端「请求构建」**只写标记**（D-10：后端不碰 docker socket，构建永远是部署机上的人跑工具消费标记）。
+- **上传面（专家）**：专家门户独立侧栏页「内嵌插件」（不并入「评测插件」——那页是发布即用生命周期，本轨是审批流），`GET /maclaw/evaluation/embedded-plugins` 状态优先列表 + 上传弹窗（manifest 解析预览、同 id 重传提示）。
+- **两扇门提交闸（E-5）**：`GuardEmbeddedPluginSelection` 由向导（`engine_run.go`）与 confirm（`promptfoo_engine_bridge.go`）共用同一判定：`approved` → 放行；`testing` → **仅测试白名单账号**（否则 `plugin_testing_not_open`）；`disabled` → `plugin_disabled`；其余状态 → `plugin_not_yet_approved`。全部经 `writeEnginePreflightRejection` 出 409，不落 run 行。
+- **构建与目录（E-4，审查 6 条已修）**：部署机工具 `cmd/embeddedbuild`（`main.go` flags/校验 + `batch.go` 批次生命周期）`-stage`（并集 `build_requested ∪ testing ∪ approved ∪ disabled − remove_requested` → 解密 → 暂存 `promptfoo_engine/embedded-plugins/<id>/` + `index.json` 含 `removed_ids`；NO_QUEUE 时清陈旧 index）→ 部署 → `-finalize -ok` / `-finalize -fail -reason=…`（只消费本批 index、移除批无条件、冲突跳过不中止、成功后清 index；`-ok`/`-fail` 互斥、`-fail` 必带 reason、裸 `-finalize` 拒绝且校验先于连库）；烘焙目录 `internal/maclaw/testdata/embedded_plugins.json` 由 `mustParseEmbeddedPluginCatalog` 读取，**版本双闸**：`promptfoo_version` 与当前基座不一致时目录端点整体隐藏、选择闸 409 `plugin_base_mismatch`；向导经 `GET /maclaw/engine/embedded-catalog` 呈现「内嵌」分组（`approved` 全员、`testing` 仅白名单）。
+- **状态**：E-1/E-3/E-5 门与审阅端点已提交（`63ba1a3` → `f03353d`）；E-4 合并前审查 **6 条已修**（2026-11-10，本地反证绿；DB/文件级反证归 E-6——判据仍是 `../../audits/code-review-2026-11-10-p28-embeddedbuild.md`）；E-6 上机验收（首公民 = 语义缓存包走完全程）未做；**全部未上机**。

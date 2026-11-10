@@ -13,7 +13,7 @@ func TestStageEmbeddedPackagesBuildsTreeAndIndex(t *testing.T) {
 	dir := t.TempDir()
 	index, err := StageEmbeddedPackages([]EmbeddedBuildInput{
 		{PackageID: "probe-demo", PayloadB64: validZip(t)},
-	}, dir, "batch-42")
+	}, dir, "batch-42", []string{"gone-pkg"})
 	if err != nil {
 		t.Fatalf("stage: %v", err)
 	}
@@ -22,6 +22,9 @@ func TestStageEmbeddedPackagesBuildsTreeAndIndex(t *testing.T) {
 	}
 	if index.BatchID != "batch-42" || index.BuiltAt.IsZero() {
 		t.Fatalf("batch stamp = %+v", index)
+	}
+	if len(index.RemovedIDs) != 1 || index.RemovedIDs[0] != "gone-pkg" {
+		t.Fatalf("removed_ids = %+v", index.RemovedIDs)
 	}
 	// The tree carries the package's own files…
 	if _, err := os.Stat(filepath.Join(dir, "probe-demo", "tests", "run.mjs")); err != nil {
@@ -42,6 +45,35 @@ func TestStageEmbeddedPackagesBuildsTreeAndIndex(t *testing.T) {
 	if len(parsed.Packages) != 1 || parsed.Packages[0].Name == "" {
 		t.Fatalf("index.json = %+v", parsed)
 	}
+	if len(parsed.RemovedIDs) != 1 || parsed.RemovedIDs[0] != "gone-pkg" {
+		t.Fatalf("index.json removed_ids = %+v", parsed.RemovedIDs)
+	}
+}
+
+// Review finding 5: the baked catalog's promptfoo_version is compared against
+// the CURRENT legality-table base on every read path. Exact-string semantics
+// (same as ValidateEmbeddedManifestForCatalog's promptfoo_base check).
+func TestEmbeddedCatalogBaseMismatch(t *testing.T) {
+	orig := embeddedPluginCatalogVersion
+	defer func() { embeddedPluginCatalogVersion = orig }()
+
+	// The shipped testdata file is written by stage against the current base,
+	// so out of the box it must match.
+	embeddedPluginCatalogVersion = pluginLegalityTableData.PromptfooVersion
+	if EmbeddedCatalogBaseMismatch() {
+		t.Fatal("current base must not report a mismatch")
+	}
+	baked, current := EmbeddedCatalogBaseVersions()
+	if baked != pluginLegalityTableData.PromptfooVersion || current != baked {
+		t.Fatalf("versions = (%q, %q)", baked, current)
+	}
+
+	// A stale base (platform upgraded promptfoo, catalog not re-baked) must
+	// report the mismatch so the wizard hides it and the gate refuses it.
+	embeddedPluginCatalogVersion = "0.0.0-stale"
+	if !EmbeddedCatalogBaseMismatch() {
+		t.Fatal("stale base must report a mismatch")
+	}
 }
 
 func TestStageEmbeddedPackagesRefusesWhatTheCurrentGuardRefuses(t *testing.T) {
@@ -50,7 +82,7 @@ func TestStageEmbeddedPackagesRefusesWhatTheCurrentGuardRefuses(t *testing.T) {
 	t.Run("id mismatch between state row and manifest", func(t *testing.T) {
 		_, err := StageEmbeddedPackages([]EmbeddedBuildInput{
 			{PackageID: "someone-elses-id", PayloadB64: validZip(t)},
-		}, dir, "b")
+		}, dir, "b", nil)
 		if err == nil {
 			t.Fatal("expected refusal")
 		}
@@ -62,7 +94,7 @@ func TestStageEmbeddedPackagesRefusesWhatTheCurrentGuardRefuses(t *testing.T) {
 			{"src/plugin.ts", "const k = process.env.SECRET;"},
 			{"tests/run.mjs", "process.exit(0)"},
 		})
-		_, err := StageEmbeddedPackages([]EmbeddedBuildInput{{PackageID: "probe-demo", PayloadB64: payload}}, dir, "b")
+		_, err := StageEmbeddedPackages([]EmbeddedBuildInput{{PackageID: "probe-demo", PayloadB64: payload}}, dir, "b", nil)
 		if err == nil {
 			t.Fatal("a payload refused by today's rules must not reach the image tree")
 		}
@@ -72,7 +104,7 @@ func TestStageEmbeddedPackagesRefusesWhatTheCurrentGuardRefuses(t *testing.T) {
 		_, err := StageEmbeddedPackages([]EmbeddedBuildInput{
 			{PackageID: "probe-demo", PayloadB64: validZip(t)},
 			{PackageID: "probe-demo", PayloadB64: validZip(t)},
-		}, dir, "b")
+		}, dir, "b", nil)
 		if err == nil {
 			t.Fatal("expected refusal")
 		}

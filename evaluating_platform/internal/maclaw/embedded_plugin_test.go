@@ -396,6 +396,31 @@ func TestEmbeddedSelectionGateByState(t *testing.T) {
 	}
 }
 
+// Review finding 5: when the baked catalog's promptfoo_version differs from
+// the current base, the shared gate refuses embedded ids with
+// plugin_base_mismatch — before any state check, because a stale catalog
+// makes every state's verdict untrustworthy. The refusal travels the normal
+// EmbeddedSelectionRefusalError path (409 via writeEnginePreflightRejection).
+func TestEmbeddedSelectionGateRefusesStaleBase(t *testing.T) {
+	orig := embeddedPluginCatalogVersion
+	defer func() { embeddedPluginCatalogVersion = orig }()
+	embeddedPluginCatalogVersion = "0.0.0-stale"
+
+	store := &gateEmbeddedStore{fakeEmbeddedStore: newFakeEmbeddedStore()}
+	store.rows["demo"] = &EmbeddedPluginStateRow{PackageID: "demo", State: EmbeddedStateApproved}
+	lc := NewEmbeddedPluginLifecycle(store)
+
+	err := lc.GuardEmbeddedPluginSelection(context.Background(), uuid.New(), []string{"demo"})
+	refusal := asRefusal(err)
+	if refusal == nil || refusal.Code != "plugin_base_mismatch" {
+		t.Fatalf("refusal = %#v, want plugin_base_mismatch", err)
+	}
+	// Non-embedded ids are unaffected (builtin path continues).
+	if err := lc.GuardEmbeddedPluginSelection(context.Background(), uuid.New(), []string{"harmful"}); err != nil {
+		t.Fatalf("builtin id must pass even on a stale base: %v", err)
+	}
+}
+
 // asRefusal extracts the typed refusal, nil when the error is something else.
 func asRefusal(err error) *EmbeddedSelectionRefusalError {
 	e, ok := err.(*EmbeddedSelectionRefusalError)

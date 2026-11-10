@@ -61,20 +61,40 @@ type embeddedPluginsFile struct {
 	Plugins          []EmbeddedCatalogEntry `json:"plugins"`
 }
 
-var embeddedPluginCatalog = mustParseEmbeddedPluginCatalog()
+var embeddedPluginFileData = mustParseEmbeddedPluginCatalog()
 
-func mustParseEmbeddedPluginCatalog() []EmbeddedCatalogEntry {
+var (
+	embeddedPluginCatalog        = embeddedPluginFileData.Plugins
+	embeddedPluginCatalogVersion = embeddedPluginFileData.PromptfooVersion
+)
+
+func mustParseEmbeddedPluginCatalog() embeddedPluginsFile {
 	var file embeddedPluginsFile
 	if err := json.Unmarshal(embeddedPluginsJSON, &file); err != nil {
 		panic(fmt.Sprintf("maclaw: embedded embedded_plugins.json is malformed: %v", err))
 	}
-	return file.Plugins
+	return file
 }
 
 // EmbeddedPluginCatalog returns the baked-plugin entries (empty until the
 // first successful build writes the testdata file).
 func EmbeddedPluginCatalog() []EmbeddedCatalogEntry {
 	return embeddedPluginCatalog
+}
+
+// EmbeddedCatalogBaseMismatch reports whether the baked catalog was built
+// against a different promptfoo base than the current legality table (exact
+// string comparison — the same semantics as ValidateEmbeddedManifestForCatalog's
+// promptfoo_base check). A stale catalog means its ids were validated against
+// the OLD base: the wizard must hide them and the submit gate must refuse
+// them at the request boundary, not mid-run on the engine (review finding 5).
+func EmbeddedCatalogBaseMismatch() bool {
+	return embeddedPluginCatalogVersion != pluginLegalityTableData.PromptfooVersion
+}
+
+// EmbeddedCatalogBaseVersions exposes (baked, current) for refusal messages.
+func EmbeddedCatalogBaseVersions() (baked, current string) {
+	return embeddedPluginCatalogVersion, pluginLegalityTableData.PromptfooVersion
 }
 
 // ── staging ─────────────────────────────────────────────────────────────────
@@ -87,24 +107,32 @@ type EmbeddedBuildInput struct {
 }
 
 // EmbeddedBuildIndex is the index.json the harness/loader reads at engine
-// boot — the single source of "what this image contains".
+// boot — the single source of "what this image contains". It is also the
+// batch record the finalize step consumes (review findings 1–3: one source
+// for "who is in this batch").
 type EmbeddedBuildIndex struct {
 	BatchID  string                 `json:"batch_id"`
 	BuiltAt  time.Time              `json:"built_at"`
 	Packages []EmbeddedCatalogEntry `json:"packages"`
+	// RemovedIDs are the remove_requested ids this bake excluded from the
+	// tree; -finalize marks them removed after a successful deploy. Build-host
+	// bookkeeping — the future engine loader must ignore it (JSON readers do).
+	RemovedIDs []string `json:"removed_ids,omitempty"`
 }
 
 // StageEmbeddedPackages extracts every approved package into
-// stagingRoot/<package_id>/ and writes stagingRoot/index.json.
+// stagingRoot/<package_id>/ and writes stagingRoot/index.json. removedIDs are
+// recorded on the index (not staged) so finalize can close exactly the
+// removals this batch actually excluded.
 //
 // Re-validation is not paranoia: the payload was validated at upload, but the
 // rules (forbidden tokens, manifest contract) may have tightened since — the
 // image must only ever contain what the CURRENT guard accepts.
-func StageEmbeddedPackages(inputs []EmbeddedBuildInput, stagingRoot, batchID string) (*EmbeddedBuildIndex, error) {
+func StageEmbeddedPackages(inputs []EmbeddedBuildInput, stagingRoot, batchID string, removedIDs []string) (*EmbeddedBuildIndex, error) {
 	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
 		return nil, fmt.Errorf("create staging root: %w", err)
 	}
-	index := &EmbeddedBuildIndex{BatchID: batchID, BuiltAt: time.Now().UTC()}
+	index := &EmbeddedBuildIndex{BatchID: batchID, BuiltAt: time.Now().UTC(), RemovedIDs: removedIDs}
 	seen := map[string]bool{}
 	for _, in := range inputs {
 		if seen[in.PackageID] {

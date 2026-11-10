@@ -28,6 +28,15 @@ Current Skill supply follows the resource projection model:
 - Do not restore old `skill_runner` or external CCBOS MCP to support this flow.
 - Treat `resource_mode_preference=skill_generated` and local executable Skill runtime details as maclaw runtime capabilities, not platform-owned assumptions.
 
+## 内嵌插件轨道（P28）
+
+- 内嵌插件是三级放开的**第 3 级（本体代码）**：它没有运行时门（promptfoo 编译期 API 无运行时加载口，只能烤进镜像），所以闸必须建在进镜像之前——交付走**评审制**，设计稿 `evaluating_platform/docs/architecture/embedded-plugin-track.md`。三道门顺序不可换：自动关卡（静态扫描 + **零依赖、离线可跑**的包内测试 ≤30s 实跑）→ 管理员初审（可看源码，见下 R-5 例外）→ 构建验收（实测表重生成 + 全守卫，**不绿不落地**）。构建后先进「测试中」（仅测试白名单账号可见可选），管理员**看过测试 run 后手动「最终通过」**才进全员目录；两段审批不可合并、无自动跳变。任何重传 = 同 id 版本+1 回「待初审」并重跑全部关卡，不认「上次过过」。
+- 新 kind **`pf_plugin_embedded`**（迁移 031：`maclaw_embedded_plugins` + `maclaw_embedded_plugin_events`）：天然不进 `pf_plugin` 的企业目录 / shadow 投影 / 专家互览通道；烘焙后以内置 id 身份进目录，与资源目录彻底分家。状态机 10 态在 `internal/maclaw/embedded_plugin_lifecycle.go`，转换边编译进方法（非法转换构造上不可能，仓储 `state=ANY(expected)` 只是并发防撞 → 409 `embedded_state_conflict`）；`removed` 是终态（复活是管理员决定，不是专家上传）。
+- **构建是部署事件**：管理端「请求构建」只写标记（D-10，后端不碰 docker socket 的红线不碰），部署机工具 `cmd/embeddedbuild` 消费标记才执行、无标记拒绝执行。暂存与烘焙目录必须基于**并集** `build_requested ∪ testing ∪ approved ∪ disabled − remove_requested`（`disabled` 必须在内：D-5 停用只拦选择不删镜像，且 `disabled→approved` 后没有任何按钮能重新烘焙），批次事实源是 `index.json`（含 `removed_ids`；finalize 只消费本批清单、移除批无条件执行、NO_QUEUE 时清掉陈旧 index 使「index 存在 ⟺ 有待定格批次」成立、冲突跳过不中止）——这是合并前审查 6 条的修复判据，见 `audits/code-review-2026-11-10-p28-embeddedbuild.md`。
+- 提交闸两扇门同一判定（`GuardEmbeddedPluginSelection`，wizard 与 confirm 共用）：`approved` 放行；`testing` 仅白名单（`plugin_testing_not_open`）；`disabled` 即时拒（`plugin_disabled`，不用等重建）；其余状态 `plugin_not_yet_approved`。全部经 `writeEnginePreflightRejection` 出 409、不落 run 行。
+- **R-5 源码审阅窄例外**：`GET /admin/maclaw/embedded-plugins/:packageId/source` 是全站唯一可读包正文的路由——内嵌包源码是**治理对象**而非专家业务数据，仅审批视图可读；样本 / 模板 / payload / evidence 的回显禁令一字不动（同时登记在「管理员门户约束」的例外条款里）。
+- 状态（2026-11-10）：E-1/E-3/E-5 门与审阅端点已提交（`63ba1a3`→`f03353d`），E-4 审查 6 条已修（本地反证绿，DB 级反证归 E-6），E-6 上机验收（首公民=语义缓存包）未做；**全部未上机**。
+
 ## maclaw Upgrade Boundary
 
 - `evaluating_platform` must treat maclaw as an external HTTP runtime. Keep runtime API assumptions centralized in `internal/maclaw`.
@@ -148,8 +157,8 @@ Current Skill supply follows the resource projection model:
 - maclaw 模型配置只在管理员门户维护。
 - 支持平台默认模型配置 + 单账号/租户覆盖。P26b 起账号覆盖有平台侧镜像（`maclaw_model_overrides`，迁移 030）：管理员保存账号模型配置 = 先推 runtime、成功后镜像「实际发出的完整配置」（不取 runtime 回显，防上游学会掩码后镜像永不收敛）；引擎 generation 凭据按 run 发起方解析（镜像优先、无镜像=平台默认、镜像不可解密=拒绝 run，绝不静默回落平台 key）。镜像写失败不阻断保存：响应带 `mirror_saved:false` + ERROR 日志，下次保存收敛。专属引擎登记（P26c）：`PUT/DELETE /admin/maclaw/accounts/:userId/engine-instance`，token 由平台生成（48 hex）、明文仅在登记响应出现一次、存储只有密文、登记前必须探活；compose 模板 `docker-compose.tenant-engines.yml` 里每实例独立 named volume、独立 bearer、`MACLAW_STRATEGY_CODE_PACKAGES` 只允许开在专属实例（共享实例恒 0）。
 - 企业/专家门户不再出现旧“编排 LLM / 目标 LLM / 辅助 LLM”配置。
-- 管理员可以查看和治理账号、租户、发布资源、任务摘要和健康状态。账号列表带专属引擎登记状态与模型镜像徽标（P26c.1），登记/摘除在门户内完成（token 明文仅登记响应一次）。
-- 管理员页面不得读取或回显 payload、credential secret、maclaw token、admin secret 或 evidence content。
+- 管理员可以查看和治理账号、租户、发布资源、任务摘要和健康状态。账号列表带专属引擎登记状态与模型镜像徽标（P26c.1），登记/摘除在门户内完成（token 明文仅登记响应一次）。内嵌插件审批在独立侧栏页（P28）：初审/需修改（意见必填）/请求构建/最终通过/停用/移除 + 测试白名单管理，与「资源治理」分页（治理动词是启停/归档，审批动词是初审/放行，两套动作不混）。
+- 管理员页面不得读取或回显 payload、credential secret、maclaw token、admin secret 或 evidence content。**唯一窄例外（R-5，2026-11-10）**：内嵌插件审批的源码审阅视图（`GET /admin/maclaw/embedded-plugins/:packageId/source`）可读 `pf_plugin_embedded` 包正文——它是治理对象而非专家业务数据，仅此一条路由、仅审批场景；样本/模板/payload/evidence 的禁令不变（背景见「内嵌插件轨道」节）。
 
 ## 旧 API 策略
 

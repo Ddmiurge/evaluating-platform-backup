@@ -335,6 +335,15 @@ func (l *EmbeddedPluginLifecycle) ResolveEmbeddedSelection(ctx context.Context, 
 	decide := func(allowed bool, code, msg string) (*EmbeddedSelectionDecision, bool, error) {
 		return &EmbeddedSelectionDecision{Allowed: allowed, Code: code, Message: msg}, true, nil
 	}
+	// Review finding 5: a catalog baked against an older promptfoo base must
+	// be refused at the request boundary (409), not discovered as a mid-run
+	// engine failure. Checked before state because state gating presumes the
+	// id is valid for the current base at all.
+	if EmbeddedCatalogBaseMismatch() {
+		baked, current := EmbeddedCatalogBaseVersions()
+		return decide(false, "plugin_base_mismatch",
+			fmt.Sprintf("内嵌插件目录基于 promptfoo 基座 %s，当前基座为 %s——需重新构建烘焙目录后方可选用。", baked, current))
+	}
 	switch row.State {
 	case EmbeddedStateApproved:
 		return decide(true, "", "")

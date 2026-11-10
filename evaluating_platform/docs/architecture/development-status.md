@@ -1,6 +1,6 @@
 # 开发阶段与现状
 
-> 更新时间：2026-11-04｜已上机代码：`210acef`（P26c.1+P27；P26d 于 51 号上机）｜已上机含 P26d（51 号八步全绿，生产开闸资格线通过）｜本地待部署：**P26c.2**（面板探活：51 §8.1 静默 401 可见化）｜最近上机记录：`records/48`（P26a.1）、`records/49`（P26b/c）、`records/50`（P26c.1/P27 + 镜像写入真跑）
+> 更新时间：2026-11-10｜已上机代码：`210acef`（P26c.1+P27；**P26d 于 51 号八步全绿，生产开闸资格线通过**）｜本地待部署：**P26c.2**（面板探活：51 §8.1 静默 401 可见化）｜本地开发中：**P28 内嵌插件轨道**（E-1/E-3/E-5 门已提交、E-4 审查 6 条已修待提交、未上机）｜最近上机记录：`records/49`（P26b/c）、`records/50`（P26c.1/P27 + 镜像写入真跑）、`records/51`（P26d 八步全绿）
 >
 > 这份文档回答三个问题：**现在到哪一步了、能做什么、还剩什么**。
 > 「为什么这么做」在 `../../audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md`，
@@ -49,7 +49,9 @@
 | **P26c.2** | 面板探活：`EngineInstanceAdmin.Probe`（存储密文 token 打只读端点，401=token_mismatch/404=ok/拒连=unreachable）+ 账号列表 health 徽标 + 纯函数标签映射；51 §8.1「轮换后 .env 未跟上 = 静默 401」变为面板橙标带处置提示 | 本地，待上机 |
 | **P27** | 编排守卫泛化：`TestAllBindEnvKeysAppearInCompose` 枚举 pkg/config 全部 BindEnv（25 键）逐一要求 compose 透传，例外须进带注释的豁免表（当前空表）；backend 补 `SERVER_PORT` 透传；反证（删一行→红且点名）已跑 | `50`（容器内实测 `SERVER_PORT=8080`） |
 | **P26b** | 租户生成 key（D-3=b）：`maclaw_model_overrides` 镜像表（迁移 030）；admin 保存账号模型配置成功后镜像实际下发的完整配置；两扇门 `ResolveEngineGenerationCredentialForUser`（无镜像=平台默认，逐字节现状；镜像坏行=拒绝 run，**绝不**静默用平台 key）；响应新增 `mirror_saved` 状态 | `49`+`50`（空表回退默认已验；镜像写入 50 号用同值配置真跑：`mirror_saved:true`、落表后清理） |
-| **P26a.1** | backend compose 补 `MACLAW_TENANT_ENGINES: "${...:-0}"` 透传（46 引擎漏 dns、47 backend 漏此键，同一类「新开关没接进编排」）；AGENTS 编排段规约 + 两个 CI 编排守卫（反证上机红/绿） | `48`（双向核对进容器、真实部署复现双条件闸；**端到端复跑被 mimo 402 阻塞**，同日切 DeepSeek 官方后普通评测 2/2 通过，代码包端到端待补） |
+| **P26a.1** | backend compose 补 `MACLAW_TENANT_ENGINES: "${...:-0}"` 透传（46 引擎漏 dns、47 backend 漏此键，同一类「新开关没接进编排」）；AGENTS 编排段规约 + 两个 CI 编排守卫（反证上机红/绿） | `48`（双向核对进容器、真实部署复现双条件闸；**端到端复跑被 mimo 402 阻塞**，同日切 DeepSeek 官方后普通评测 2/2 通过，代码包端到端待补——**已由 51 号补跑完成**） |
+| **P28** | **内嵌插件轨道**（三级放开第 3 级，评审制交付）：设计定稿（三段审批状态机 / 测试中白名单 / 构建标记 D-7~D-10 / Step-0 落定 Route B / 零依赖包内测试）；后端核心（迁移 031、kind=`pf_plugin_embedded`、10 态状态机、上传自动关卡、两扇门选择闸 `GuardEmbeddedPluginSelection`、测试白名单、源码审阅端点 R-5 窄例外）；双门户前端（专家「内嵌插件」上传页 + 管理员「内嵌插件审批」页 + 状态镜像守卫） | 本地（`dcb6888`→`f03353d`，**未上机**；设计稿 `embedded-plugin-track.md`） |
+| **P28/E-4** | 构建管线：烤制目录读取端（`testdata/embedded_plugins.json`）+ 向导「内嵌」分组 + 暂存/index 纯核心（`f03353d`）；部署机构建工具 `cmd/embeddedbuild`（`main.go`+`batch.go`：并集暂存含 `disabled`、`index.json` 含 `removed_ids` 为批次唯一事实源、finalize 只消费本批、移除批无条件、`-fail` 标志落地、NO_QUEUE 清陈旧 index、冲突跳过不中止）；`promptfoo_version` 读路径双闸（目录端点整体隐藏 + 选择闸 `plugin_base_mismatch` 409）；两扇门提交闸已随核心落地 | 本地；**合并前审查 6 条已修**（本地反证绿；DB/文件级反证归 E-6，见 `../../audits/code-review-2026-11-10-p28-embeddedbuild.md`） |
 
 > 编号是两套：`records/` 是上机证据，`audit-2026-10-09/` 是计划与决策。引用时都带目录名。
 
@@ -104,14 +106,16 @@
 
 ## 5. 下一步（建议顺序）
 
-1. **48 号剩两个动作**：① `.env` 落盘 `MACLAW_STRATEGY_CODE_PACKAGES=1`（现仍靠 `sudo env` 临时传，重建即回 0——47/48 两轮点名的同类陷阱；一行文件写入，待主理人点头）；② 新 provider（DeepSeek 官方直连）下补跑代码包端到端：`p47file` 向导 + 确认两条、`p22hang` 失败原因一条（约 3 run）；
+**当前主线（P28 内嵌插件轨道）**：① ~~按审查修 6 条~~ **已修（2026-11-10，本地反证绿）**——批次生命周期收敛为 `batch.go`（`index.json` 唯一事实源，见审查 §8），并集强化含 `disabled`，`plugin_base_mismatch` 双闸，`-fail` 落地 → ② 提交 `cmd/embeddedbuild` + 大文件拆分第一批（`maclaw_runtime.go`/`maclawsrv_client.go` 纯搬移）→ ③ E-6 上机验收（首公民=语义缓存包走完全程，判据=设计稿 §10 九条 + 审查 DB 级反证）。
+
+1. ~~48 号剩两个动作~~ **已由 51 号完成（2026-11-04）**：`.env` 三行落盘（含 `MACLAW_STRATEGY_CODE_PACKAGES=1`，47/48 两轮点名的重建回 0 陷阱已拆）+ 新 provider 下代码包端到端（`p47file` 真跑专属实例）；
 1b. **部署备忘（48 号 §5 排查成果）**：`.env`/`configs/*.yaml` 的 `LLM_BASE_URL/LLM_MODEL/LLM_API_KEY` 是**无消费点的遗留占位**——真实的生成/判定模型只认管理员门户配置（`maclaw_model_defaults` + 账号级 config）；且**判定与生成共用同一套 key**，欠费/换供应商会同时打两条链路（mimo 402 那次即整链全挂）。排障别从 `LLM_*` 入手；
 2. **46 / 47 号已闭环**（记录备查，不再作为待办）：DNS 由仓库 compose 承担（不带 override 重建、端到端 2/2 成功）；`error_brief` 进 run DTO 且进度/SSE 禁令未扩散；代码包两条入口端到端真跑（`custom:code:*`、报告无 `file://`）；P26a 双条件闸 409 不落行、默认关 = P25 逐字节。
-3. **P26d 验收轮（专属实例已就位，51 号操作单）**：p8-test@demo.com 的专属引擎块已进主 compose（`b5643ec`：独立卷/独立 token 占位/代码开关写死 1；`MACLAW_TENANT_ENGINES=0` 时闲置不路由，起容器零行为变化）。测试端按序：起容器 → 管理门户登记（拿一次性 token）→ `.env` 三行（`P8TEST_ENGINE_TOKEN`、`MACLAW_TENANT_ENGINES=1`、`MACLAW_STRATEGY_CODE_PACKAGES=1` 顺带落盘拆雷）→ recreate → p8-test 跑 `p47file`（应真跑专属实例，run 表 `engine_base_url` 为其地址）→ 跨 token 401 / 引擎内数据不可见两条锁检 → 门户摘除 → 新代码 run 回 409。**这轮过了，「生产可开代码包」才成立**；
+3. ~~P26d 验收轮~~ **已由 51 号完成（八步全绿，「生产可开代码包」资格线通过）**：专属实例真跑、跨 token 401、卷隔离、摘除后 409 不落行全部成立（`records/51`）。注意两点后续：**专属引擎现处「已摘除」状态**，重新启用需再登记（轮换 token）→ 更新 `.env` 的 `P8TEST_ENGINE_TOKEN` → recreate；管理门户面板的登记/摘除/token 弹窗 **UI 实操点击仍未做**（50/51 号均只验到 API）；
 4. **部署脚本自检**：`df -h /var` 低于阈值即停；部署后探测引擎能否解析生成模型域名；**「新 env 必须 compose 透传」已由 P27 泛化守卫在 CI 承担**（BindEnv 全键 ↔ compose 成员检查，反证已跑），脚本只剩磁盘与探活两条；
 5. **混合场景上机验证**：用确定性靶机桩（前 N 次正常、之后拒连）补上唯一未上机的分支；
 6. 目标侧 300 秒队列超时（Dify）—— 运维/靶机配置；
-7. 体验与体积：报告卡摘要、PDF 字体子集化；复验遗留的临时代码策略包（`p22lazy`/`p22hang`）可按需下架（`p47file`、`p18upper` 留作后续回归固定素材）。
+7. 体验与体积：PDF 字体子集化（报告卡摘要已裁定不做，见 §4-3）；复验遗留的临时代码策略包（`p22lazy`/`p22hang`）可按需下架（`p47file`、`p18upper` 留作后续回归固定素材）。
 
 > 历史报告不回填：P13 之前落库的报告保持原读数（作为证据），新 run 生效。
 
