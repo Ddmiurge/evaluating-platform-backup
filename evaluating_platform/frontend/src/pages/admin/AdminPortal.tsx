@@ -13,6 +13,7 @@ import { AdminDashboard } from './AdminDashboard'
 import { UserManagement } from './UserManagement'
 import { AccountTenantManagement } from './AccountTenantManagement'
 import { ResourceGovernance } from './ResourceGovernance'
+import { EmbeddedPluginReview } from './EmbeddedPluginReview'
 import { JobGovernance } from './JobGovernance'
 import { MaclawModelConfig } from './MaclawModelConfig'
 import { MaclawHubManagement } from './MaclawHubManagement'
@@ -33,6 +34,7 @@ export function AdminPortal() {
     { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理' },
     { key: '/admin/accounts', icon: <DatabaseOutlined />, label: '用户与租户' },
     { key: '/admin/resources', icon: <ApiOutlined />, label: '资源治理' },
+    { key: '/admin/embedded-review', icon: <SafetyIcon />, label: '内嵌插件审批' },
     { key: '/admin/jobs', icon: <SafetyIcon />, label: '评测与任务' },
     { key: '/admin/model-config', icon: <SettingOutlined />, label: '模型配置' },
     { key: '/admin/hub', icon: <ApiOutlined />, label: 'Hub 管理' },
@@ -116,6 +118,7 @@ export function AdminPortal() {
             <Route path="users" element={<UserManagement />} />
             <Route path="accounts" element={<AccountTenantManagement />} />
             <Route path="resources" element={<ResourceGovernance />} />
+            <Route path="embedded-review" element={<EmbeddedPluginReview />} />
             <Route path="jobs" element={<JobGovernance />} />
             <Route path="model-config" element={<MaclawModelConfig title="平台默认 maclaw 模型配置" />} />
             <Route path="hub" element={<MaclawHubManagement />} />

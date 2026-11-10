@@ -206,6 +206,36 @@ export const adminService = {
     const res = await api.put<EngineInstanceRegistration>(`/admin/maclaw/accounts/${userId}/engine-instance`, { base_url: baseUrl })
     return res.data
   },
+  // ── P28 内嵌插件审批 ────────────────────────────────────────────────────
+  async listEmbeddedPlugins(state?: string) {
+    const res = await api.get<{ items: EmbeddedPluginSummary[] }>('/admin/maclaw/embedded-plugins', {
+      params: state ? { state } : {},
+    })
+    return res.data
+  },
+  async reviewEmbeddedPlugin(packageId: string, action: 'approve' | 'changes', reason: string) {
+    await api.post(`/admin/maclaw/embedded-plugins/${packageId}/review`, { action, reason })
+  },
+  async embeddedPluginAction(packageId: string, action: string, reason?: string) {
+    await api.post(`/admin/maclaw/embedded-plugins/${packageId}/${action}`, { reason: reason ?? '' })
+  },
+  async getEmbeddedPluginSource(packageId: string) {
+    const res = await api.get<{ package_id: string; version: string; state: string; files: EmbeddedSourceFile[] }>(
+      `/admin/maclaw/embedded-plugins/${packageId}/source`,
+    )
+    return res.data
+  },
+  async listEmbeddedTesters() {
+    const res = await api.get<{ items: string[] }>('/admin/maclaw/embedded-testers')
+    return res.data
+  },
+  async addEmbeddedTester(userId: string) {
+    await api.put(`/admin/maclaw/embedded-testers/${userId}`)
+  },
+  async removeEmbeddedTester(userId: string) {
+    await api.delete(`/admin/maclaw/embedded-testers/${userId}`)
+  },
+
   async unregisterAccountEngine(userId: string): Promise<void> {
     await api.delete(`/admin/maclaw/accounts/${userId}/engine-instance`)
   },
@@ -264,4 +294,26 @@ export const adminService = {
     const res = await api.get<{ items: AdminMaclawJob[]; total: number }>('/admin/maclaw/jobs', { params })
     return res.data
   },
+}
+
+/** P28 内嵌插件审批行（与后端 GetEmbeddedPlugins 响应同构）。 */
+export interface EmbeddedPluginSummary {
+  package_id: string
+  resource_id: string
+  owner_user_id: string
+  name: string
+  summary?: string
+  state: string
+  state_label: string
+  version: string
+  auto_gate?: Record<string, unknown>
+  review_reason?: string
+  updated_at?: string
+}
+
+/** R-5 窄例外的源码视图返回。 */
+export interface EmbeddedSourceFile {
+  name: string
+  content: string
+  truncated?: boolean
 }

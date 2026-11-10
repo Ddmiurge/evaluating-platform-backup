@@ -180,6 +180,21 @@ export const expertService = {
       )
       .then((r) => r.data),
 
+  // ── P28 内嵌插件（评审制通道，与 YAML 包完全不同的一条链）──────────────
+  listEmbeddedPlugins: () =>
+    api
+      .get<{ items: EmbeddedPluginSummary[] }>('/maclaw/evaluation/embedded-plugins')
+      .then((r) => r.data),
+
+  /** 上传 zip（base64）；成功返回规范化后的包信息（id/名称来自 manifest 权威解析）。 */
+  publishEmbeddedPlugin: (data: { name: string; payload: string; version?: string; id?: string }) =>
+    api
+      .post<{ id: string; handle: string; name: string; metadata?: Record<string, string> }>(
+        '/maclaw/evaluation/resources',
+        { ...data, kind: 'pf_plugin_embedded', status: 'published', enabled: true },
+      )
+      .then((r) => r.data),
+
   listPromptfooStrategies: (params?: { include_inactive?: boolean; limit?: number; include_published_catalog?: boolean }) =>
     api
       .get<{ items: PromptfooStrategySummary[] }>('/maclaw/evaluation/resources', {
@@ -307,4 +322,18 @@ export interface PromptfooStrategyPublishInput {
     pf_strategy_variant?: string
     [key: string]: string | undefined
   }
+}
+
+/** P28 内嵌插件的列表行（状态行优先：被拒包无资源行也可见）。 */
+export interface EmbeddedPluginSummary {
+  package_id: string
+  resource_id: string
+  name: string
+  summary?: string
+  state: string
+  state_label: string
+  version: string
+  auto_gate?: Record<string, unknown>
+  review_reason?: string
+  updated_at?: string
 }
