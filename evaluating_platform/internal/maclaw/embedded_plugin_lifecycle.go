@@ -298,6 +298,15 @@ func (l *EmbeddedPluginLifecycle) UnmarkRemove(ctx context.Context, packageID st
 		map[string]any{}, "remove_unmarked", &actor, "")
 }
 
+// IsTester exposes the whitelist check (wizard catalog visibility for
+// `testing`-state entries).
+func (l *EmbeddedPluginLifecycle) IsTester(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if l == nil || l.repo == nil {
+		return false, nil
+	}
+	return l.repo.IsTester(ctx, userID)
+}
+
 // ── 提交闸（E-5）────────────────────────────────────────────────────────────
 
 // EmbeddedSelectionDecision is what the two submission doors ask: given a

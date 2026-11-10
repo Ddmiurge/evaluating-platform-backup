@@ -30,6 +30,7 @@ import (
 	"github.com/google/uuid"
 
 	"evaluating_platform/internal/maclaw"
+	"evaluating_platform/internal/repository"
 	"evaluating_platform/pkg/logger"
 )
 
@@ -103,6 +104,7 @@ type EngineRunHandler struct {
 	engine             engineClient
 	instances          *maclaw.EngineInstanceRegistry
 	embeddedLifecycle  *maclaw.EmbeddedPluginLifecycle
+	embeddedRepo       *repository.MaclawEmbeddedPluginRepository
 	runs               *maclaw.EngineRunService
 	targetConfig       engineTargetProvider
 	generationProvider maclaw.EngineGenerationProvider
@@ -159,6 +161,64 @@ func NewEngineRunHandler(engine *maclaw.PromptfooEngineClient, runs *maclaw.Engi
 // SetEngineInstances wires the P26a tenant engine registry. Optional: nil or a
 // disabled registry leaves every run on the shared client — pre-P26 behavior,
 // byte-for-byte. This is what lets the routing ship before the instances do.
+// SetEmbeddedCatalog wires the baked-plugin catalog source (E-4): the wizard
+// asks it which embedded ids are selectable right now (approved → everyone,
+// testing → testers only).
+func (h *EngineRunHandler) SetEmbeddedCatalog(repo *repository.MaclawEmbeddedPluginRepository, lifecycle *maclaw.EmbeddedPluginLifecycle) {
+	if h != nil {
+		h.embeddedRepo = repo
+		h.embeddedLifecycle = lifecycle
+	}
+}
+
+// EmbeddedPluginCatalog lists the ids this caller may select from the embedded
+// track. Entries come ONLY from the baked testdata file (a successful build
+// wrote them); the CURRENT state then narrows further — a selectable entry the
+// submit gate would refuse is a dead button, so anything but approved/testing
+// is invisible here by construction.
+func (h *EngineRunHandler) EmbeddedPluginCatalog(c *gin.Context) {
+	userID, ok := h.requireEngineContext(c)
+	if !ok {
+		return
+	}
+	if h.embeddedRepo == nil || h.embeddedLifecycle == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "embedded catalog is not configured", "code": "embedded_not_configured"})
+		return
+	}
+	tester, err := h.embeddedLifecycle.IsTester(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read tester whitelist"})
+		return
+	}
+	items := make([]gin.H, 0, len(maclaw.EmbeddedPluginCatalog()))
+	for _, entry := range maclaw.EmbeddedPluginCatalog() {
+		row, rerr := h.embeddedRepo.GetByPackageID(c.Request.Context(), entry.ID)
+		if rerr != nil || row == nil {
+			continue // badge errors err toward invisible, never toward selectable
+		}
+		switch row.State {
+		case maclaw.EmbeddedStateApproved:
+			// visible to everyone
+		case maclaw.EmbeddedStateTesting:
+			if !tester {
+				continue
+			}
+		default:
+			continue
+		}
+		items = append(items, gin.H{
+			"id":          entry.ID,
+			"name":        entry.Name,
+			"category":    entry.Category,
+			"severity":    entry.Severity,
+			"fanout":      entry.Fanout,
+			"state":       row.State,
+			"state_label": maclaw.EmbeddedStateLabel(row.State),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
 // SetEmbeddedLifecycle wires the P28 state-machine gate (wizard door).
 func (h *EngineRunHandler) SetEmbeddedLifecycle(lifecycle *maclaw.EmbeddedPluginLifecycle) {
 	if h != nil {

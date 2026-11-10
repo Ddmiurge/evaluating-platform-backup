@@ -260,15 +260,24 @@ export function EngineEvalPage() {
     plugins: [],
     strategies: [],
   })
+  const [embeddedPlugins, setEmbeddedPlugins] = useState<EngineSelectOption[]>([])
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       try {
-        const [plugins, strategies] = await Promise.all([
+        const [plugins, strategies, embedded] = await Promise.all([
           engineEvalService.listPublishedPackages('pf_plugin'),
           engineEvalService.listPublishedPackages('pf_strategy'),
+          engineEvalService.listEmbeddedPluginCatalog().catch(() => []),
         ])
         if (cancelled) return
+        setEmbeddedPlugins(
+          embedded.map((item) => ({
+            value: item.id,
+            label: `${item.name}（内嵌${item.state === 'testing' ? '·测试中' : ''}）`,
+            disabled: false,
+          })),
+        )
         setExpertPackages({
           plugins: plugins.map((item) => ({ value: `pf_plugin:${item.handle}`, label: `${item.name}（专家发布）`, disabled: false })),
           strategies: strategies.map((item) => ({
@@ -282,18 +291,23 @@ export function EngineEvalPage() {
       } catch {
         // A catalogue failure must not block the form: the built-ins still work,
         // and hiding the errors would be worse than showing fewer options.
-        if (!cancelled) setExpertPackages({ plugins: [], strategies: [] })
+        if (!cancelled) {
+          setExpertPackages({ plugins: [], strategies: [] })
+          setEmbeddedPlugins([])
+        }
       }
     }
     void load()
     return () => { cancelled = true }
   }, [])
-  const pluginSelectOptions = useMemo(
-    () => (expertPackages.plugins.length > 0
+  const pluginSelectOptions = useMemo(() => {
+    const groups = expertPackages.plugins.length > 0
       ? [...ENGINE_PLUGIN_GROUPS, { label: '专家发布', options: expertPackages.plugins }]
-      : ENGINE_PLUGIN_GROUPS),
-    [expertPackages.plugins],
-  )
+      : [...ENGINE_PLUGIN_GROUPS]
+    // E-4: baked embedded entries append last — server already filtered them
+    // to what THIS caller may run, so every entry here is selectable.
+    return embeddedPlugins.length > 0 ? [...groups, { label: '内嵌插件', options: embeddedPlugins }] : groups
+  }, [expertPackages.plugins, embeddedPlugins])
   const strategySelectOptions = useMemo(
     () => (expertPackages.strategies.length > 0
       ? [...ENGINE_STRATEGY_SELECT_OPTIONS, { label: '专家发布', options: expertPackages.strategies }]

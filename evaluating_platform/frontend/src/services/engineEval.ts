@@ -138,6 +138,16 @@ export const engineEvalService = {
    * The ref the engine resolves is built HERE (`pf_plugin:<handle>`), because
    * the handle alone is not a capability reference.
    */
+  /**
+   * P28/E-4: baked embedded-plugin entries this caller may select right now
+   * (server-side filtered — approved for everyone, testing for whitelisted
+   * testers). Sourced from the backend's baked catalog, no FE mirror.
+   */
+  async listEmbeddedPluginCatalog(): Promise<EmbeddedCatalogItem[]> {
+    const res = await api.get<{ items: EmbeddedCatalogItem[] }>('/maclaw/engine/embedded-catalog')
+    return res.data.items ?? []
+  },
+
   async listPublishedPackages(kind: 'pf_plugin' | 'pf_strategy'): Promise<PublishedEnginePackage[]> {
     const res = await api.get<{ items: PublishedEnginePackageResponse[] }>('/maclaw/evaluation/resources', {
       params: { kind, limit: 200 },
@@ -937,4 +947,15 @@ export function explainStrategyRetiredRejection(
     message: (typeof body.error === 'string' && body.error.trim() !== '') ? body.error : fallback,
     code: body.code,
   }
+}
+
+/** P28/E-4 baked embedded-plugin catalog row (wizard picker). */
+export interface EmbeddedCatalogItem {
+  id: string
+  name: string
+  category: string
+  severity?: string
+  fanout?: number
+  state: string
+  state_label: string
 }

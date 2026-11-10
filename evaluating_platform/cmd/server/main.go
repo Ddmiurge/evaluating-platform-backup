@@ -189,7 +189,8 @@ func main() {
 	maclawResourceStoreService.SetEmbeddedPluginProber(engineClient) // P28: runs the package's own tests at the store exit
 	engineRunHandler := handler.NewEngineRunHandler(engineClient, engineRunService, maclawTargetConfigService, maclawRuntimeConfigService)
 	engineRunHandler.SetEngineInstances(engineInstances)
-	engineRunHandler.SetEmbeddedLifecycle(embeddedLifecycle) // P28 gate
+	engineRunHandler.SetEmbeddedLifecycle(embeddedLifecycle)                   // P28 gate
+	engineRunHandler.SetEmbeddedCatalog(maclawEmbeddedRepo, embeddedLifecycle) // E-4 baked catalog
 	maclawSkillHandler := handler.NewMaclawSkillHandlerWithProviderProjectionAndHub(maclawProvider, maclawSkillProjection, maclawHubConfigService)
 	maclawMCPHandler := handler.NewMaclawMCPHandler(maclawProvider)
 	maclawCapabilityCatalog.SetPlatformDataStores(sampleRepo, tplRepo, composedAttackRepo)
@@ -466,6 +467,7 @@ func main() {
 			// P26c · dedicated engine instance registration (token plaintext shown once)
 			adminGroup.PUT("/maclaw/accounts/:userId/engine-instance", adminMaclawHandler.RegisterAccountEngine)
 			// P28 · 内嵌插件审批（状态机动作 + 测试白名单）
+			maclawEngine.GET("/maclaw/engine/embedded-catalog", engineRunHandler.EmbeddedPluginCatalog) // E-4
 			adminGroup.GET("/maclaw/embedded-plugins", adminMaclawHandler.GetEmbeddedPlugins)
 			adminGroup.POST("/maclaw/embedded-plugins/:packageId/review", adminMaclawHandler.ReviewEmbeddedPlugin)
 			adminGroup.GET("/maclaw/embedded-plugins/:packageId/source", adminMaclawHandler.GetEmbeddedPluginSource)
