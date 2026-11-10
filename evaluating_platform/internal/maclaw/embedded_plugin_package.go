@@ -11,12 +11,18 @@ package maclaw
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/google/uuid"
+
+	appcrypto "evaluating_platform/internal/crypto"
 
 	yaml "gopkg.in/yaml.v3"
 )
@@ -299,4 +305,93 @@ func PeekEmbeddedManifest(payload string) *EmbeddedManifest {
 		return &m
 	}
 	return nil
+}
+
+// EmbeddedSourceFile is one file returned by the admin review drawer (R-5).
+type EmbeddedSourceFile struct {
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+const (
+	embeddedSourceMaxFileBytes = 200 * 1024
+	embeddedSourceMaxTotal     = 1024 * 1024
+)
+
+// AdminReadEmbeddedPackage decrypts and extracts the stored zip for the admin
+// review drawer — the R-5 narrow exception (reading the source IS the
+// governance act). Owner-scoped by passing the package OWNER's user id (the
+// state row knows who uploaded it); bounds prevent a bomb reaching the
+// browser, and only text-ish extensions are returned (a binary blob has
+// nothing to review and everything to hide).
+func (s *ResourceStoreService) AdminReadEmbeddedPackage(ctx context.Context, ownerUserID uuid.UUID, resourceID string) ([]EmbeddedSourceFile, error) {
+	if !s.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	record, err := s.store.GetResource(ctx, ownerUserID, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, errors.New("embedded package resource not found")
+	}
+	key, err := s.keyStore.GetKey(record.PayloadKeyID)
+	if err != nil {
+		return nil, fmt.Errorf("load embedded package key: %w", err)
+	}
+	plain, err := appcrypto.Decrypt(record.EncryptedPayload, key)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt embedded package: %w", err)
+	}
+	raw, err := DecodeEmbeddedPayload(string(plain))
+	if err != nil {
+		return nil, err
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, embeddedInvalid("embedded_not_zip", "存储的包不是有效的 zip（%s）。", err.Error())
+	}
+	textish := map[string]bool{
+		".ts": true, ".js": true, ".mjs": true, ".yaml": true, ".yml": true,
+		".json": true, ".md": true, ".txt": true, "": true, // manifest.yaml etc.
+	}
+	out := make([]EmbeddedSourceFile, 0, len(zr.File))
+	total := 0
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		name := path.Clean(f.Name)
+		ext := strings.ToLower(path.Ext(name))
+		if !textish[ext] {
+			continue // binary: nothing to review
+		}
+		if total >= embeddedSourceMaxTotal {
+			break
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		limit := int64(embeddedSourceMaxFileBytes)
+		if remaining := int64(embeddedSourceMaxTotal - total); limit > remaining {
+			limit = remaining
+		}
+		content, err := io.ReadAll(io.LimitReader(rc, limit+1))
+		rc.Close()
+		if err != nil {
+			continue
+		}
+		truncated := int64(len(content)) > limit
+		if truncated {
+			content = content[:limit]
+		}
+		if bytes.Contains(content[:min(len(content), 4096)], []byte{0}) {
+			continue // binary with a text extension — skip
+		}
+		total += len(content)
+		out = append(out, EmbeddedSourceFile{Name: name, Content: string(content), Truncated: truncated})
+	}
+	return out, nil
 }

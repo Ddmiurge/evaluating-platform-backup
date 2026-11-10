@@ -250,6 +250,7 @@ func main() {
 	)
 	adminMaclawHandler.SetEngineInstanceAdmin(maclawpkg.NewEngineInstanceAdmin(maclawAccountMappingRepo, keyStore)) // P26c
 	adminMaclawHandler.SetEmbeddedReviewTools(maclawEmbeddedRepo, embeddedLifecycle)                                // P28
+	adminMaclawHandler.SetEmbeddedResourceStore(maclawResourceStoreService)                                         // P28 review drawer (R-5)
 
 	legacyGone := func(c *gin.Context) {
 		c.JSON(http.StatusGone, gin.H{
@@ -467,6 +468,7 @@ func main() {
 			// P28 · 内嵌插件审批（状态机动作 + 测试白名单）
 			adminGroup.GET("/maclaw/embedded-plugins", adminMaclawHandler.GetEmbeddedPlugins)
 			adminGroup.POST("/maclaw/embedded-plugins/:packageId/review", adminMaclawHandler.ReviewEmbeddedPlugin)
+			adminGroup.GET("/maclaw/embedded-plugins/:packageId/source", adminMaclawHandler.GetEmbeddedPluginSource)
 			adminGroup.POST("/maclaw/embedded-plugins/:packageId/:action", adminMaclawHandler.BuildLifecycleEmbedded)
 			adminGroup.GET("/maclaw/embedded-testers", adminMaclawHandler.ListEmbeddedTesters)
 			adminGroup.PUT("/maclaw/embedded-testers/:userId", adminMaclawHandler.AddEmbeddedTester)

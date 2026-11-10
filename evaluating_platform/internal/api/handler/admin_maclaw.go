@@ -29,6 +29,7 @@ type AdminMaclawHandler struct {
 	engineAdmin       *maclaw.EngineInstanceAdmin
 	embeddedRepo      *repository.MaclawEmbeddedPluginRepository
 	embeddedLifecycle *maclaw.EmbeddedPluginLifecycle
+	resourceStore     *maclaw.ResourceStoreService
 	provider          maclaw.GatewayProvider
 	configService     *maclaw.RuntimeConfigService
 	hubService        *maclaw.MaclawHubConfigService
@@ -797,6 +798,12 @@ func writeSafeMaclawAdminError(c *gin.Context, err error) {
 // 「配了地址但引擎不存在」在登记时暴露而不是第一个 run 提交时。
 
 // SetEmbeddedReviewTools wires the P28 review surface (state rows + machine).
+// resourceStore powers the review drawer's source view (R-5 narrow exception).
+func (h *AdminMaclawHandler) SetEmbeddedResourceStore(store *maclaw.ResourceStoreService) {
+	if h != nil {
+		h.resourceStore = store
+	}
+}
 func (h *AdminMaclawHandler) SetEmbeddedReviewTools(repo *repository.MaclawEmbeddedPluginRepository, lifecycle *maclaw.EmbeddedPluginLifecycle) {
 	if h != nil {
 		h.embeddedRepo = repo
@@ -1047,4 +1054,33 @@ func (h *AdminMaclawHandler) RemoveEmbeddedTester(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GetEmbeddedPluginSource is the R-5 narrow exception: the ONE place an admin
+// can read package source (review IS the governance act for embedded code).
+// Bounded hard inside AdminReadEmbeddedPackage (per-file 200KB, total 1MB,
+// text-ish files only) — a zip bomb or a binary blob never reaches the
+// browser, and the payload/credential bans on every other admin surface are
+// untouched.
+func (h *AdminMaclawHandler) GetEmbeddedPluginSource(c *gin.Context) {
+	if h.embeddedRepo == nil || h.resourceStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "embedded review store is not configured", "code": "embedded_not_configured"})
+		return
+	}
+	row, err := h.embeddedRepo.GetByPackageID(c.Request.Context(), strings.TrimSpace(c.Param("packageId")))
+	if err != nil || row == nil || row.ResourceID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "包不存在或尚未通过自动关卡（未生成资源行）。", "code": "embedded_not_found"})
+		return
+	}
+	files, err := h.resourceStore.AdminReadEmbeddedPackage(c.Request.Context(), row.OwnerUserID, row.ResourceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read embedded package source"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"package_id": row.PackageID,
+		"version":    row.Version,
+		"state":      row.State,
+		"files":      files,
+	})
 }
