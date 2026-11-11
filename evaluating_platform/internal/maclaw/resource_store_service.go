@@ -178,7 +178,7 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 		if err != nil {
 			return nil, err
 		}
-		manifest, err := ValidateEmbeddedPluginPackage(raw)
+		manifest, stats, err := ValidateEmbeddedPluginPackage(raw)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +211,7 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 		if in.Metadata == nil {
 			in.Metadata = map[string]string{}
 		}
-		stampEmbeddedGateMetadata(in.Metadata, manifest, verdict)
+		stampEmbeddedGateMetadata(in.Metadata, manifest, verdict, stats)
 	}
 	userID, err := normalizeUserID(userID)
 	if err != nil {

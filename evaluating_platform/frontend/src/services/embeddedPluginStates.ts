@@ -85,12 +85,28 @@ export function embeddedExpertCanRevise(state: string): boolean {
   return state !== 'removed'
 }
 
+/**
+ * Label for a stored review opinion. `review_reason` is the LATEST opinion on
+ * the row; after a re-upload (state back to `pending_initial_review`, version+1)
+ * it still belongs to the PREVIOUS version until the new one is reviewed
+ * (record 53 §7.3 — unlabeled it reads as an opinion on the current version).
+ * The audit trail lives in `maclaw_embedded_plugin_events`; this label exists so
+ * the row is not misread.
+ */
+export function embeddedReviewReasonLabel(state: string): string {
+  return state === 'pending_initial_review' ? '上一版意见' : '意见'
+}
+
 /** The upload's result tag for the auto-gate line. */
 export function embeddedGateText(autoGate: Record<string, unknown> | undefined): string {
   if (!autoGate) return '—'
   if (autoGate.passed === true) {
+    // files/source_bytes are the SAFE numeric summary the store stamps
+    // (record 53 §7.1 — the line used to read 「0 个文件」 because they were
+    // never computed). Only shown when present so old rows render as before.
+    const files = typeof autoGate.files === 'number' && autoGate.files > 0 ? ` · ${autoGate.files} 个文件` : ''
     const summary = typeof autoGate.test_summary === 'string' && autoGate.test_summary ? ` · ${autoGate.test_summary}` : ''
-    return `✓ 通过${summary}`
+    return `✓ 通过${files}${summary}`
   }
   const reason = typeof autoGate.reason === 'string' ? autoGate.reason : '未通过'
   return `✗ ${reason}`

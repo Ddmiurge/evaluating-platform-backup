@@ -18,6 +18,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -76,21 +77,32 @@ func embeddedInvalid(code, format string, args ...any) *EmbeddedPluginValidation
 	return &EmbeddedPluginValidationError{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
+// EmbeddedPackageStats is the SAFE numeric summary of a validated package —
+// counts only, never content or paths. The upload handler stores it on the
+// auto-gate line so the portals can say 「通过 · N 个文件」 instead of always 0
+// (record 53 §7.1).
+type EmbeddedPackageStats struct {
+	Files       int   `json:"files"`
+	SourceBytes int64 `json:"source_bytes"` // .ts/.js/.mjs content bytes, decompressed
+}
+
 // ValidateEmbeddedPluginPackage: zip safety → manifest → capability tokens →
-// id rules. Returns the parsed manifest so callers reuse one parse.
-func ValidateEmbeddedPluginPackage(data []byte) (*EmbeddedManifest, error) {
+// id rules. Returns the parsed manifest and the safe numeric stats so callers
+// reuse one parse.
+func ValidateEmbeddedPluginPackage(data []byte) (*EmbeddedManifest, EmbeddedPackageStats, error) {
+	stats := EmbeddedPackageStats{}
 	if len(data) == 0 {
-		return nil, embeddedInvalid("embedded_empty", "上传的包为空。")
+		return nil, stats, embeddedInvalid("embedded_empty", "上传的包为空。")
 	}
 	if len(data) > EmbeddedPluginMaxZipBytes {
-		return nil, embeddedInvalid("embedded_too_large", "压缩包 %d 字节超过上限 %d 字节。", len(data), EmbeddedPluginMaxZipBytes)
+		return nil, stats, embeddedInvalid("embedded_too_large", "压缩包 %d 字节超过上限 %d 字节。", len(data), EmbeddedPluginMaxZipBytes)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, embeddedInvalid("embedded_not_zip", "不是有效的 zip 文件（%s）。", err.Error())
+		return nil, stats, embeddedInvalid("embedded_not_zip", "不是有效的 zip 文件（%s）。", err.Error())
 	}
 	if len(zr.File) == 0 || len(zr.File) > EmbeddedPluginMaxFiles {
-		return nil, embeddedInvalid("embedded_file_count", "包内文件数必须在 1..%d 之间，实际 %d。", EmbeddedPluginMaxFiles, len(zr.File))
+		return nil, stats, embeddedInvalid("embedded_file_count", "包内文件数必须在 1..%d 之间，实际 %d。", EmbeddedPluginMaxFiles, len(zr.File))
 	}
 
 	var manifestRaw []byte
@@ -99,29 +111,30 @@ func ValidateEmbeddedPluginPackage(data []byte) (*EmbeddedManifest, error) {
 	for _, f := range zr.File {
 		name := f.Name
 		if strings.HasPrefix(name, "/") || strings.Contains(name, "..") {
-			return nil, embeddedInvalid("embedded_zip_slip", "包内路径非法（%s）：不允许绝对路径与 ..。", name)
+			return nil, stats, embeddedInvalid("embedded_zip_slip", "包内路径非法（%s）：不允许绝对路径与 ..。", name)
 		}
 		if f.Mode()&0o120000 != 0 { // symlink / device bits
-			return nil, embeddedInvalid("embedded_zip_link", "包内不允许符号链接或特殊文件（%s）。", name)
+			return nil, stats, embeddedInvalid("embedded_zip_link", "包内不允许符号链接或特殊文件（%s）。", name)
 		}
 		if f.UncompressedSize64 > EmbeddedPluginMaxUncompressed {
-			return nil, embeddedInvalid("embedded_zip_bomb", "解压后体积超过 %d 字节上限（%s）。", EmbeddedPluginMaxUncompressed, name)
+			return nil, stats, embeddedInvalid("embedded_zip_bomb", "解压后体积超过 %d 字节上限（%s）。", EmbeddedPluginMaxUncompressed, name)
 		}
 		totalUncompressed += int64(f.UncompressedSize64)
 		if totalUncompressed > EmbeddedPluginMaxUncompressed {
-			return nil, embeddedInvalid("embedded_zip_bomb", "解压总大小超过 %d 字节上限。", EmbeddedPluginMaxUncompressed)
+			return nil, stats, embeddedInvalid("embedded_zip_bomb", "解压总大小超过 %d 字节上限。", EmbeddedPluginMaxUncompressed)
 		}
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		stats.Files++
 		rc, err := f.Open()
 		if err != nil {
-			return nil, embeddedInvalid("embedded_zip_read", "无法读取包内文件（%s）。", name)
+			return nil, stats, embeddedInvalid("embedded_zip_read", "无法读取包内文件（%s）。", name)
 		}
 		content, err := io.ReadAll(io.LimitReader(rc, EmbeddedPluginMaxUncompressed+1))
 		rc.Close()
 		if err != nil {
-			return nil, embeddedInvalid("embedded_zip_read", "无法读取包内文件（%s）。", name)
+			return nil, stats, embeddedInvalid("embedded_zip_read", "无法读取包内文件（%s）。", name)
 		}
 		clean := path.Clean(name)
 		if clean == "manifest.yaml" {
@@ -129,36 +142,37 @@ func ValidateEmbeddedPluginPackage(data []byte) (*EmbeddedManifest, error) {
 		}
 		lower := strings.ToLower(clean)
 		if strings.HasSuffix(lower, ".ts") || strings.HasSuffix(lower, ".js") || strings.HasSuffix(lower, ".mjs") {
+			stats.SourceBytes += int64(len(content))
 			textFiles = append(textFiles, struct{ name, content string }{clean, string(content)})
 		}
 	}
 	if manifestRaw == nil {
-		return nil, embeddedInvalid("embedded_no_manifest", "缺少根目录 manifest.yaml。")
+		return nil, stats, embeddedInvalid("embedded_no_manifest", "缺少根目录 manifest.yaml。")
 	}
 
 	manifest, err := parseEmbeddedManifest(manifestRaw)
 	if err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 
 	// Capability tokens: the SAME refused set as code strategies — this code
 	// runs inside the key-holding engine process, so the bar is identical.
 	for _, tf := range textFiles {
 		if forbidden := capabilityTokenHit(tf.content); forbidden != "" {
-			return nil, embeddedInvalid("embedded_forbidden_token",
+			return nil, stats, embeddedInvalid("embedded_forbidden_token",
 				"文件 %s 含禁止的能力令牌（%s）：内嵌插件与代码策略同禁 env/文件/进程/网络。", tf.name, forbidden)
 		}
 	}
 
 	// entry + tests contract
 	if manifest.Entry == "" || !hasFile(zr, manifest.Entry) {
-		return nil, embeddedInvalid("embedded_entry_missing", "manifest.entry=%q 在包内不存在。", manifest.Entry)
+		return nil, stats, embeddedInvalid("embedded_entry_missing", "manifest.entry=%q 在包内不存在。", manifest.Entry)
 	}
 	if manifest.Tests != EmbeddedPluginTestEntry || !hasFile(zr, EmbeddedPluginTestEntry) {
-		return nil, embeddedInvalid("embedded_tests_contract",
+		return nil, stats, embeddedInvalid("embedded_tests_contract",
 			"包内测试必须是 %s（零依赖、离线可跑，node 子进程秒级执行）。", EmbeddedPluginTestEntry)
 	}
-	return manifest, nil
+	return manifest, stats, nil
 }
 
 func hasFile(zr *zip.Reader, want string) bool {
@@ -263,9 +277,11 @@ func EmbeddedPluginIDReserved(id string) bool {
 // stampEmbeddedGateMetadata writes the auto-gate summary the handler reads
 // back to build the state row. Keys avoid the payload/secret blacklist
 // substrings (redteam.SanitizeMetadata) — they must survive the write path.
-func stampEmbeddedGateMetadata(metadata map[string]string, m *EmbeddedManifest, verdict *EmbeddedPluginProbeResult) {
+func stampEmbeddedGateMetadata(metadata map[string]string, m *EmbeddedManifest, verdict *EmbeddedPluginProbeResult, stats EmbeddedPackageStats) {
 	metadata["embedded_package_id"] = m.ID
 	metadata["embedded_gate"] = "passed"
+	metadata["embedded_files"] = strconv.Itoa(stats.Files)
+	metadata["embedded_source_bytes"] = strconv.FormatInt(stats.SourceBytes, 10)
 	if verdict != nil {
 		metadata["embedded_test_summary"] = verdict.TestSummary
 	}

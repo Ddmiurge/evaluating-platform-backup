@@ -167,6 +167,9 @@ func (h *MaclawEvaluationHandler) CreateResource(c *gin.Context) {
 			if n, cerr := strconv.Atoi(out.Metadata["embedded_files"]); cerr == nil {
 				gate.Files = n
 			}
+			if n, cerr := strconv.ParseInt(out.Metadata["embedded_source_bytes"], 10, 64); cerr == nil {
+				gate.SourceBytes = int(n)
+			}
 		}
 		manifest := &maclaw.EmbeddedManifest{ID: out.Metadata["embedded_package_id"], Name: out.Name, Summary: out.Summary}
 		if manifest.ID != "" {

@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"evaluating_platform/internal/maclaw/redteam"
 )
 
 // ── zip builder (tests only) ────────────────────────────────────────────────
@@ -60,7 +63,7 @@ func TestValidateEmbeddedPluginPackageAcceptsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	m, err := ValidateEmbeddedPluginPackage(raw)
+	m, _, err := ValidateEmbeddedPluginPackage(raw)
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -119,7 +122,7 @@ func TestValidateEmbeddedPluginPackageRefusals(t *testing.T) {
 				t.Fatalf("decode: %v", err)
 			}
 			// Mirror the store exit's order: package checks, then catalog checks.
-			m, err := ValidateEmbeddedPluginPackage(raw)
+			m, _, err := ValidateEmbeddedPluginPackage(raw)
 			if err == nil {
 				err = ValidateEmbeddedManifestForCatalog(m, EmbeddedPluginIDReserved)
 			}
@@ -428,4 +431,41 @@ func asRefusal(err error) *EmbeddedSelectionRefusalError {
 		return e
 	}
 	return nil
+}
+
+// Record 53 §7.1: the auto-gate line always read 「0 个文件」 because the stats
+// were never computed and never stamped. The validator now reports them, and
+// the stamp writes keys the metadata sanitizer keeps (both avoid the
+// secret/payload/path blacklist substrings — asserted below via SanitizeMetadata).
+func TestValidateEmbeddedPluginPackageReportsSafeStats(t *testing.T) {
+	raw, err := DecodeEmbeddedPayload(validZip(t))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_, stats, err := ValidateEmbeddedPluginPackage(raw)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if stats.Files != 3 {
+		t.Fatalf("files = %d, want 3 (manifest + src + tests)", stats.Files)
+	}
+	wantSource := int64(len("export default {}") + len("process.exit(0)"))
+	if stats.SourceBytes != wantSource {
+		t.Fatalf("source_bytes = %d, want %d (decompressed .ts/.mjs content only)", stats.SourceBytes, wantSource)
+	}
+
+	metadata := map[string]string{}
+	stampEmbeddedGateMetadata(metadata, &EmbeddedManifest{ID: "probe-demo"}, &EmbeddedPluginProbeResult{TestSummary: "tests passed · 1ms"}, stats)
+	if metadata["embedded_files"] != "3" {
+		t.Fatalf("embedded_files = %q, want 3", metadata["embedded_files"])
+	}
+	if metadata["embedded_source_bytes"] != fmt.Sprintf("%d", wantSource) {
+		t.Fatalf("embedded_source_bytes = %q, want %d", metadata["embedded_source_bytes"], wantSource)
+	}
+	// The store sanitizes resource metadata on the way in; these keys must
+	// survive it or the handler still reads zero (the record-53 defect shape).
+	sanitized := redteam.SanitizeMetadata(metadata)
+	if sanitized["embedded_files"] != "3" || sanitized["embedded_source_bytes"] == "" {
+		t.Fatalf("gate stats keys must survive SanitizeMetadata, got %+v", sanitized)
+	}
 }

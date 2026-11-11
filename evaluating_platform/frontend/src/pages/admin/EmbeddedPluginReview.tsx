@@ -15,7 +15,7 @@ import {
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { adminService, type EmbeddedPluginSummary, type EmbeddedSourceFile } from '../../services/admin'
-import { embeddedAdminActions, embeddedGateText, embeddedStateTag, type EmbeddedAdminAction } from '../../services/embeddedPluginStates'
+import { embeddedAdminActions, embeddedGateText, embeddedReviewReasonLabel, embeddedStateTag, type EmbeddedAdminAction } from '../../services/embeddedPluginStates'
 import { formatDate } from '../../utils/format'
 
 const { Text, Title, Paragraph } = Typography
@@ -212,7 +212,11 @@ export function EmbeddedPluginReview() {
       render: (_: unknown, row: EmbeddedPluginSummary) => (
         <Space orientation="vertical" size={0}>
           <Text type={row.auto_gate?.passed === false ? 'danger' : 'secondary'}>{embeddedGateText(row.auto_gate)}</Text>
-          {row.review_reason && <Text type="warning">意见：{row.review_reason}</Text>}
+          {row.review_reason && (
+            <Text type="warning">
+              {embeddedReviewReasonLabel(row.state)}：{row.review_reason}
+            </Text>
+          )}
         </Space>
       ),
     },

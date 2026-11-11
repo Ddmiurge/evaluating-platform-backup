@@ -895,6 +895,29 @@ func (h *AdminMaclawHandler) writeEmbeddedError(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "embedded plugin operation failed"})
 }
 
+// requireEmbeddedPackage rejects an operation on a package id that has no state
+// row at all with 404, BEFORE the state machine runs. Without this, an unknown
+// id and a concurrently-moved id both surface as 409 「状态已被其他人变更」,
+// which sends the operator chasing a race that never happened (record 53 §7.2;
+// the source drawer already answers 404 for the same id). Rows are never
+// physically deleted (`removed` is a state), so a nil row here is definitive.
+func (h *AdminMaclawHandler) requireEmbeddedPackage(c *gin.Context, packageID string) bool {
+	if h.embeddedRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "embedded plugin store is not configured", "code": "embedded_not_configured"})
+		return false
+	}
+	row, err := h.embeddedRepo.GetByPackageID(c.Request.Context(), packageID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read embedded plugin state"})
+		return false
+	}
+	if row == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "包不存在。", "code": "embedded_not_found"})
+		return false
+	}
+	return true
+}
+
 // GetEmbeddedPlugins: the admin review queue (optional ?state= filter).
 func (h *AdminMaclawHandler) GetEmbeddedPlugins(c *gin.Context) {
 	if h.embeddedRepo == nil {
@@ -945,6 +968,9 @@ func (h *AdminMaclawHandler) ReviewEmbeddedPlugin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "code": "invalid_request"})
 		return
 	}
+	if !h.requireEmbeddedPackage(c, packageID) {
+		return
+	}
 	var err error
 	switch in.Action {
 	case "approve":
@@ -982,6 +1008,9 @@ func (h *AdminMaclawHandler) BuildLifecycleEmbedded(c *gin.Context) {
 		Reason string `json:"reason"`
 	}
 	_ = c.ShouldBindJSON(&in) // body optional except where the state machine demands it
+	if !h.requireEmbeddedPackage(c, packageID) {
+		return
+	}
 	var err error
 	switch action {
 	case "request-build":

@@ -147,7 +147,7 @@ func StageEmbeddedPackages(inputs []EmbeddedBuildInput, stagingRoot, batchID str
 		if err != nil {
 			return nil, fmt.Errorf("package %s: %w", in.PackageID, err)
 		}
-		manifest, err := ValidateEmbeddedPluginPackage(raw)
+		manifest, _, err := ValidateEmbeddedPluginPackage(raw)
 		if err != nil {
 			return nil, fmt.Errorf("package %s: %w", in.PackageID, err)
 		}

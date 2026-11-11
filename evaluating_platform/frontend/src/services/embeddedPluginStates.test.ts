@@ -6,6 +6,7 @@ import {
   embeddedAdminActions,
   embeddedExpertCanRevise,
   embeddedGateText,
+  embeddedReviewReasonLabel,
   embeddedStateTag,
 } from './embeddedPluginStates'
 
@@ -51,11 +52,28 @@ describe('embedded states', () => {
     expect(embeddedExpertCanRevise('removed')).toBe(false)
   })
 
+  it('a stored opinion is labelled 上一版 when the row is back to pending', () => {
+    // Record 53 §7.3: after a re-upload the row carries the PREVIOUS version's
+    // opinion; the label must say so instead of reading as a current opinion.
+    expect(embeddedReviewReasonLabel('pending_initial_review')).toBe('上一版意见')
+    expect(embeddedReviewReasonLabel('rejected')).toBe('意见')
+    expect(embeddedReviewReasonLabel('approved')).toBe('意见')
+  })
+
   it('gate text shows pass with summary and failure with reason', () => {
     expect(embeddedGateText({ passed: true, test_summary: '12 passed · 40ms' })).toContain('✓')
     expect(embeddedGateText({ passed: true, test_summary: '12 passed · 40ms' })).toContain('12 passed')
     expect(embeddedGateText({ passed: false, reason: '含 process.env' })).toContain('process.env')
     expect(embeddedGateText(undefined)).toBe('—')
+  })
+
+  it('gate text includes the file count when the store stamped it (record 53 §7.1)', () => {
+    expect(embeddedGateText({ passed: true, files: 3, test_summary: 'tests passed · 65ms' })).toBe(
+      '✓ 通过 · 3 个文件 · tests passed · 65ms',
+    )
+    // old rows without the stamped count render exactly as before
+    expect(embeddedGateText({ passed: true, files: 0 })).toBe('✓ 通过')
+    expect(embeddedGateText({ passed: true })).toBe('✓ 通过')
   })
 
   it('base64 encodes binary chunks correctly (including multi-byte)', () => {

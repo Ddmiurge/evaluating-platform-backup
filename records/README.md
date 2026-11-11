@@ -35,6 +35,7 @@
 | `50.md` | P26c.1+P27 部署 | 全绿零缺陷：`SERVER_PORT` 进容器实测、P26b 镜像写入真跑（落表后清理）、端到端 1 成功/1 失败真结果、PDF 5 页。剩 UI 实操、专属实例起闸、orphan 容器三项 |
 | `51.md` | P26d 验收 | **八步全绿**：p8-test 专属引擎起容器/登记一次性 token/.env 三行落盘/代码包真跑专属实例（engine_base_url 命中）/跨 token 401/卷隔离/摘除后 409 不落行——生产开闸资格线正式通过。§8 遗留四项：专属引擎处已摘除态（恢复=重登记+轮换 token）、UI 实操未点、ep_llm_proxy orphan、.env 三行不随仓库 |
 | `52.md` | P26c.2 部署 | 面板探活五态 API 实测全绿（未登记→token_mismatch→ok→unreachable→ok）；**新发现引擎 tmpfs restart 崩溃循环**（Docker start 挂 0755 root:root，uid=1000 写不了 → SQLite 打不开），修复=`uid=1000,gid=1000,mode=1777` 两引擎他机验证通过 + p47file 回归 2/2。遗留：UI 实操未点、compose 修复当时未提交（已随后入库并加 CI 守卫）、ep_llm_proxy orphan |
+| `53.md` | P28 部署 | P28 上传/审批状态机真实部署整条跑通（上传→自动关卡含包内测试实跑→待初审→初审→请求构建；同 id 重传版本递增、驳回意见必填、两段审批不可合并）；主链路 2/2 出报告与 4 页 PDF。**引擎镜像非清洁构建**（网络缺失 `@colors/colors@1.6.1`，临时 Dockerfile 拼接，不可作发布基线）；遗留：烧制工具未跑、UI 未点击、§7 三条代码级观察（已修复，见文末更正） |
 | `audit-2026-10-20-pull-latest-code-test-report.md` | — | 代码拉取 + 静态测试（非上机验收） |
 
 编号与 `audit-2026-10-09/` 里的文档编号是**两套**（那边是计划与决策），所以曾经都堆在仓库根目录。
