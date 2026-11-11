@@ -26,8 +26,11 @@
 #     restart: unless-stopped
 #     read_only: true
 #     tmpfs:
-#       - /tmp:rw,noexec,nosuid,size=256m
-#       - /home/node/.promptfoo:rw,noexec,nosuid,size=512m
+#       # uid/gid/mode required: Docker mounts tmpfs 0755 root:root on START,
+#       # so without them a `docker restart` crash-loops the engine on SQLite
+#       # open (records/52 §5). Keep in sync with the main compose.
+#       - /tmp:rw,noexec,nosuid,size=256m,uid=1000,gid=1000,mode=1777
+#       - /home/node/.promptfoo:rw,noexec,nosuid,size=512m,uid=1000,gid=1000,mode=1777
 #     cap_drop:
 #       - ALL
 #     security_opt:

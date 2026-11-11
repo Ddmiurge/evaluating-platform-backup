@@ -1,6 +1,6 @@
 # 开发阶段与现状
 
-> 更新时间：2026-11-10｜已上机代码：`210acef`（P26c.1+P27；**P26d 于 51 号八步全绿，生产开闸资格线通过**）｜本地待部署：**P26c.2**（面板探活：51 §8.1 静默 401 可见化）｜本地开发中：**P28 内嵌插件轨道**（E-1/E-3/E-5 门已提交、E-4 审查 6 条已修已提交（`99b3383`）、拆分第一批已提交（`1b19821`/`37114e8`）、未上机）｜最近上机记录：`records/49`（P26b/c）、`records/50`（P26c.1/P27 + 镜像写入真跑）、`records/51`（P26d 八步全绿）
+> 更新时间：2026-11-11｜已上机代码：`fabaf2f`（P26c.2；**面板探活五态于 52 号实测全绿**）｜本地开发中：**P28 内嵌插件轨道**（E-1/E-3/E-5 门已提交、E-4 审查 6 条已修已提交（`99b3383`）、拆分第一批已提交（`1b19821`/`37114e8`）、引擎侧 Route B 补丁进行中、未上机）｜最近上机记录：`records/50`（P26c.1/P27）、`records/51`（P26d 八步全绿）、`records/52`（P26c.2 五态 + tmpfs restart 缺陷修复）
 >
 > 这份文档回答三个问题：**现在到哪一步了、能做什么、还剩什么**。
 > 「为什么这么做」在 `../../audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md`，
@@ -46,7 +46,7 @@
 | **P26c** | 专属引擎登记：`PUT/DELETE /admin/maclaw/accounts/:userId/engine-instance`（token 平台生成、明文仅响应一次、库里只有密文；登记前探活）；`maclaw_account_mappings` 三列的专用写路径（不与 provisioning Upsert 互相冲掉）；compose 白名单模板 `docker-compose.tenant-engines.yml`（独立卷/独立 token/引擎开关只开专属实例/dns 红线注释） | `49`（登记 API 冒烟过；专属实例与跨实例判据仍未跑，见 §5） |
 | **P26c.1** | 管理门户「用户与租户」：专属引擎列（共享/已登记/摘除）、登记 Modal（客户端预检镜像后端规则）、token 一次性展示弹窗、「模型镜像」徽标（`model_override` 单查询）；账号配置保存 `mirror_saved:false` → 橙色警告；源级镜像守卫 + FE 纯模块测试 | `50`（构建/单测/API/透传全过；**UI 实操点击未做**，见 §5） |
 | **P26d** | 专属引擎实测（51 号八步）：p8-test 起容器→登记→.env 三行→代码包真跑专属实例→跨 token 401→卷隔离→摘除 409 不落行；`.env` 落盘三行（`P8TEST_ENGINE_TOKEN`/`MACLAW_TENANT_ENGINES=1`/`MACLAW_STRATEGY_CODE_PACKAGES=1`）同步完成，47/48 三轮点名的重建回 0 陷阱拆除 | `51`（全绿） |
-| **P26c.2** | 面板探活：`EngineInstanceAdmin.Probe`（存储密文 token 打只读端点，401=token_mismatch/404=ok/拒连=unreachable）+ 账号列表 health 徽标 + 纯函数标签映射；51 §8.1「轮换后 .env 未跟上 = 静默 401」变为面板橙标带处置提示 | 本地，待上机 |
+| **P26c.2** | 面板探活：`EngineInstanceAdmin.Probe`（存储密文 token 打只读端点，401=token_mismatch/404=ok/拒连=unreachable）+ 账号列表 health 徽标 + 纯函数标签映射；51 §8.1「轮换后 .env 未跟上 = 静默 401」变为面板橙标带处置提示 | **已上机**（`records/52`：五态 API 实测全绿；另修引擎 tmpfs restart 崩溃循环——`uid=1000,gid=1000,mode=1777`，仓库 compose + 模板已入库并加 `TestComposeEngineTmpfsPinsNodeUID` 守卫） |
 | **P27** | 编排守卫泛化：`TestAllBindEnvKeysAppearInCompose` 枚举 pkg/config 全部 BindEnv（25 键）逐一要求 compose 透传，例外须进带注释的豁免表（当前空表）；backend 补 `SERVER_PORT` 透传；反证（删一行→红且点名）已跑 | `50`（容器内实测 `SERVER_PORT=8080`） |
 | **P26b** | 租户生成 key（D-3=b）：`maclaw_model_overrides` 镜像表（迁移 030）；admin 保存账号模型配置成功后镜像实际下发的完整配置；两扇门 `ResolveEngineGenerationCredentialForUser`（无镜像=平台默认，逐字节现状；镜像坏行=拒绝 run，**绝不**静默用平台 key）；响应新增 `mirror_saved` 状态 | `49`+`50`（空表回退默认已验；镜像写入 50 号用同值配置真跑：`mirror_saved:true`、落表后清理） |
 | **P26a.1** | backend compose 补 `MACLAW_TENANT_ENGINES: "${...:-0}"` 透传（46 引擎漏 dns、47 backend 漏此键，同一类「新开关没接进编排」）；AGENTS 编排段规约 + 两个 CI 编排守卫（反证上机红/绿） | `48`（双向核对进容器、真实部署复现双条件闸；**端到端复跑被 mimo 402 阻塞**，同日切 DeepSeek 官方后普通评测 2/2 通过，代码包端到端待补——**已由 51 号补跑完成**） |

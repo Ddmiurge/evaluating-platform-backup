@@ -209,14 +209,19 @@ services:
     tmpfs:
       # promptfoo and node both need a writable temp dir; without this the
       # container cannot even boot under read_only.
-      - /tmp:rw,noexec,nosuid,size=256m
+      # uid/gid/mode: Docker mounts tmpfs as root:root 0755 on START (create
+      # uses 1777) — the engine runs as uid=1000 and could not write its own
+      # config dir after a `docker restart`, crash-looping on SQLite open
+      # (records/52 §5). mode=1777 restores the sticky world-writable dir the
+      # container is designed around; pin the owner so start matches create.
+      - /tmp:rw,noexec,nosuid,size=256m,uid=1000,gid=1000,mode=1777
       # promptfoo's SQLite database lives under its config dir. Mounted as
       # tmpfs so a read-only root does not break it AND so the database does not
       # persist between container restarts — U7's cleanup contract
       # (promptfooStateCleanup) already removes run artifacts on every terminal
       # path, and an ephemeral mount removes the class of "state survived a
-      # restart" residue entirely.
-      - /home/node/.promptfoo:rw,noexec,nosuid,size=512m
+      # restart" residue entirely. Same uid/mode fix as /tmp (records/52 §5).
+      - /home/node/.promptfoo:rw,noexec,nosuid,size=512m,uid=1000,gid=1000,mode=1777
     # Drop every capability: the engine needs none (it makes outbound HTTP
     # connections and writes files, neither of which requires a capability).
     cap_drop:
@@ -305,8 +310,10 @@ services:
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=256m
-      - /home/node/.promptfoo:rw,noexec,nosuid,size=512m
+      # uid/gid/mode: same docker-restart tmpfs fix as the shared engine
+      # (records/52 §5) — start mounts 0755 root:root otherwise.
+      - /tmp:rw,noexec,nosuid,size=256m,uid=1000,gid=1000,mode=1777
+      - /home/node/.promptfoo:rw,noexec,nosuid,size=512m,uid=1000,gid=1000,mode=1777
     cap_drop:
       - ALL
     security_opt:

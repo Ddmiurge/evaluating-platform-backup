@@ -116,6 +116,41 @@ func TestComposeEngineCarriesSiteDNS(t *testing.T) {
 	}
 }
 
+// TestComposeEngineTmpfsPinsNodeUID pins the records/52 §5 fix: Docker mounts
+// tmpfs as 0755 root:root on START (create uses 1777), so without
+// uid=1000,gid=1000,mode=1777 the engine (uid=1000) cannot write its own
+// config dir after a `docker restart` and crash-loops on SQLite open. Both
+// engine services and both writable mounts must carry the options — a silent
+// one-sided edit reintroduces the field defect on the next recreate.
+func TestComposeEngineTmpfsPinsNodeUID(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docker-compose.yml"))
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	source := string(raw)
+	for _, service := range []string{"promptfoo-engine", "promptfoo-engine-p8test"} {
+		block := composeServiceBlock(t, source, service)
+		for _, mount := range []string{"/tmp:", "/home/node/.promptfoo:"} {
+			line := ""
+			for _, candidate := range strings.Split(block, "\n") {
+				trimmed := strings.TrimSpace(candidate)
+				if strings.HasPrefix(trimmed, "- "+mount) {
+					line = trimmed
+					break
+				}
+			}
+			if line == "" {
+				t.Fatalf("compose service %q has no tmpfs entry for %s (records/52 §5)", service, mount)
+			}
+			for _, opt := range []string{"uid=1000", "gid=1000", "mode=1777"} {
+				if !strings.Contains(line, opt) {
+					t.Fatalf("compose service %q tmpfs %q must contain %q — Docker starts tmpfs as 0755 root:root and the engine crash-loops without it (records/52 §5); got: %s", service, mount, opt, line)
+				}
+			}
+		}
+	}
+}
+
 // TestAllBindEnvKeysAppearInCompose is the GENERALIZATION of the point guard
 // above: every environment variable the platform binds in pkg/config must be
 // reachable in the deployment orchestration — the 46/47 class (engine missing
