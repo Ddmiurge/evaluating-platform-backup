@@ -35,7 +35,8 @@ Current Skill supply follows the resource projection model:
 - **构建是部署事件**：管理端「请求构建」只写标记（D-10，后端不碰 docker socket 的红线不碰），部署机工具 `cmd/embeddedbuild` 消费标记才执行、无标记拒绝执行。暂存与烘焙目录必须基于**并集** `build_requested ∪ testing ∪ approved ∪ disabled − remove_requested`（`disabled` 必须在内：D-5 停用只拦选择不删镜像，且 `disabled→approved` 后没有任何按钮能重新烘焙），批次事实源是 `index.json`（含 `removed_ids`；finalize 只消费本批清单、移除批无条件执行、NO_QUEUE 时清掉陈旧 index 使「index 存在 ⟺ 有待定格批次」成立、冲突跳过不中止）——这是合并前审查 6 条的修复判据，见 `audits/code-review-2026-11-10-p28-embeddedbuild.md`。
 - 提交闸两扇门同一判定（`GuardEmbeddedPluginSelection`，wizard 与 confirm 共用）：`approved` 放行；`testing` 仅白名单（`plugin_testing_not_open`）；`disabled` 即时拒（`plugin_disabled`，不用等重建）；其余状态 `plugin_not_yet_approved`。全部经 `writeEnginePreflightRejection` 出 409、不落 run 行。
 - **R-5 源码审阅窄例外**：`GET /admin/maclaw/embedded-plugins/:packageId/source` 是全站唯一可读包正文的路由——内嵌包源码是**治理对象**而非专家业务数据，仅审批视图可读；样本 / 模板 / payload / evidence 的回显禁令一字不动（同时登记在「管理员门户约束」的例外条款里）。
-- 状态（2026-11-10）：E-1/E-3/E-5 门与审阅端点已提交（`63ba1a3`→`f03353d`），E-4 审查 6 条已修（本地反证绿，DB 级反证归 E-6），E-6 上机验收（首公民=语义缓存包）未做；**全部未上机**。
+- **引擎侧 Route B**：promptfoo dist 由 `promptfoo_engine/scripts/patch-embedded-plugins.mjs` 在镜像构建时打一次性补丁（schema `pluginOptions` + `Plugins` 注册表），数据运行时读 `PROMPTFOO_EMBEDDED_PLUGINS_DIR/index.json`；锚点缺失必须让构建失败（promptfoo 升级即重测），loader 强制每条用例 `vars[injectVar]` 非空 + `assert` 非空（否则静默假阴性）。报告分类/severity/judge 的唯一通道是 BFF 的 `PromptfooEngineCatalog()`——内嵌条目在那里追加（归约器不读 test metadata 的 severity）。entry 契约见设计稿 §3.4。
+- 状态（2026-11-11）：E-1/E-3/E-5 门与审阅端点已提交（`63ba1a3`→`f03353d`），E-4 审查 6 条已修且引擎侧 Route B 已落地（本地反证绿，DB/文件级反证归 E-6），E-6 上机验收（首公民=语义缓存包）未做；**全部未上机**。
 
 ## maclaw Upgrade Boundary
 

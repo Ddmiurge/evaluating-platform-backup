@@ -936,6 +936,33 @@ func PromptfooEngineCatalog() *EngineCatalog {
 		}
 		plugins = append(plugins, plugin)
 	}
+	// P28 内嵌插件走同一条 catalog 通道（2026-11-11 实测定案）：归约器的
+	// severity/category/judge_source 全部取自这份 BFF catalog——内嵌 id 缺席
+	// 会落 UNKNOWN_PLUGIN_CLASSIFICATION（其他/medium/兜底 rubric），manifest
+	// 里的严重程度与类别会全部丢掉。判定标准取**族级**档（按 manifest 的
+	// category 解析，11 类全覆盖）：内嵌插件没有插件级 rubric 表项，但它的
+	// category 族标准是真实存在的——这正是 U8 「按族判定」的语义，而不是兜底。
+	// Fanout=1 与 PluginFanout(未知id) 的默认值一致，allocator 行为不变。
+	for _, entry := range EmbeddedPluginCatalog() {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		categoryRubric, judgeSource, _ := PromptfooCategoryJudgeRubric(entry.Category)
+		judgeCriteria := categoryRubric.Criteria
+		fanout := entry.Fanout
+		if fanout < 1 {
+			fanout = 1
+		}
+		plugins = append(plugins, EngineCatalogPlugin{
+			ID:            entry.ID,
+			Category:      entry.Category,
+			CategoryLabel: PromptfooCategoryLabel(entry.Category),
+			Severity:      entry.Severity,
+			Fanout:        fanout,
+			JudgeCriteria: judgeCriteria,
+			JudgeSource:   judgeSource,
+		})
+	}
 	strategies := make([]EngineCatalogStrategy, 0, len(promptfooStrategyCatalog))
 	for _, entry := range promptfooStrategyCatalog {
 		strategy := EngineCatalogStrategy{ID: entry.ID, Name: entry.Name}

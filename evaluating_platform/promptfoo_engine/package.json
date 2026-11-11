@@ -12,7 +12,8 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "patch:embedded": "node scripts/patch-embedded-plugins.mjs"
   },
   "dependencies": {
     "@libsql/client": "0.17.4",

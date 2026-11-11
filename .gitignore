@@ -95,3 +95,7 @@ deploy-skill-sync/
 # 本地代理/工作区状态（非项目源码）
 .workbuddy/
 **/.workbuddy/
+
+# P28 内嵌插件暂存树：cmd/embeddedbuild -stage 解密后的包源码 + index.json，
+# 绝不入库（Docker build context 不受 gitignore 影响，COPY 照常带上）
+evaluating_platform/promptfoo_engine/embedded-plugins/

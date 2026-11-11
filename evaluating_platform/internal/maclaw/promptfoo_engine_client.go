@@ -828,13 +828,14 @@ type EmbeddedPluginProbeResult struct {
 // independently — both sides validate, the U10 doctrine. Mirrors
 // ValidateCodeStrategy's transport: 200 / 422 / 409 all carry a structured
 // verdict; only transport/auth failures are hard errors.
-func (c *PromptfooEngineClient) ValidateEmbeddedPlugin(ctx context.Context, zipRaw []byte, testEntry string) (*EmbeddedPluginProbeResult, error) {
+func (c *PromptfooEngineClient) ValidateEmbeddedPlugin(ctx context.Context, zipRaw []byte, testEntry, entry string) (*EmbeddedPluginProbeResult, error) {
 	if !c.Enabled() {
 		return nil, ErrEngineUnavailable
 	}
 	body, err := json.Marshal(map[string]any{
 		"zip":        base64.StdEncoding.EncodeToString(zipRaw),
 		"test_entry": testEntry,
+		"entry":      entry,
 	})
 	if err != nil {
 		return nil, err

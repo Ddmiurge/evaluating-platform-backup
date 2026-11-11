@@ -21,12 +21,13 @@ export function createEmbeddedPackagesRouter(): Router {
   router.post('/embedded-packages/validate', async (req, res) => {
     const zip = typeof req.body?.zip === 'string' ? req.body.zip : '';
     const testEntry = typeof req.body?.test_entry === 'string' ? req.body.test_entry : '';
-    if (zip === '' || testEntry === '') {
-      res.status(400).json({ ok: false, errors: [{ code: 'embedded_bad_request', message: '缺少 zip 或 test_entry。' }] });
+    const entry = typeof req.body?.entry === 'string' ? req.body.entry : '';
+    if (zip === '' || testEntry === '' || entry === '') {
+      res.status(400).json({ ok: false, errors: [{ code: 'embedded_bad_request', message: '缺少 zip、test_entry 或 entry。' }] });
       return;
     }
     try {
-      const result = await probeEmbeddedPackage({ zipB64: zip, testEntry });
+      const result = await probeEmbeddedPackage({ zipB64: zip, testEntry, entry });
       res.status(result.ok ? 200 : 422).json(result);
     } catch (err) {
       // The probe is defensive, but a throw here must still be a verdict —

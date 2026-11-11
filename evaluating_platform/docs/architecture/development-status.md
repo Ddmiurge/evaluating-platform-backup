@@ -1,6 +1,6 @@
 # 开发阶段与现状
 
-> 更新时间：2026-11-11｜已上机代码：`fabaf2f`（P26c.2；**面板探活五态于 52 号实测全绿**）｜本地开发中：**P28 内嵌插件轨道**（E-1/E-3/E-5 门已提交、E-4 审查 6 条已修已提交（`99b3383`）、拆分第一批已提交（`1b19821`/`37114e8`）、引擎侧 Route B 补丁进行中、未上机）｜最近上机记录：`records/50`（P26c.1/P27）、`records/51`（P26d 八步全绿）、`records/52`（P26c.2 五态 + tmpfs restart 缺陷修复）
+> 更新时间：2026-11-11｜已上机代码：`fabaf2f`（P26c.2；**面板探活五态于 52 号实测全绿**）｜本地开发中：**P28 内嵌插件轨道**（E-1/E-3/E-5 门已提交、E-4 审查 6 条已修且引擎侧 Route B 补丁已落地（本地全绿）、拆分第一批已提交（`1b19821`/`37114e8`）、未上机）｜最近上机记录：`records/50`（P26c.1/P27）、`records/51`（P26d 八步全绿）、`records/52`（P26c.2 五态 + tmpfs restart 缺陷修复）
 >
 > 这份文档回答三个问题：**现在到哪一步了、能做什么、还剩什么**。
 > 「为什么这么做」在 `../../audit-2026-10-09/23-聊天链路报告原文与promptfoo对齐.md`，
@@ -51,7 +51,7 @@
 | **P26b** | 租户生成 key（D-3=b）：`maclaw_model_overrides` 镜像表（迁移 030）；admin 保存账号模型配置成功后镜像实际下发的完整配置；两扇门 `ResolveEngineGenerationCredentialForUser`（无镜像=平台默认，逐字节现状；镜像坏行=拒绝 run，**绝不**静默用平台 key）；响应新增 `mirror_saved` 状态 | `49`+`50`（空表回退默认已验；镜像写入 50 号用同值配置真跑：`mirror_saved:true`、落表后清理） |
 | **P26a.1** | backend compose 补 `MACLAW_TENANT_ENGINES: "${...:-0}"` 透传（46 引擎漏 dns、47 backend 漏此键，同一类「新开关没接进编排」）；AGENTS 编排段规约 + 两个 CI 编排守卫（反证上机红/绿） | `48`（双向核对进容器、真实部署复现双条件闸；**端到端复跑被 mimo 402 阻塞**，同日切 DeepSeek 官方后普通评测 2/2 通过，代码包端到端待补——**已由 51 号补跑完成**） |
 | **P28** | **内嵌插件轨道**（三级放开第 3 级，评审制交付）：设计定稿（三段审批状态机 / 测试中白名单 / 构建标记 D-7~D-10 / Step-0 落定 Route B / 零依赖包内测试）；后端核心（迁移 031、kind=`pf_plugin_embedded`、10 态状态机、上传自动关卡、两扇门选择闸 `GuardEmbeddedPluginSelection`、测试白名单、源码审阅端点 R-5 窄例外）；双门户前端（专家「内嵌插件」上传页 + 管理员「内嵌插件审批」页 + 状态镜像守卫） | 本地（`dcb6888`→`f03353d`，**未上机**；设计稿 `embedded-plugin-track.md`） |
-| **P28/E-4** | 构建管线：烤制目录读取端（`testdata/embedded_plugins.json`）+ 向导「内嵌」分组 + 暂存/index 纯核心（`f03353d`）；部署机构建工具 `cmd/embeddedbuild`（`main.go`+`batch.go`：并集暂存含 `disabled`、`index.json` 含 `removed_ids` 为批次唯一事实源、finalize 只消费本批、移除批无条件、`-fail` 标志落地、NO_QUEUE 清陈旧 index、冲突跳过不中止）；`promptfoo_version` 读路径双闸（目录端点整体隐藏 + 选择闸 `plugin_base_mismatch` 409）；两扇门提交闸已随核心落地 | 本地；**合并前审查 6 条已修**（本地反证绿；DB/文件级反证归 E-6，见 `../../audits/code-review-2026-11-10-p28-embeddedbuild.md`） |
+| **P28/E-4** | 构建管线：烤制目录读取端（`testdata/embedded_plugins.json`）+ 向导「内嵌」分组 + 暂存/index 纯核心（`f03353d`）；部署机构建工具 `cmd/embeddedbuild`（`main.go`+`batch.go`：并集暂存含 `disabled`、`index.json` 含 `removed_ids` 为批次唯一事实源、finalize 只消费本批、移除批无条件、`-fail` 标志落地、NO_QUEUE 清陈旧 index、冲突跳过不中止）；`promptfoo_version` 读路径双闸（目录端点整体隐藏 + 选择闸 `plugin_base_mismatch` 409）；两扇门提交闸已随核心落地；**引擎侧 Route B 补丁**（`scripts/patch-embedded-plugins.mjs`：schema 门 + `Plugins` 注册表注入、运行时读 index.json、loader 强制 vars+assert 契约、锚点缺失即构建失败）+ entry 契约（probe import 校验 `default.action`）+ 报告分类/severity/judge 走 `PromptfooEngineCatalog()` 单点追加内嵌条目 | 本地；**合并前审查 6 条已修 + Route B 已落地**（本地反证绿；DB/文件级反证归 E-6，见 `../../audits/code-review-2026-11-10-p28-embeddedbuild.md`） |
 | **结构治理（拆分第一批）** | 上帝文件纯搬移（不改行为、不改导出面）：`maclaw_runtime.go` 1980→877 行 + `maclaw_runtime_messages/engine_cards/report.go`；`maclawsrv_client.go` 1063→695 行 + `maclawsrv_mcp_admin.go`/`maclawsrv_run_mapping.go`。依据 `audits/code-audit-redundancy-review-2026-10-12.md` #16；`redteam_bridge.go`（2553）留下一批（需 U3 子包切口设计） | 本地（`1b19821`、`37114e8`；全量 test 0 FAIL） |
 
 > 编号是两套：`records/` 是上机证据，`audit-2026-10-09/` 是计划与决策。引用时都带目录名。
@@ -107,7 +107,7 @@
 
 ## 5. 下一步（建议顺序）
 
-**当前主线（P28 内嵌插件轨道）**：① ~~按审查修 6 条~~ **已修（2026-11-10，本地反证绿）**——批次生命周期收敛为 `batch.go`（`index.json` 唯一事实源，见审查 §8），并集强化含 `disabled`，`plugin_base_mismatch` 双闸，`-fail` 落地；② ~~提交 `cmd/embeddedbuild` + 大文件拆分第一批~~ **已完成（`99b3383` 修复+入库、`1b19821` 拆 `maclaw_runtime.go` 4 文件、`37114e8` 拆 `maclawsrv_client.go` 3 文件）** → ③ E-6 上机验收（首公民=语义缓存包走完全程，判据=设计稿 §10 九条 + 审查 DB 级反证）。
+**当前主线（P28 内嵌插件轨道）**：① ~~按审查修 6 条~~ **已修（2026-11-10，本地反证绿）**——批次生命周期收敛为 `batch.go`（`index.json` 唯一事实源，见审查 §8），并集强化含 `disabled`，`plugin_base_mismatch` 双闸，`-fail` 落地；② ~~提交 `cmd/embeddedbuild` + 大文件拆分第一批~~ **已完成（`99b3383` 修复+入库、`1b19821` 拆 `maclaw_runtime.go` 4 文件、`37114e8` 拆 `maclawsrv_client.go` 3 文件）** → ③ ~~引擎侧 Route B 补丁~~ **已完成（2026-11-11：`scripts/patch-embedded-plugins.mjs` + Dockerfile 接线 + probe entry 契约 + `PromptfooEngineCatalog()` severity 单点；本地 vitest 444 条 / go 全绿）** → ④ E-6 上机验收（首公民=语义缓存包走完全程，判据=设计稿 §10 九条 + 审查 DB 级反证）。
 
 1. ~~48 号剩两个动作~~ **已由 51 号完成（2026-11-04）**：`.env` 三行落盘（含 `MACLAW_STRATEGY_CODE_PACKAGES=1`，47/48 两轮点名的重建回 0 陷阱已拆）+ 新 provider 下代码包端到端（`p47file` 真跑专属实例）；
 1b. **部署备忘（48 号 §5 排查成果）**：`.env`/`configs/*.yaml` 的 `LLM_BASE_URL/LLM_MODEL/LLM_API_KEY` 是**无消费点的遗留占位**——真实的生成/判定模型只认管理员门户配置（`maclaw_model_defaults` + 账号级 config）；且**判定与生成共用同一套 key**，欠费/换供应商会同时打两条链路（mimo 402 那次即整链全挂）。排障别从 `LLM_*` 入手；

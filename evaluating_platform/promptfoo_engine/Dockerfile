@@ -23,7 +23,17 @@ WORKDIR /app
 ENV NODE_ENV=development
 COPY --from=deps /app ./
 COPY . .
-RUN npm install --no-audit --no-fund && npm run build
+# P28 / E-4 · Route B: the one-time infrastructure patch to promptfoo's plugin
+# registry (scripts/patch-embedded-plugins.mjs; design §11). It runs AFTER
+# npm install so it edits the installed dist, and BEFORE the tsc build (which
+# never touches node_modules). A missing anchor fails the build loudly — an
+# upgraded promptfoo must be re-measured, never silently shipped unpatched.
+# embedded-plugins/ is the staging tree written by cmd/embeddedbuild -stage; the
+# mkdir keeps a fresh clone (no batch staged yet) buildable.
+RUN npm install --no-audit --no-fund \
+    && node scripts/patch-embedded-plugins.mjs \
+    && npm run build \
+    && mkdir -p embedded-plugins
 
 FROM node:24-alpine AS runtime
 WORKDIR /app
@@ -36,7 +46,8 @@ ENV PROMPTFOO_DISABLE_REMOTE_GENERATION=1 \
     PROMPTFOO_ENGINE_PORT=8090 \
     PROMPTFOO_ENGINE_DATA_ROOT=/data/runs \
     PROMPTFOO_ENGINE_WORKERS=2 \
-    PROMPTFOO_ENGINE_MAX_QUEUE=100
+    PROMPTFOO_ENGINE_MAX_QUEUE=100 \
+    PROMPTFOO_EMBEDDED_PLUGINS_DIR=/app/embedded-plugins
 # ── U10 · sandbox boundary (design doc `14` §2 U10 ②: 「最重安全项」) ────────
 #
 # U10 lets expert-authored plugin packages be *executed* by this process, so the
@@ -74,6 +85,10 @@ VOLUME ["/data/runs"]
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/package.json ./package.json
+# P28: the baked embedded-plugin tree written by cmd/embeddedbuild -stage (empty
+# directory on a clone where no batch has been staged). The patched registry
+# reads its index.json at boot; absent index = zero embedded plugins, by design.
+COPY --from=build --chown=node:node /app/embedded-plugins ./embedded-plugins
 EXPOSE 8090
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 \
   CMD wget -qO- http://127.0.0.1:8090/health || exit 1

@@ -80,10 +80,10 @@ describe('probeEmbeddedPackage', () => {
   it('passes a package whose tests exit 0, and reports a bounded summary', async () => {
     const zip = makeZip({
       'manifest.yaml': MANIFEST,
-      'src/plugin.ts': 'export default {}',
+      'src/plugin.ts': 'export default { async action() { return []; } };',
       'tests/run.mjs': "console.log('12 passed');\nprocess.exit(0);\n",
     });
-    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs' });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
     expect(result.ok).toBe(true);
     expect(result.test_summary).toContain('passed');
     expect(result.errors).toBeUndefined();
@@ -94,7 +94,7 @@ describe('probeEmbeddedPackage', () => {
       'manifest.yaml': MANIFEST,
       'tests/run.mjs': "console.error('assertion failed at case 1');\nprocess.exit(1);\n",
     });
-    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs' });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
     expect(result.ok).toBe(false);
     expect(result.errors?.[0].code).toBe('embedded_tests_failed');
     expect(result.errors?.[0].message).toContain('assertion failed at case 1');
@@ -104,14 +104,14 @@ describe('probeEmbeddedPackage', () => {
 
   it('refuses a package without the agreed test entry file', async () => {
     const zip = makeZip({ 'manifest.yaml': MANIFEST, 'src/plugin.ts': 'export default {}' });
-    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs' });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
     expect(result.ok).toBe(false);
     expect(result.errors?.[0].code).toBe('embedded_tests_contract');
   });
 
   it('refuses a non-contract test entry before doing anything', async () => {
     const zip = makeZip({ 'tests/run.mjs': 'process.exit(0)' });
-    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'evil.mjs' });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'evil.mjs', entry: 'src/plugin.ts' });
     expect(result.ok).toBe(false);
     expect(result.errors?.[0].code).toBe('embedded_tests_contract');
   });
@@ -122,7 +122,7 @@ describe('probeEmbeddedPackage', () => {
       { name: '../evil.js', content: 'process.exit(0)' },
       { name: 'tests/run.mjs', content: 'process.exit(0)' },
     ]);
-    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs' });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
     expect(result.ok).toBe(false);
     expect(result.errors?.[0].code).toBe('embedded_zip_slip');
   });
@@ -132,8 +132,38 @@ describe('probeEmbeddedPackage', () => {
       'manifest.yaml': MANIFEST,
       'tests/run.mjs': 'while (true) {}',
     });
-    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', timeoutMs: 500 });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts', timeoutMs: 500 });
     expect(result.ok).toBe(false);
     expect(result.errors?.[0].code).toBe('embedded_tests_timeout');
   }, 10_000);
+
+  it('refuses a package whose entry is missing after tests pass', async () => {
+    const zip = makeZip({
+      'manifest.yaml': MANIFEST,
+      'tests/run.mjs': 'process.exit(0)',
+    });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0].code).toBe('embedded_entry_contract');
+    expect(result.errors?.[0].message).toContain('src/plugin.ts');
+  });
+
+  it('refuses an entry that does not default-export { action }', async () => {
+    const zip = makeZip({
+      'manifest.yaml': MANIFEST,
+      'src/plugin.ts': 'export default {}',
+      'tests/run.mjs': 'process.exit(0)',
+    });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0].code).toBe('embedded_entry_contract');
+    expect(result.errors?.[0].message).not.toContain('/tmp/embedded-probe-');
+  });
+
+  it('refuses a traversal manifest entry before extraction', async () => {
+    const zip = makeZip({ 'manifest.yaml': MANIFEST, 'tests/run.mjs': 'process.exit(0)' });
+    const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: '../evil.ts' });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0].code).toBe('embedded_entry_contract');
+  });
 });

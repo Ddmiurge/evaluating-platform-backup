@@ -196,8 +196,12 @@ func TestResolvePromptfooJudgeRubricInvalidCategoryIsNotGuessedFromID(t *testing
 
 func TestPromptfooEngineCatalogCarriesJudgeRubricForEveryPlugin(t *testing.T) {
 	catalog := PromptfooEngineCatalog()
-	if len(catalog.Plugins) != 116 {
-		t.Fatalf("下发给引擎的 catalog 插件数 = %d，期望 116", len(catalog.Plugins))
+	// P28：静态 116 + 内嵌烘焙条目（内嵌为空时即 116）。内嵌条目同样必须带
+	// 非空、非兜底的 judge 档——按 category 族解析；若未来新增 category 无族级
+	// rubric，本测试在此处转红，这正是它存在的反馈回路。
+	wantPlugins := len(promptfooPluginCatalog) + len(EmbeddedPluginCatalog())
+	if len(catalog.Plugins) != wantPlugins {
+		t.Fatalf("下发给引擎的 catalog 插件数 = %d，期望 %d（静态 %d + 内嵌 %d）", len(catalog.Plugins), wantPlugins, len(promptfooPluginCatalog), len(EmbeddedPluginCatalog()))
 	}
 	fallbacks := 0
 	for _, plugin := range catalog.Plugins {

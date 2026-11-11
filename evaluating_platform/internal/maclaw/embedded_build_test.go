@@ -20,6 +20,9 @@ func TestStageEmbeddedPackagesBuildsTreeAndIndex(t *testing.T) {
 	if len(index.Packages) != 1 || index.Packages[0].ID != "probe-demo" || index.Packages[0].Fanout != 1 {
 		t.Fatalf("index = %+v", index)
 	}
+	if index.Packages[0].Entry != "src/plugin.ts" {
+		t.Fatalf("entry not carried into index: %+v", index.Packages[0])
+	}
 	if index.BatchID != "batch-42" || index.BuiltAt.IsZero() {
 		t.Fatalf("batch stamp = %+v", index)
 	}
@@ -44,6 +47,9 @@ func TestStageEmbeddedPackagesBuildsTreeAndIndex(t *testing.T) {
 	}
 	if len(parsed.Packages) != 1 || parsed.Packages[0].Name == "" {
 		t.Fatalf("index.json = %+v", parsed)
+	}
+	if parsed.Packages[0].Entry != "src/plugin.ts" {
+		t.Fatalf("index.json entry = %+v", parsed.Packages[0])
 	}
 	if len(parsed.RemovedIDs) != 1 || parsed.RemovedIDs[0] != "gone-pkg" {
 		t.Fatalf("index.json removed_ids = %+v", parsed.RemovedIDs)

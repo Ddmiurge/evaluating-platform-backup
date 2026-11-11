@@ -50,6 +50,10 @@ type EmbeddedCatalogEntry struct {
 	Category string `json:"category"`
 	Severity string `json:"severity"`
 	Fanout   int    `json:"fanout"`
+	// Entry is the manifest's entry file (e.g. src/plugin.ts) — carried on
+	// index.json so the engine loader knows what to import. It is NOT sent to
+	// the browser (the catalog endpoint builds its response field by field).
+	Entry string `json:"entry,omitempty"`
 }
 
 // embeddedPluginsFile mirrors testdata/embedded_plugins.json. Unlike the
@@ -164,6 +168,7 @@ func StageEmbeddedPackages(inputs []EmbeddedBuildInput, stagingRoot, batchID str
 			Category: manifest.Category,
 			Severity: manifest.Severity,
 			Fanout:   1,
+			Entry:    manifest.Entry,
 		})
 	}
 	data, err := json.MarshalIndent(index, "", "  ")

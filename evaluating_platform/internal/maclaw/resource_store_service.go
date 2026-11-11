@@ -49,7 +49,7 @@ type CodeStrategyProber interface {
 // code-strategy prober).
 type EmbeddedPluginProber interface {
 	Enabled() bool
-	ValidateEmbeddedPlugin(ctx context.Context, zipRaw []byte, testEntry string) (*EmbeddedPluginProbeResult, error)
+	ValidateEmbeddedPlugin(ctx context.Context, zipRaw []byte, testEntry, entry string) (*EmbeddedPluginProbeResult, error)
 }
 
 type ResourceStoreService struct {
@@ -189,7 +189,7 @@ func (s *ResourceStoreService) SaveResource(ctx context.Context, userID uuid.UUI
 			return nil, embeddedInvalid("embedded_probe_unavailable",
 				"无法校验内嵌插件：评测引擎未接入。包内测试必须实跑通过才能入库。")
 		}
-		verdict, probeErr := s.embeddedProber.ValidateEmbeddedPlugin(ctx, raw, EmbeddedPluginTestEntry)
+		verdict, probeErr := s.embeddedProber.ValidateEmbeddedPlugin(ctx, raw, EmbeddedPluginTestEntry, manifest.Entry)
 		if probeErr != nil {
 			return nil, embeddedInvalid("embedded_probe_unreachable",
 				"无法校验内嵌插件：评测引擎不可达（%s）。请稍后重试；包内测试必须实跑通过才能入库。", probeErr.Error())

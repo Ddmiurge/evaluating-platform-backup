@@ -91,7 +91,34 @@ summary: 检测跨用户语义缓存复用…
 - manifest 缺字段 / id 冲突 / base 版本不匹配 → 拒绝并给可操作原因（沿用 rejection hints 模式）；
 - **包内测试约束（2026-11-10 主理人确认）**：必须**零依赖、离线可跑**——纯 `node` 脚本可执行（如 `node tests/run.mjs`），禁止 `npm install`、禁止网络；上传期在引擎子进程限时（≤30s）实跑，跑不过即拒。理由：摩擦循环的反馈速度——改完重传秒级知道行不行，而不是等构建批次；要拉依赖的包在上传期就把依赖问题暴露，而不是烤进镜像才发现。
 
+### 3.4 插件 entry 契约（引擎加载口径，2026-11-11）
+
+`manifest.entry` 指向的文件由引擎在**被选中跑评测时**动态 import（懒加载：坏包只炸它自己那一跑，不拖垮共享引擎），因此它必须满足：
+
+```ts
+// src/plugin.ts
+export default {
+  // promptfoo 原生 action 签名；返回值是 TestCase[]
+  async action(params: { provider; purpose; injectVar; n; config; /* … */ }) {
+    return [
+      {
+        vars: { [params.injectVar]: '攻击载荷原文' },   // 必填：非空字符串
+        assert: [{ type: 'llm-rubric', value: '判定标准…' }], // 必填：非空数组
+      },
+    ];
+  },
+};
+```
+
+- **每条用例必须带非空 `assert`**：没有断言时 promptfoo 恒判 `pass=true`，而红队归约把 `pass=false` 当作「攻击成功」——静默假阴性（每条都显示攻击失败）比报错更糟。loader 在运行时逐条校验并抛错。
+- **`vars[params.injectVar]` 必须是非空字符串**：注入变量由运行配置决定，loader 按当次 `injectVar` 校验。
+- **TypeScript 只允许可擦除语法**（Node 24 原生 type stripping）：不能有 `enum`、`namespace`、参数属性等；相对 import 必须带显式扩展名（`./util.ts`）。
+- 包内测试 `tests/run.mjs` 应断言 action 的输出形状（上传期只校验导出形状与包内测试，不调用 action——调用需要 stub provider，误判风险大于收益）。
+- 上传期 probe（引擎 `POST /embedded-packages/validate`）在包内测试通过后**额外 import entry 并检查 `default.action` 是函数**，不满足即拒（`embedded_entry_contract`）。
+
 ---
+
+
 
 ## 4. 状态机与修改循环（摩擦处理的一等公民）
 
@@ -291,6 +318,22 @@ summary: 检测跨用户语义缓存复用…
 本节取代 D-7 的"待实测"，E-4 的实现以此为准。
 
 ---
+
+### 11.1 Route B 实施（2026-11-11）
+
+两道门实测位置（promptfoo 0.123.0 dist）：
+
+1. **schema 门**：`dist/src/tables-*.js`（index.js 实际 import 的那块，hash 名）的 `pluginOptions`（`COLLECTIONS ∪ ALL_PLUGINS ∪ ALIASED_PLUGINS`）是 `RedteamConfigSchema` 的枚举来源——未知 id 且非 `file://` 前缀 → `safeParse` 抛 `Invalid redteam configuration`；
+2. **注册表门**：`dist/src/index.js` 的 `const Plugins = [...]` 按 `key` 查找，缺席即 `logger.warn("not registered, skipping")` → 0 用例 → `strict:true` 抛 `PartialGenerationError`。
+
+补丁脚本 `promptfoo_engine/scripts/patch-embedded-plugins.mjs`（`npm run patch:embedded`；Dockerfile build stage 执行）向**已安装的 dist** 注入两段带 marker 的代码：
+
+- tables：追加 `...__p28EmbeddedPluginIds` 到 `pluginOptions`（id 列表运行时读 `PROMPTFOO_EMBEDDED_PLUGINS_DIR/index.json`，构建期不烤数据——重新 stage 无需重打补丁）；
+- index.js：包级追加 loader 条目 `{key, action}`，action 懒加载 entry、逐条校验 3.4 的契约。`index.json` 缺失（全新 clone 未 stage）→ 静默空表；**格式损坏 → import 期抛错**（引擎启动即崩、healthcheck 红 = D-6「不绿不部署」）；单个包坏 entry → 仅被选中时抛错。
+
+纪律：锚点缺失 → 脚本 exit 1（promptfoo 升级后必须重测锚点，绝不静默发出未打补丁的镜像）；marker 幂等（重复执行不叠加）；`vitest` 的 `patchEmbeddedPlugins.test.ts` 对着**真实安装的 dist** 校验锚点（升级绊线）并把注入块原样抽出来在临时目录跑行为断言。
+
+内嵌插件的报告分类/severity/judge 档走 **Go 侧 `PromptfooEngineCatalog()`** 单点追加（见 `maclaw-current-state.md` 的 P28 节）：BFF 推送的 catalog 是引擎归约器读取 severity/category/judge_source 的唯一通道。
 
 ## 12. 界面草案（专家门户 / 管理员门户，2026-11-10 主理人过目）
 

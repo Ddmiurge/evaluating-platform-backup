@@ -213,8 +213,8 @@ func TestPromptfooEngineCatalogBuilder(t *testing.T) {
 	if catalog == nil {
 		t.Fatal("PromptfooEngineCatalog() returned nil")
 	}
-	if len(catalog.Plugins) != len(promptfooPluginCatalog) {
-		t.Fatalf("catalog plugins = %d, want %d", len(catalog.Plugins), len(promptfooPluginCatalog))
+	if want := len(promptfooPluginCatalog) + len(EmbeddedPluginCatalog()); len(catalog.Plugins) != want {
+		t.Fatalf("catalog plugins = %d, want %d（静态 %d + 内嵌 %d）", len(catalog.Plugins), want, len(promptfooPluginCatalog), len(EmbeddedPluginCatalog()))
 	}
 	if len(catalog.Strategies) != len(promptfooStrategyCatalog) {
 		t.Fatalf("catalog strategies = %d, want %d", len(catalog.Strategies), len(promptfooStrategyCatalog))
@@ -259,5 +259,58 @@ func TestPromptfooEngineCatalogBuilder(t *testing.T) {
 	}
 	if got := PromptfooCategoryLabel("unmapped-category"); got != "unmapped-category" {
 		t.Fatalf("unmapped label = %q, want the key itself", got)
+	}
+}
+
+// TestPromptfooEngineCatalogCarriesEmbeddedPlugins pins the P28 single point:
+// the baked embedded catalog must reach the engine through THIS catalog, because
+// the engine reduction reads severity/category/judge_source from it only
+// (measured 2026-11-11: gradingResult.severity is never set by llm-rubric, so
+// classification.severity is the only severity a probe ever displays).
+//
+// Swap the package-level catalog and restore it — the real value is compiled in
+// from testdata/embedded_plugins.json and is empty until the first bake.
+func TestPromptfooEngineCatalogCarriesEmbeddedPlugins(t *testing.T) {
+	orig := embeddedPluginCatalog
+	defer func() { embeddedPluginCatalog = orig }()
+	embeddedPluginCatalog = []EmbeddedCatalogEntry{
+		{ID: "semantic-cache-collision", Name: "语义缓存碰撞", Category: "injection", Severity: "high", Fanout: 1},
+		{ID: "odd-category-probe", Name: "无族档探针", Category: "unmapped-category", Severity: "low", Fanout: 0},
+	}
+
+	byID := map[string]EngineCatalogPlugin{}
+	for _, plugin := range PromptfooEngineCatalog().Plugins {
+		byID[plugin.ID] = plugin
+	}
+
+	got, ok := byID["semantic-cache-collision"]
+	if !ok {
+		t.Fatal("embedded plugin missing from the engine catalog")
+	}
+	if got.Category != "injection" || got.CategoryLabel != "提示注入" {
+		t.Fatalf("category = (%q, %q), want (injection, 提示注入)", got.Category, got.CategoryLabel)
+	}
+	if got.Severity != "high" {
+		t.Fatalf("severity = %q, want the manifest value high", got.Severity)
+	}
+	if got.Fanout != 1 {
+		t.Fatalf("fanout = %d, want 1 (missing weight would be read as free)", got.Fanout)
+	}
+	if got.JudgeSource != "category:injection" || got.JudgeCriteria == "" {
+		t.Fatalf("judge = (%q, %q), want the category tier, not the unmapped fallback", got.JudgeSource, got.JudgeCriteria)
+	}
+
+	// A category with no family rubric degrades to the unmapped tier with an
+	// empty criteria — TestPromptfooEngineCatalogCarriesJudgeRubricForEveryPlugin
+	// then fails, which is the intended feedback loop for a new category.
+	odd, ok := byID["odd-category-probe"]
+	if !ok {
+		t.Fatal("embedded plugin with unknown category must still be classified")
+	}
+	if odd.Fanout != 1 {
+		t.Fatalf("zero fanout must be normalized to 1, got %d", odd.Fanout)
+	}
+	if odd.JudgeCriteria != "" {
+		t.Fatalf("unknown category must not invent a rubric, got %q", odd.JudgeCriteria)
 	}
 }

@@ -24,6 +24,7 @@
  * beyond the static scan that already refused fetch/http tokens at upload.
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +36,13 @@ export interface EmbeddedPackageProbeInput {
   zipB64: string;
   /** The manifest's tests entry; must equal tests/run.mjs (contract). */
   testEntry: string;
+  /**
+   * The manifest's plugin entry (e.g. src/plugin.ts). After the package's own
+   * tests pass, the probe imports this file in a bounded child process and
+   * checks the entry contract — `export default { action }`. Only the SHAPE is
+   * checked (never the action itself: calling it needs a stub provider).
+   */
+  entry: string;
   timeoutMs?: number;
 }
 
@@ -78,6 +86,10 @@ export async function probeEmbeddedPackage(
   if (entries.length === 0 || entries.length > MAX_FILES) {
     return fail('embedded_file_count', `包内文件数必须在 1..${MAX_FILES} 之间。`);
   }
+  const entryPath = (input.entry ?? '').replace(/\\/g, '/');
+  if (entryPath === '' || entryPath.startsWith('/') || entryPath.includes('..')) {
+    return fail('embedded_entry_contract', 'manifest.entry 缺失或路径非法（不能是绝对路径，也不能包含 ..）。');
+  }
 
   const workDir = await mkdtemp(path.join(os.tmpdir(), 'embedded-probe-'));
   try {
@@ -111,6 +123,17 @@ export async function probeEmbeddedPackage(
     const outcome = await runTests(workDir, input.testEntry, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const durationMs = Date.now() - started;
     if (outcome.exitCode === 0) {
+      // The package's own tests passed. The engine will load `entry` lazily at
+      // run time — verify here that it is importable and default-exports
+      // `{ action }`, so a package that would fail mid-run is refused now.
+      const entryVerdict = await checkEntryContract(workDir, entryPath, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      if (!entryVerdict.ok) {
+        return {
+          ok: false,
+          errors: [{ code: 'embedded_entry_contract', message: entryVerdict.message }],
+          test_summary: `tests passed · ${durationMs}ms`,
+        };
+      }
       return { ok: true, test_summary: `tests passed · ${durationMs}ms` };
     }
     if (outcome.timedOut) {
@@ -130,6 +153,82 @@ interface TestRunOutcome {
   exitCode: number;
   timedOut: boolean;
   tail: string;
+}
+
+interface EntryContractOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Verify the plugin entry contract in a child process: the file must exist in
+ * the extracted package and its default export must expose `action`.
+ *
+ * The check deliberately does NOT call `action` — doing so would need a stub
+ * provider and could false-reject legitimate packages. Runtime argument and
+ * return-shape validation lives in the engine loader (patch-embedded-plugins).
+ */
+function checkEntryContract(workDir: string, entryPath: string, timeoutMs: number): Promise<EntryContractOutcome> {
+  const absolute = path.join(workDir, entryPath);
+  // path.join normalises; re-assert containment (the manifest guard already
+  // rejected `..`/absolute paths — this is the belt, not the gate).
+  if (!absolute.startsWith(workDir)) {
+    return Promise.resolve({ ok: false, message: `manifest.entry 路径非法（${entryPath}）。` });
+  }
+  if (!existsSync(absolute)) {
+    return Promise.resolve({ ok: false, message: `包内缺少入口文件 ${entryPath}。` });
+  }
+  const script = [
+    'const { pathToFileURL } = await import("node:url");',
+    'const mod = await import(pathToFileURL(process.argv[1]).href);',
+    'const def = mod && mod.default;',
+    'if (!def || typeof def.action !== "function") {',
+    '  console.error("entry 必须 default-export { action } 函数（访问时按 action(params) 调用）。");',
+    '  process.exit(1);',
+    '}',
+    'process.exit(0);',
+  ].join('\n');
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, absolute], {
+      cwd: workDir,
+      env: { ...process.env, NODE_ENV: 'test' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    const capture = (chunk: Buffer) => {
+      output = (output + chunk.toString('utf8')).slice(-1024);
+    };
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, message: `无法加载入口文件：${String(err.message).slice(0, 160)}` });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        resolve({ ok: false, message: '入口文件加载超时——入口只应导出对象，不应执行长任务。' });
+        return;
+      }
+      if (code === 0) {
+        resolve({ ok: true, message: '' });
+        return;
+      }
+      const tail = output
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .slice(-2)
+        .join(' · ')
+        .replace(/\/tmp\/embedded-probe-[^\s]*/g, '<tmp>');
+      resolve({ ok: false, message: `入口文件不满足插件契约：${tail.slice(0, 300) || `exit ${code}`}` });
+    });
+  });
 }
 
 function runTests(workDir: string, testEntry: string, timeoutMs: number): Promise<TestRunOutcome> {
