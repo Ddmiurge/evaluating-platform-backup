@@ -58,7 +58,7 @@ var stageableStates = map[string]bool{
 // stagePlan is what one -stage run will do.
 type stagePlan struct {
 	ToStage    []maclawpkg.EmbeddedPluginStateRow // union rows to decrypt + stage
-	RemovedIDs []string                          // remove_requested ids excluded from the bake
+	RemovedIDs []string                           // remove_requested ids excluded from the bake
 }
 
 // noQueue means there is genuinely nothing to do: no packages AND no

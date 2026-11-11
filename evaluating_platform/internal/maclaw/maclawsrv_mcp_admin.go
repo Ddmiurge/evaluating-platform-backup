@@ -145,4 +145,3 @@ func hasCaseInsensitiveString(items []string, want string) bool {
 	}
 	return false
 }
-

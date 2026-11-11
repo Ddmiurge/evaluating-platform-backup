@@ -142,7 +142,7 @@ func TestPlanFinalizeRemovalsWithoutPackages(t *testing.T) {
 // supplied reason.
 func TestPlanFinalizeFailurePath(t *testing.T) {
 	idx := &maclawpkg.EmbeddedBuildIndex{
-		Packages:  []maclawpkg.EmbeddedCatalogEntry{{ID: "A"}},
+		Packages:   []maclawpkg.EmbeddedCatalogEntry{{ID: "A"}},
 		RemovedIDs: []string{"R"},
 	}
 	states := map[string]string{
@@ -317,7 +317,7 @@ func TestBuildCatalogFileUnionContent(t *testing.T) {
 		t.Fatalf("buildCatalogFile: %v", err)
 	}
 	var file struct {
-		PromptfooVersion string                       `json:"promptfoo_version"`
+		PromptfooVersion string                           `json:"promptfoo_version"`
 		Plugins          []maclawpkg.EmbeddedCatalogEntry `json:"plugins"`
 	}
 	if err := json.Unmarshal(raw, &file); err != nil {
@@ -348,9 +348,9 @@ func (f *fakeRows) ListAll(_ context.Context, _ string, _ int) ([]maclawpkg.Embe
 }
 
 type fakeTransitions struct {
-	testing   []string
-	failed    []string
-	removed   []string
+	testing []string
+	failed  []string
+	removed []string
 }
 
 func (f *fakeTransitions) MarkTesting(_ context.Context, id string) error {
