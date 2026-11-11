@@ -7,7 +7,8 @@
 // discussion — the red line is that neither the key nor plaintext ever leaves
 // this host).
 //
-// Two modes, so the shell orchestrator can place a deploy between them:
+// Two modes, so scripts/embedded-build.sh (the deploy-host orchestrator) can
+// place a deploy between them:
 //
 //	go run ./cmd/embeddedbuild -stage
 //	  plan the batch (union of build_requested ∪ testing ∪ approved ∪

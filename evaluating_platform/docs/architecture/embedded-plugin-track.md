@@ -335,6 +335,8 @@ export default {
 
 内嵌插件的报告分类/severity/judge 档走 **Go 侧 `PromptfooEngineCatalog()`** 单点追加（见 `maclaw-current-state.md` 的 P28 节）：BFF 推送的 catalog 是引擎归约器读取 severity/category/judge_source 的唯一通道。
 
+部署机编排壳 `evaluating_platform/scripts/embedded-build.sh`：`-stage`（NO_QUEUE 即退出，跳过部署与定格）→ 构建 **engine + backend 两个镜像**（引擎 COPY 暂存树，backend 编译期 embed 向导目录——只重建一边就是「目录里有 id、引擎跑不了」的双视图）→ 重建容器 → 等 Docker healthcheck 绿（不绿不部署）→ `-finalize -ok`；中途任何失败走 `-finalize -fail -reason=…`（安全摘要，进审计事件与门户），定格失败单独 exit 4 且保留 index 供重试。
+
 ## 12. 界面草案（专家门户 / 管理员门户，2026-11-10 主理人过目）
 
 企业门户**零新增**：测试中不可见（白名单）、最终通过后就是普通目录条目。
