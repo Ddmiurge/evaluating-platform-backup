@@ -105,11 +105,43 @@ export function embeddedGateText(autoGate: Record<string, unknown> | undefined):
     // (record 53 §7.1 — the line used to read 「0 个文件」 because they were
     // never computed). Only shown when present so old rows render as before.
     const files = typeof autoGate.files === 'number' && autoGate.files > 0 ? ` · ${autoGate.files} 个文件` : ''
+    const bytes =
+      typeof autoGate.source_bytes === 'number' && autoGate.source_bytes > 0
+        ? ` · ${formatSourceBytes(autoGate.source_bytes)}`
+        : ''
     const summary = typeof autoGate.test_summary === 'string' && autoGate.test_summary ? ` · ${autoGate.test_summary}` : ''
-    return `✓ 通过${files}${summary}`
+    return `✓ 通过${files}${bytes}${summary}`
   }
   const reason = typeof autoGate.reason === 'string' ? autoGate.reason : '未通过'
   return `✗ ${reason}`
+}
+
+function formatSourceBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * Who/when requested the build batch (E-6 criterion 4).
+ *
+ * The row already stored `build_requested_by/at`, but the admin list omitted
+ * them: 「已请求构建」 could sit for days with no visible owner or age, and the
+ * deploy host is a separate machine. Only shown for the two states where the
+ * marker is the actionable fact — once the batch finalizes, the history is in
+ * the audit events, not the row.
+ */
+export function embeddedBuildRequest(row: {
+  state: string
+  build_requested_by?: string
+  build_requested_at?: string
+}): { by: string; at: string } | null {
+  if (row.state !== 'build_requested' && row.state !== 'build_failed') return null
+  if (!row.build_requested_at) return null
+  return {
+    by: row.build_requested_by ? `${row.build_requested_by.slice(0, 8)}…` : '未知',
+    at: row.build_requested_at,
+  }
 }
 
 /** ArrayBuffer → base64 (chunked; File.arrayBuffer() at the call site). */

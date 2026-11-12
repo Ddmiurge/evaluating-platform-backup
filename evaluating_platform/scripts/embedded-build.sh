@@ -17,7 +17,7 @@
 #
 # Usage:
 #   ./scripts/embedded-build.sh [--config configs/config.yaml] [--root <platform-dir>]
-#                               [--skip-backend] [--timeout 900]
+#                               [--skip-backend] [--timeout 900] [--min-free-gb 10]
 #
 # --root is the PLATFORM directory (the one containing internal/ and
 # promptfoo_engine/) — the same thing `go run ./cmd/embeddedbuild -root` takes.
@@ -27,7 +27,8 @@
 #
 # Exit codes: 0 success or NO_QUEUE; 1 stage failed; 2 build/deploy failed
 # (the batch was marked build_failed); 3 health check failed (same); 4 finalize
-# failed (the index is kept for a retry of -finalize).
+# failed (the index is kept for a retry of -finalize); 5 host preflight failed
+# (Go missing / Docker storage below --min-free-gb — nothing was staged).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,12 +37,14 @@ ROOT="$PLATFORM_DIR"
 CONFIG="configs/config.yaml"
 TIMEOUT=900
 SKIP_BACKEND=0
+MIN_FREE_GB=10
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) CONFIG="$2"; shift 2 ;;
     --root) ROOT="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
+    --min-free-gb) MIN_FREE_GB="$2"; shift 2 ;;
     --skip-backend) SKIP_BACKEND=1; shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "embedded-build: unknown argument: $1" >&2; exit 64 ;;
@@ -60,6 +63,26 @@ if ! command -v go >/dev/null 2>&1; then
   log "ERROR: 'go' is required on this host to run cmd/embeddedbuild; install Go (>=1.22) or run this script on the build host"
   exit 64
 fi
+
+# Disk preflight: a full Docker root kills a build mid-COPY (record 54 §3:
+# ResourceExhausted after /var hit 100%, 70GB of builder cache). Fail BEFORE
+# stage so no batch marker is touched and the operator can prune first.
+case "$MIN_FREE_GB" in
+  ''|*[!0-9]*) log "ERROR: --min-free-gb must be a non-negative integer"; exit 64 ;;
+esac
+if ! docker info >/dev/null 2>&1; then
+  log "ERROR: the Docker daemon is not reachable on this host"
+  exit 5
+fi
+docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+[[ -n "$docker_root" ]] || docker_root="/var/lib/docker"
+while [[ ! -d "$docker_root" && "$docker_root" != "/" ]]; do docker_root="$(dirname "$docker_root")"; done
+free_kb="$(df -Pk "$docker_root" | awk 'NR==2 {print $4}')"
+if [[ -z "$free_kb" || "$free_kb" -lt $((MIN_FREE_GB * 1024 * 1024)) ]]; then
+  log "ERROR: Docker storage ${docker_root} has $(( ${free_kb:-0} / 1024 / 1024 )) GB free; --min-free-gb=${MIN_FREE_GB} required. Run 'docker builder prune -af' first."
+  exit 5
+fi
+log "preflight: go ok; ${docker_root} has $(( free_kb / 1024 / 1024 )) GB free (min ${MIN_FREE_GB})"
 
 # ── 1. stage ────────────────────────────────────────────────────────────────
 log "stage: consuming build markers"

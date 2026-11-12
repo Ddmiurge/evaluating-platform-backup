@@ -308,6 +308,9 @@ export interface EmbeddedPluginSummary {
   version: string
   auto_gate?: Record<string, unknown>
   review_reason?: string
+  /** E-6 criterion 4: who/when marked this package for the build batch. */
+  build_requested_by?: string
+  build_requested_at?: string
   updated_at?: string
 }
 

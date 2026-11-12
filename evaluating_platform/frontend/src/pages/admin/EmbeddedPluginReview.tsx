@@ -15,7 +15,7 @@ import {
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { adminService, type EmbeddedPluginSummary, type EmbeddedSourceFile } from '../../services/admin'
-import { embeddedAdminActions, embeddedGateText, embeddedReviewReasonLabel, embeddedStateTag, type EmbeddedAdminAction } from '../../services/embeddedPluginStates'
+import { embeddedAdminActions, embeddedBuildRequest, embeddedGateText, embeddedReviewReasonLabel, embeddedStateTag, type EmbeddedAdminAction } from '../../services/embeddedPluginStates'
 import { formatDate } from '../../utils/format'
 
 const { Text, Title, Paragraph } = Typography
@@ -209,16 +209,24 @@ export function EmbeddedPluginReview() {
     },
     {
       title: '自动关卡 / 意见',
-      render: (_: unknown, row: EmbeddedPluginSummary) => (
-        <Space orientation="vertical" size={0}>
-          <Text type={row.auto_gate?.passed === false ? 'danger' : 'secondary'}>{embeddedGateText(row.auto_gate)}</Text>
-          {row.review_reason && (
-            <Text type="warning">
-              {embeddedReviewReasonLabel(row.state)}：{row.review_reason}
-            </Text>
-          )}
-        </Space>
-      ),
+      render: (_: unknown, row: EmbeddedPluginSummary) => {
+        const buildRequest = embeddedBuildRequest(row)
+        return (
+          <Space orientation="vertical" size={0}>
+            <Text type={row.auto_gate?.passed === false ? 'danger' : 'secondary'}>{embeddedGateText(row.auto_gate)}</Text>
+            {row.review_reason && (
+              <Text type="warning">
+                {embeddedReviewReasonLabel(row.state)}：{row.review_reason}
+              </Text>
+            )}
+            {buildRequest && (
+              <Text type="secondary">
+                请求构建：{buildRequest.by} · {formatDate(buildRequest.at)}
+              </Text>
+            )}
+          </Space>
+        )
+      },
     },
     { title: '更新时间', dataIndex: 'updated_at', width: 150, render: (v?: string) => (v ? formatDate(v) : '-') },
     { title: '操作', render: (_: unknown, row: EmbeddedPluginSummary) => renderActions(row) },

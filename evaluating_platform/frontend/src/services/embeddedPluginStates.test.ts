@@ -4,6 +4,7 @@ import {
   EMBEDDED_STATE_LABELS,
   arrayBufferToBase64,
   embeddedAdminActions,
+  embeddedBuildRequest,
   embeddedExpertCanRevise,
   embeddedGateText,
   embeddedReviewReasonLabel,
@@ -74,6 +75,32 @@ describe('embedded states', () => {
     // old rows without the stamped count render exactly as before
     expect(embeddedGateText({ passed: true, files: 0 })).toBe('✓ 通过')
     expect(embeddedGateText({ passed: true })).toBe('✓ 通过')
+  })
+
+  it('gate text includes the source size when the store stamped it', () => {
+    expect(embeddedGateText({ passed: true, files: 3, source_bytes: 2048 })).toContain('2.0 KB')
+    expect(embeddedGateText({ passed: true, files: 3, source_bytes: 300 })).toContain('300 B')
+    expect(embeddedGateText({ passed: true, files: 3 })).not.toContain('KB')
+  })
+
+  it('shows who/when requested the build only while the marker is actionable', () => {
+    const at = '2026-11-12T10:00:00Z'
+    expect(
+      embeddedBuildRequest({
+        state: 'build_requested',
+        build_requested_by: '12345678-90ab-cdef-1234-567890abcdef',
+        build_requested_at: at,
+      }),
+    ).toEqual({ by: '12345678…', at })
+    // build_failed keeps the marker visible so the operator knows whom to ask.
+    expect(
+      embeddedBuildRequest({ state: 'build_failed', build_requested_at: at }),
+    ).toEqual({ by: '未知', at })
+    // A finalized row's marker belongs to history, not to the row.
+    expect(
+      embeddedBuildRequest({ state: 'testing', build_requested_at: at }),
+    ).toBeNull()
+    expect(embeddedBuildRequest({ state: 'build_requested' })).toBeNull()
   })
 
   it('base64 encodes binary chunks correctly (including multi-byte)', () => {

@@ -935,7 +935,7 @@ func (h *AdminMaclawHandler) GetEmbeddedPlugins(c *gin.Context) {
 		if len(row.AutoGate) > 0 {
 			_ = json.Unmarshal(row.AutoGate, &gate)
 		}
-		items = append(items, gin.H{
+		item := gin.H{
 			"package_id":    row.PackageID,
 			"resource_id":   row.ResourceID,
 			"owner_user_id": row.OwnerUserID.String(),
@@ -947,7 +947,17 @@ func (h *AdminMaclawHandler) GetEmbeddedPlugins(c *gin.Context) {
 			"auto_gate":     gate,
 			"review_reason": row.ReviewReason,
 			"updated_at":    row.UpdatedAt,
-		})
+		}
+		// E-6 criterion 4 records WHO/WHEN requested a build; without these the
+		// admin row shows 「已请求构建」 with no way to tell how long it has been
+		// waiting or whom to ask (record 55 §6.3's operational pain).
+		if row.BuildRequestedBy != nil {
+			item["build_requested_by"] = row.BuildRequestedBy.String()
+		}
+		if row.BuildRequestedAt != nil {
+			item["build_requested_at"] = *row.BuildRequestedAt
+		}
+		items = append(items, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }

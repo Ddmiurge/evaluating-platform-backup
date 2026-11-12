@@ -56,6 +56,27 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_FILES = 64;
 const MAX_UNCOMPRESSED = 4 * 1024 * 1024;
 
+/**
+ * Environment for the package's own code.
+ *
+ * The probe used to spread `process.env`, which handed an expert-authored test
+ * script every variable the engine process holds — including provider keys a
+ * deployment may inject as environment variables. The static token scan bans
+ * the literal `process.env`, but that list raises the bar; it is not the
+ * boundary, and obfuscation is trivial. The probe's contract is "zero
+ * dependency, offline, seconds" (§3.3), so a minimal environment is enough:
+ * Node itself, a temp dir, and locale/timezone. Nothing else is the package's
+ * business.
+ */
+function sandboxEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { NODE_ENV: 'test' };
+  for (const key of ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TZ']) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 const fail = (code: string, message: string): EmbeddedPackageProbeResult => ({
   ok: false,
   errors: [{ code, message }],
@@ -191,7 +212,7 @@ function checkEntryContract(workDir: string, entryPath: string, timeoutMs: numbe
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', script, absolute], {
       cwd: workDir,
-      env: { ...process.env, NODE_ENV: 'test' },
+      env: sandboxEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -235,7 +256,7 @@ function runTests(workDir: string, testEntry: string, timeoutMs: number): Promis
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [testEntry], {
       cwd: workDir,
-      env: { ...process.env, NODE_ENV: 'test' },
+      env: sandboxEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

@@ -89,6 +89,25 @@ describe('probeEmbeddedPackage', () => {
     expect(result.errors).toBeUndefined();
   });
 
+  it('does not hand the engine environment to the package test', async () => {
+    // The static scan bans the literal `process.env`, but that is a bar, not a
+    // boundary (obfuscation is trivial). A package's test child gets only the
+    // sandbox env — never the engine's provider keys.
+    process.env.P28_PROBE_SENTINEL = 'must-not-leak';
+    try {
+      const zip = makeZip({
+        'manifest.yaml': MANIFEST,
+        'src/plugin.ts': 'export default { async action() { return []; } };',
+        'tests/run.mjs':
+          "if (process.env.P28_PROBE_SENTINEL !== undefined) { console.error('environment leaked'); process.exit(1); }\nprocess.exit(0);\n",
+      });
+      const result = await probeEmbeddedPackage({ zipB64: zip, testEntry: 'tests/run.mjs', entry: 'src/plugin.ts' });
+      expect(result.ok, result.errors?.[0]?.message).toBe(true);
+    } finally {
+      delete process.env.P28_PROBE_SENTINEL;
+    }
+  });
+
   it('fails a package whose tests exit non-zero, quoting only the tail', async () => {
     const zip = makeZip({
       'manifest.yaml': MANIFEST,
