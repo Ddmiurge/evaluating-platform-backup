@@ -335,7 +335,9 @@ export default {
 
 内嵌插件的报告分类/severity/judge 档走 **Go 侧 `PromptfooEngineCatalog()`** 单点追加（见 `maclaw-current-state.md` 的 P28 节）：BFF 推送的 catalog 是引擎归约器读取 severity/category/judge_source 的唯一通道。
 
-部署机编排壳 `evaluating_platform/scripts/embedded-build.sh`：`-stage`（NO_QUEUE 即退出，跳过部署与定格）→ 构建 **engine + backend 两个镜像**（引擎 COPY 暂存树，backend 编译期 embed 向导目录——只重建一边就是「目录里有 id、引擎跑不了」的双视图）→ 重建容器 → 等 Docker healthcheck 绿（不绿不部署）→ `-finalize -ok`；中途任何失败走 `-finalize -fail -reason=…`（安全摘要，进审计事件与门户），定格失败单独 exit 4 且保留 index 供重试。
+部署机编排壳 `evaluating_platform/scripts/embedded-build.sh`：`-stage`（NO_QUEUE 即退出，跳过部署与定格）→ 构建 **engine + backend 两个镜像**（引擎 COPY 暂存树，backend 编译期 embed 向导目录——只重建一边就是「目录里有 id、引擎跑不了」的双视图）→ 重建容器 → 等 Docker healthcheck 绿（不绿不部署）→ `-finalize -ok`；中途任何失败走 `-finalize -fail -reason=…`（安全摘要，进审计事件与门户），定格失败单独 exit 4 且保留 index 供重试。`--root` 是**平台目录**（`internal/` 与 `promptfoo_engine/` 的父目录），默认取脚本父目录；`cmd/embeddedbuild` 在连库前校验该形状，错根不再留下仓库根的多余暂存树（54 号 §6.3）。
+
+契约违例的可诊断性（54 号 §6.4）：promptfoo 把 action 异常吞在 `Promise.allSettled` 里，只留一行 warn + 聚合的「0/2 tests」。loader 的错误信息带 `case #N`，引擎记录器 `createDiagnosticLogCollector().embeddedPluginError()` 从原始行里提取后映射为 `native_generation_embedded_plugin_invalid`（原因进 `error_brief`；前端有对应中文解释）——与「模型拒答」同一类：可操作原因单独成码，重试不会改变结果。
 
 ## 12. 界面草案（专家门户 / 管理员门户，2026-11-10 主理人过目）
 
