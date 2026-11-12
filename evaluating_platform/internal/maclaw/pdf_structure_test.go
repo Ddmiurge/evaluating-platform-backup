@@ -197,7 +197,11 @@ func describeReportPDF(t *testing.T, pdf []byte) string {
 
 		fmt.Fprintf(&out, "  text:\n")
 		for _, run := range pdfPageTextRuns(t, objects, body) {
-			fmt.Fprintf(&out, "    %s\n", run)
+			// A text run can end on a space (ASCII/CJK segmentation keeps the
+			// separator attached to the Latin half). Trailing whitespace in the
+			// golden makes `git diff --check` red without describing anything, so
+			// the snapshot strips it; the PDF itself is unchanged.
+			fmt.Fprintf(&out, "    %s\n", strings.TrimRight(run, " "))
 		}
 	}
 	return out.String()

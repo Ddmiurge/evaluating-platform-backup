@@ -85,6 +85,26 @@ func TestValidateReportGenerationMetadata(t *testing.T) {
 	}
 }
 
+// Record 55 §6.1: the PDF body skips 「报告基本信息」, so the caption (and the
+// record-54 §6.5 mismatch suffix) reached the Markdown export and the chat card
+// but never the PDF — the artifact customers actually receive. It is rendered
+// on the cover now; this pins the call site, not the caption helper.
+func TestReportPDFCoverCarriesGenerationPathCaption(t *testing.T) {
+	pdf := string(renderReportPDF(&EvaluationReport{
+		Metadata: map[string]string{
+			RedteamGenerationPathMetadataKey:    GenerationPathPlanC,
+			RedteamNumTestsEffectiveMetadataKey: "2",
+			"total_cases":                       "1",
+		},
+	}))
+	if !pdfContainsRenderedText(pdf, "生成路径：promptfoo 原生生成（plan_c）") {
+		t.Error("PDF does not name the generation path — the delivered report is missing a P2-6 requirement")
+	}
+	if !pdfContainsRenderedText(pdf, "实际配置探针数 2") || !pdfContainsRenderedText(pdf, "实际执行 1 条") {
+		t.Error("PDF does not separate the configured probe count from the measured one")
+	}
+}
+
 func TestRedteamGenerationPathCaption(t *testing.T) {
 	t.Run("plan_c names the path, the probe count and the incomparability", func(t *testing.T) {
 		caption := RedteamGenerationPathCaption(map[string]string{

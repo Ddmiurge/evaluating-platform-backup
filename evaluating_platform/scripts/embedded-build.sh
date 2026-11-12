@@ -52,6 +52,15 @@ cd "$PLATFORM_DIR"
 
 log() { printf 'embedded-build: %s\n' "$*"; }
 
+# Preflight: the batch tool runs on THIS host (it needs the host's platform
+# tree and config to reach the DB). A host without Go fails later with a
+# confusing "go: command not found" from inside a $(...) substitution
+# (record 55 §8) — say it up front, before stage can write anything.
+if ! command -v go >/dev/null 2>&1; then
+  log "ERROR: 'go' is required on this host to run cmd/embeddedbuild; install Go (>=1.22) or run this script on the build host"
+  exit 64
+fi
+
 # ── 1. stage ────────────────────────────────────────────────────────────────
 log "stage: consuming build markers"
 STAGE_OUT="$(go run ./cmd/embeddedbuild -stage -config "$CONFIG" -root "$ROOT")"

@@ -678,6 +678,42 @@ func renderReportPDF(report *EvaluationReport) []byte {
 	return writePDFObjects(objects)
 }
 
+// pdfGenerationPathLines splits the one-line caption into independently wrapped
+// segments at its `·` separators.
+//
+// Wrapping the whole sentence at a fixed width breaks phrases mid-word
+// (「…探针数 2·实际执」 / 「行 1 条…」), which both reads badly and would make a
+// reader's eye join the wrong numbers. Each segment is a self-contained claim.
+func pdfGenerationPathLines(metadata map[string]string) []string {
+	caption := RedteamGenerationPathCaption(metadata)
+	parts := strings.Split(caption, "·")
+	lines := []string{}
+	wrote := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if wrote {
+			part = "·" + part
+		}
+		// Prefer a clause boundary over a mid-word break: the incomparability
+		// sentence is longer than one cover line, and breaking between 「判定口」
+		// and 「径」 makes the reader's eye join the wrong words.
+		if len([]rune(part)) > 34 {
+			if cut := strings.LastIndex(part, "（"); cut > 0 {
+				lines = append(lines, wrapPDFLine(strings.TrimSpace(part[:cut]), 34)...)
+				lines = append(lines, wrapPDFLine(strings.TrimSpace(part[cut:]), 34)...)
+				wrote = true
+				continue
+			}
+		}
+		lines = append(lines, wrapPDFLine(part, 34)...)
+		wrote = true
+	}
+	return lines
+}
+
 func wrapPDFLine(line string, maxRunes int) []string {
 	line = strings.TrimRight(line, "\r\n")
 	if line == "" || len([]rune(line)) <= maxRunes {
@@ -743,6 +779,17 @@ func pdfCoverPageContent(report *EvaluationReport) pdfRenderedPage {
 		page.centerText("评估时间：未记录", 9.5, 0.36, 0.36, 0.36)
 	} else {
 		page.centerText("评估时间："+report.CreatedAt.Format(time.RFC3339), 9.5, 0.36, 0.36, 0.36)
+	}
+	// P2-6's generation-path statement belongs on the cover, not only in the
+	// Markdown export: the PDF body deliberately skips 「报告基本信息」
+	// (`pdfBodyPageContents`), so the section that carries it never renders
+	// there. Record 55 §6.1 measured the consequence — the suffix added for
+	// record 54 §6.5 appeared in the Markdown export and the chat card but not
+	// in the PDF, the one artifact that is actually delivered. The cover is the
+	// report-information surface the PDF does render.
+	for _, line := range pdfGenerationPathLines(report.Metadata) {
+		page.centerText(line, 9.5, 0.36, 0.36, 0.36)
+		page.y -= 22
 	}
 	page.y -= 70
 	score := "--"
