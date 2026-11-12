@@ -333,6 +333,8 @@ export default {
 
 纪律：锚点缺失 → 脚本 exit 1（promptfoo 升级后必须重测锚点，绝不静默发出未打补丁的镜像）；marker 幂等（重复执行不叠加）；`vitest` 的 `patchEmbeddedPlugins.test.ts` 对着**真实安装的 dist** 校验锚点（升级绊线）并把注入块原样抽出来在临时目录跑行为断言。
 
+内嵌插件的 agent 发现（2026-11-12）：两个能力搜索工具返回**调用者可见**的内嵌插件卡片，`safe_metadata.plugin_source=embedded`（缺失=内置），`source_ref` 与内置同形（`promptfoo_plugin:<id>`）。可见性逐条复用提交闸 `ResolveEmbeddedSelection`（approved 全员、testing 仅白名单、其余不可见；基座过期整组隐藏），因此卡片生成在 bridge 层按 userID 过滤，而不是挂进静态目录——否则 `testing` 包会对非白名单企业账号可搜到，违反 §10 判据 6。
+
 内嵌插件的报告分类/severity/judge 档走 **Go 侧 `PromptfooEngineCatalog()`** 单点追加（见 `maclaw-current-state.md` 的 P28 节）：BFF 推送的 catalog 是引擎归约器读取 severity/category/judge_source 的唯一通道。
 
 部署机编排壳 `evaluating_platform/scripts/embedded-build.sh`：`-stage`（NO_QUEUE 即退出，跳过部署与定格）→ 构建 **engine + backend 两个镜像**（引擎 COPY 暂存树，backend 编译期 embed 向导目录——只重建一边就是「目录里有 id、引擎跑不了」的双视图）→ 重建容器 → 等 Docker healthcheck 绿（不绿不部署）→ `-finalize -ok`；中途任何失败走 `-finalize -fail -reason=…`（安全摘要，进审计事件与门户），定格失败单独 exit 4 且保留 index 供重试。`--root` 是**平台目录**（`internal/` 与 `promptfoo_engine/` 的父目录），默认取脚本父目录；`cmd/embeddedbuild` 在连库前校验该形状，错根不再留下仓库根的多余暂存树（54 号 §6.3）。**部署机需要 Go（≥1.22）**：批次工具要在宿主上读写平台目录并连库，脚本因此先做 `go` 预检并以 exit 64 明确失败；没有 Go 的宿主机目前不能直接跑完整脚本（55 号 §8）。
