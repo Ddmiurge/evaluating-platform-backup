@@ -71,7 +71,7 @@ type flagSet struct {
 func registerFlags(fs *flag.FlagSet) *flagSet {
 	return &flagSet{
 		config:   fs.String("config", "configs/config.yaml", "config file (same as the server)"),
-		root:     fs.String("root", ".", "repository root (staging + testdata live under it)"),
+		root:     fs.String("root", ".", "platform directory (contains internal/ and promptfoo_engine/)"),
 		stage:    fs.Bool("stage", false, "plan the batch, stage the tree, rewrite the catalog file"),
 		finalize: fs.Bool("finalize", false, "transition this batch's rows after deploy (requires -ok or -fail)"),
 		ok:       fs.Bool("ok", false, "with -finalize: the deploy succeeded (build_requested → testing)"),
@@ -125,6 +125,13 @@ func main() {
 		if err != nil {
 			fatal("%v", err)
 		}
+	}
+
+	// Validate the target directory before touching config/DB: a wrong -root
+	// used to leave a staging tree at the repository root and only fail during
+	// the catalog write (record 54 §6.3).
+	if err := validatePlatformRoot(*flags.root); err != nil {
+		fatal("%v", err)
 	}
 
 	cfg, err := config.Load(*flags.config)

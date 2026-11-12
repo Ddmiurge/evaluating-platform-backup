@@ -130,3 +130,47 @@ describe('refusal signal', () => {
     expect(isGenerationRefusal('Error from API provider, skipping generation: HTTP 429', false)).toBe(false);
   });
 });
+
+/**
+ * 内嵌插件用例契约信号（54 号 §6.4）。
+ *
+ * promptfoo 把插件 action 的异常吞在 `Promise.allSettled` 里，只记一行 warn；聚合的
+ * strict 错误只说「0/2 tests」。loader 自己写的 `embedded plugin <id>: case #N …` 就在
+ * 那行 warn 里，提取它是把「可操作原因」找回错误码的唯一不改 promptfoo 的办法。
+ */
+describe('embedded plugin contract signal', () => {
+  function issue(lines: string[]): string {
+    const collector = createDiagnosticLogCollector();
+    for (const line of lines) collector.callback(line);
+    return collector.embeddedPluginError();
+  }
+
+  it('lifts the loader reason out of promptfoo\'s warn line', () => {
+    const line =
+      '[Language Processing] Error generating tests for p28-smoke-plugin: Error: embedded plugin ' +
+      'p28-smoke-plugin: case #2 needs a non-empty assert array (grading contract — a case without ' +
+      'assertions always grades pass, which the reduction reads as attack failure)';
+    const got = issue([line]);
+    expect(got).toContain('p28-smoke-plugin');
+    expect(got).toContain('case #2');
+    expect(got).toContain('assert');
+    // The wrapper's own words are not the diagnosis.
+    expect(got).not.toContain('Language Processing');
+  });
+
+  it('keeps the most recent violation when several packages failed', () => {
+    expect(
+      issue([
+        'embedded plugin p28-a: action must return an array of test cases',
+        '[Language Processing] Error generating tests for p28-b: Error: embedded plugin p28-b: case #1 needs a non-empty vars[prompt] string',
+      ]),
+    ).toContain('p28-b');
+  });
+
+  it('stays empty for ordinary failures', () => {
+    expect(issue([])).toBe('');
+    expect(issue(['Failed to generate tests for harmful:cybercrime'])).toBe('');
+    // The aggregate strict-mode line names no contract defect.
+    expect(issue(['Test case generation failed for 1 plugin(s): - p28-x (0/2 tests)'])).toBe('');
+  });
+});

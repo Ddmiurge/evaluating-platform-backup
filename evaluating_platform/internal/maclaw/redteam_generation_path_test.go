@@ -98,8 +98,30 @@ func TestRedteamGenerationPathCaption(t *testing.T) {
 		}
 	})
 
-	t.Run("plan_a is labelled too, not left blank", func(t *testing.T) {
-		// R-5-c: the field must have a value on BOTH paths. A field that is only
+	// Record 54 §6.5: an embedded plugin may legitimately return fewer cases
+	// than the configured n. The caption must distinguish the plan from the
+	// measured count, and must stay silent when they agree (the normal case).
+	t.Run("a measured count below the configured count is stated", func(t *testing.T) {
+		caption := RedteamGenerationPathCaption(map[string]string{
+			RedteamGenerationPathMetadataKey:    GenerationPathPlanC,
+			RedteamNumTestsEffectiveMetadataKey: "2",
+			"total_cases":                       "1",
+		})
+		if !strings.Contains(caption, "实际配置探针数 2") || !strings.Contains(caption, "实际执行 1 条") {
+			t.Errorf("caption %q must separate the configured count from the measured one", caption)
+		}
+
+		equal := RedteamGenerationPathCaption(map[string]string{
+			RedteamGenerationPathMetadataKey:    GenerationPathPlanC,
+			RedteamNumTestsEffectiveMetadataKey: "6",
+			"total_cases":                       "6",
+		})
+		if strings.Contains(equal, "实际执行") {
+			t.Errorf("equal counts need no note: %q", equal)
+		}
+	})
+
+	t.Run("plan_a is labelled too, not left blank", func(t *testing.T) { // R-5-c: the field must have a value on BOTH paths. A field that is only
 		// populated on one path is the easiest shape to miss, because the reports
 		// that lack it look fine.
 		caption := RedteamGenerationPathCaption(map[string]string{
@@ -204,6 +226,7 @@ func TestGenerationPathCaptionMatchesFrontendMirror(t *testing.T) {
 		"生成路径：未记录（本报告产生于记录生成路径之前，或由其它路径生成）。",
 		"生成路径：报告元数据中的生成路径字段非法，已忽略；请联系报告生成方核对。",
 		"·实际配置探针数 ",
+		"·实际执行 ",
 	}
 	for _, fragment := range fragments {
 		if !strings.Contains(source, fragment) {

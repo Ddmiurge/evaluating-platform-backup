@@ -32,6 +32,22 @@ func classifyMaclawError(err error) (int, string, string) {
 		return http.StatusForbidden, "resource_not_owned", "资源不存在或不属于当前账号，无法更新。"
 	}
 
+	// P28 (record 54 §6.2): an embedded package refused by the gates is the
+	// submitter's input being wrong, not a runtime outage. Without this branch it
+	// fell into the generic 503 「maclaw runtime is unavailable」 while the state
+	// row correctly recorded `rejected` + an actionable reason — two answers for
+	// one event, and the HTTP one told the expert to wait instead of to fix the
+	// package. The two probe codes stay 503: those mean the ENGINE could not run
+	// the package's tests, not that the package is wrong.
+	var embedded *maclaw.EmbeddedPluginValidationError
+	if errors.As(err, &embedded) {
+		switch embedded.Code {
+		case "embedded_probe_unavailable", "embedded_probe_unreachable":
+			return http.StatusServiceUnavailable, embedded.Code, embedded.Message
+		}
+		return http.StatusBadRequest, embedded.Code, embedded.Message
+	}
+
 	// U10: a rejected expert plugin package is the submitter's input being
 	// wrong, not an upstream failure. Classified before the generic fallbacks
 	// so it surfaces as 400 with the validator's own message — the DoD requires

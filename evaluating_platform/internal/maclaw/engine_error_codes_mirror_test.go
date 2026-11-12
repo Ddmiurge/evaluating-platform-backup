@@ -18,7 +18,19 @@ import (
 // constant is derived from the literal, so a rename on one side fails this test
 // instead of shipping a code nobody explains.
 func TestModelRefusedCodeMirrorsEngineAndFrontend(t *testing.T) {
-	const code = "native_generation_model_refused"
+	assertErrorCodeMirrored(t, "native_generation_model_refused")
+}
+
+// Record 54 §6.4 minted a second engine code that only the frontend explains
+// (`native_generation_embedded_plugin_invalid`). Same drift risk, same guard:
+// the code is a literal in TypeScript on both sides, and a rename on one side
+// silently drops the explanation.
+func TestEmbeddedPluginInvalidCodeMirrorsEngineAndFrontend(t *testing.T) {
+	assertErrorCodeMirrored(t, "native_generation_embedded_plugin_invalid")
+}
+
+func assertErrorCodeMirrored(t *testing.T, code string) {
+	t.Helper()
 
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {

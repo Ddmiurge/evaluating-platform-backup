@@ -16,8 +16,14 @@
 # finalize, so calling -finalize after NO_QUEUE would hard-fail by design.
 #
 # Usage:
-#   ./scripts/embedded-build.sh [--config configs/config.yaml] [--root ..]
+#   ./scripts/embedded-build.sh [--config configs/config.yaml] [--root <platform-dir>]
 #                               [--skip-backend] [--timeout 900]
+#
+# --root is the PLATFORM directory (the one containing internal/ and
+# promptfoo_engine/) — the same thing `go run ./cmd/embeddedbuild -root` takes.
+# It defaults to this script's parent, NOT the repository root: record 54 §6.3
+# showed the old default writing the catalog to <repo>/internal/... (ENOENT)
+# and leaving a stray <repo>/promptfoo_engine/embedded-plugins/ tree behind.
 #
 # Exit codes: 0 success or NO_QUEUE; 1 stage failed; 2 build/deploy failed
 # (the batch was marked build_failed); 3 health check failed (same); 4 finalize
@@ -26,7 +32,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLATFORM_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROOT="$(cd "$PLATFORM_DIR/.." && pwd)"
+ROOT="$PLATFORM_DIR"
 CONFIG="configs/config.yaml"
 TIMEOUT=900
 SKIP_BACKEND=0
@@ -37,7 +43,7 @@ while [[ $# -gt 0 ]]; do
     --root) ROOT="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --skip-backend) SKIP_BACKEND=1; shift ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "embedded-build: unknown argument: $1" >&2; exit 64 ;;
   esac
 done

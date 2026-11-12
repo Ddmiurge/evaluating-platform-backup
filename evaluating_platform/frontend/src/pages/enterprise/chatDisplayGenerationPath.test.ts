@@ -58,8 +58,20 @@ describe('reportGenerationPathCaption', () => {
     expect(caption).not.toContain('不可直接比较')
   })
 
-  it('omits the count rather than printing a nonsense one', () => {
-    // A report whose count is missing or corrupt still gets the path — the path is
+  it('distinguishes the configured count from the measured count (54 §6.5)', () => {
+    const caption = reportGenerationPathCaption({
+      metadata: { generation_path: 'plan_c', num_tests_effective: '2', total_cases: '1' },
+    })
+    expect(caption).toContain('实际配置探针数 2')
+    expect(caption).toContain('实际执行 1 条')
+    // Equal counts are the normal case and need no note.
+    const equal = reportGenerationPathCaption({
+      metadata: { generation_path: 'plan_c', num_tests_effective: '6', total_cases: '6' },
+    })
+    expect(equal).not.toContain('实际执行')
+  })
+
+  it('omits the count rather than printing a nonsense one', () => {    // A report whose count is missing or corrupt still gets the path — the path is
     // the part that prevents the wrong comparison.
     for (const raw of [undefined, '', 'many', '0', '-3']) {
       const caption = reportGenerationPathCaption({

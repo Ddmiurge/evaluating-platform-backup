@@ -88,6 +88,33 @@ describe('anchor stability against the installed promptfoo dist', () => {
     expect(() => patchIndexSource('const nothing = [];\n')).toThrow(/layout changed/);
     expect(() => patchTablesSource('const nothing = [];\n')).toThrow(/layout changed/);
   });
+
+  /**
+   * Record 54 §6.1: the installed dist in the image was PRISTINE, so the first
+   * application produced `...;\n// BLOCK` while the second produced `...;// BLOCK`
+   * — patch(patch(src)) differed from patch(src) by one newline. The real-dist
+   * test above missed it because a dev checkout is usually already patched, and
+   * the already-collapsed form is its own fixed point. These synthetic fixtures
+   * pin the pristine-source path, where the bug lived.
+   */
+  it('is idempotent from a pristine source (record 54 §6.1)', () => {
+    const tablesSrc =
+      'const COLLECTIONS = [];\n' +
+      'const ALL_PLUGINS = [];\n' +
+      'const ALIASED_PLUGINS = [];\n' +
+      'const FRAMEWORK_COMPLIANCE_IDS = [];\n' +
+      'const pluginOptions = [...new Set([...COLLECTIONS, ...ALL_PLUGINS,\n\t...ALIASED_PLUGINS\n])].sort();\n' +
+      'const after = 1;\n';
+    const onceTables = patchTablesSource(tablesSrc);
+    // The source's own newline before `const pluginOptions` must survive.
+    expect(onceTables).toContain('const FRAMEWORK_COMPLIANCE_IDS = [];\n// P28-EMBEDDED-SCHEMA-BEGIN');
+    expect(patchTablesSource(onceTables)).toBe(onceTables);
+
+    const indexSrc = 'const Plugins = [];\n].map(withMaxCharsRetries);\nconst after = 1;\n';
+    const onceIndex = patchIndexSource(indexSrc);
+    expect(onceIndex).toContain('withMaxCharsRetries);\n// P28-EMBEDDED-REGISTRY-BEGIN');
+    expect(patchIndexSource(onceIndex)).toBe(onceIndex);
+  });
 });
 
 describe('schema acceptance (patched tables chunk, runtime read)', () => {

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -149,7 +150,8 @@ func (h *MaclawEvaluationHandler) CreateResource(c *gin.Context) {
 		// P28: an embedded package that failed the gates still gets a STATE row
 		// (rejected + reason) so the expert sees it in the revision loop — the
 		// invalid payload itself was never written (the store exit refused it).
-		if verr, ok := err.(*maclaw.EmbeddedPluginValidationError); ok && h.embeddedLifecycle != nil {
+		var verr *maclaw.EmbeddedPluginValidationError
+		if errors.As(err, &verr) && h.embeddedLifecycle != nil {
 			if m := maclaw.PeekEmbeddedManifest(in.Payload); m != nil {
 				gate := maclaw.EmbeddedAutoGateSummary{Passed: false, Reason: verr.Message}
 				_ = h.embeddedLifecycle.RecordRejection(c.Request.Context(), uuid.MustParse(c.GetString("user_id")), m.ID, "1", m.Name, gate)

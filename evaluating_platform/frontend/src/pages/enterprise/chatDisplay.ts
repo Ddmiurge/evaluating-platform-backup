@@ -291,10 +291,17 @@ export function reportGenerationPathCaption(input: {
   if (path === 'unrecorded') return GENERATION_PATH_CAPTION_UNRECORDED
 
   const raw = String(input.metadata?.[NUM_TESTS_EFFECTIVE_METADATA_KEY] ?? '').trim()
-  const count = /^\d+$/.test(raw) && Number(raw) > 0 ? `·实际配置探针数 ${Number(raw)}` : ''
+  const configured = /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : 0
+  const count = configured > 0 ? `·实际配置探针数 ${configured}` : ''
+  // 54 号 §6.5：内嵌插件的 `n` 是建议值，action 可以合法地少返回；此时
+  // `total_cases`（实跑）与 `num_tests_effective`（按配置）不等，两个数并排会被
+  // 读成「少跑了一条」。只在两者不同时补一句，说明哪个是计划、哪个是实跑。
+  const totalRaw = String(input.metadata?.total_cases ?? '').trim()
+  const actual = /^\d+$/.test(totalRaw) && Number(totalRaw) > 0 ? Number(totalRaw) : 0
+  const executed = configured > 0 && actual > 0 && actual !== configured ? `·实际执行 ${actual} 条` : ''
   return path === 'plan_c'
-    ? `${GENERATION_PATH_CAPTION_PLAN_C}${count}${GENERATION_PATH_CAPTION_PLAN_C_SUFFIX}`
-    : `${GENERATION_PATH_CAPTION_PLAN_A}${count}。`
+    ? `${GENERATION_PATH_CAPTION_PLAN_C}${count}${executed}${GENERATION_PATH_CAPTION_PLAN_C_SUFFIX}`
+    : `${GENERATION_PATH_CAPTION_PLAN_A}${count}${executed}。`
 }
 
 /** 非法元数据是否应被提示（供卡片决定是否显示警示，而不是静默按某一路径显示）。 */

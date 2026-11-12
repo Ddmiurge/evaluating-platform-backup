@@ -418,3 +418,37 @@ func TestRunFinalizeRemovalOnlyBatch(t *testing.T) {
 		t.Fatalf("index.json should be cleared after a successful finalize: %v", err)
 	}
 }
+
+// Record 54 §6.3: the orchestrator used to pass the repository root, which
+// staged a stray tree and failed only at the catalog write. The shape check
+// runs before config/DB, so a wrong root changes nothing on disk.
+func TestValidatePlatformRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal", "maclaw", "testdata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "promptfoo_engine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePlatformRoot(root); err != nil {
+		t.Fatalf("platform-shaped root rejected: %v", err)
+	}
+
+	repoRoot := t.TempDir() // a repository root has evaluating_platform/, not internal/
+	err := validatePlatformRoot(repoRoot)
+	if err == nil {
+		t.Fatal("repository root must be refused")
+	}
+	if !strings.Contains(err.Error(), "internal/maclaw/testdata") {
+		t.Fatalf("error should name the missing directory, got: %v", err)
+	}
+
+	// Half-shaped roots fail too: the engine build context is the other half.
+	half := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(half, "internal", "maclaw", "testdata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePlatformRoot(half); err == nil || !strings.Contains(err.Error(), "promptfoo_engine") {
+		t.Fatalf("half-shaped root should name promptfoo_engine, got: %v", err)
+	}
+}

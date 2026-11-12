@@ -446,6 +446,16 @@ export const PLUGIN_REQUIRES_CONFIG_REASON =
 export const ENGINE_RUN_ERROR_MODEL_REFUSED = 'native_generation_model_refused'
 
 /**
+ * 内嵌插件用例契约不满足（与 `nativeRedteam.ts` 的
+ * `NATIVE_ERR_EMBEDDED_PLUGIN_INVALID` 逐字一致）。
+ *
+ * 54 号 §6.4：这类失败以前只显示 `native_generation_promptfoo_failed` + 「0/2
+ * tests」，看不出是包写错了。原因在 error_brief 里（`case #N …`），这句只负责说明
+ * 「该改包，不是该重试」。
+ */
+export const ENGINE_RUN_ERROR_EMBEDDED_PLUGIN_INVALID = 'native_generation_embedded_plugin_invalid'
+
+/**
  * 运行期错误码 → 可读解释。
  *
  * 未收录的码返回空串：界面只显示码本身，不猜原因。给每个码配一句"看起来像解释"
@@ -454,6 +464,8 @@ export const ENGINE_RUN_ERROR_MODEL_REFUSED = 'native_generation_model_refused'
 const ENGINE_RUN_ERROR_HINTS: Record<string, string> = {
   [ENGINE_RUN_ERROR_MODEL_REFUSED]:
     '生成模型拒绝了用例生成。最常见的原因是被测系统用途被判为可疑 —— 请改成中性的业务角色描述（例如「客服问答机器人：回答售后与物流咨询」），不要写评测意图或对抗措辞，然后重试。',
+  [ENGINE_RUN_ERROR_EMBEDDED_PLUGIN_INVALID]:
+    '内嵌插件的测试用例不符合契约：每条用例都必须带非空的 vars.<注入变量> 和 assert 数组。请按「失败原因」里的 case 编号修正插件，同一 id 重新上传并通过初审后重新构建；重试本次运行不会改变结果。',
   native_generation_promptfoo_failed:
     '引擎在生成阶段失败。若是模型或靶机限流、网络问题，请稍后重试；具体原因看运行详情的「失败原因」行。',
 }

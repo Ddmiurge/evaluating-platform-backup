@@ -44,10 +44,19 @@ export const tablesAnchor = 'const pluginOptions = ';
 export const tablesSetAnchor = '...ALIASED_PLUGINS\n])].sort();';
 const tablesSetPatched = '...ALIASED_PLUGINS,\n\t...__p28EmbeddedPluginIds\n])].sort();';
 
-function stripMarkedBlock(src, mark) {
-  // Consume the separator newline we added before the block too, so repeated
-  // patching does not accumulate blank lines (idempotency is asserted in tests).
-  const re = new RegExp(`\\n?\\/\\/ ${mark}-BEGIN[\\s\\S]*?\\/\\/ ${mark}-END\\n?`);
+function stripMarkedBlock(src, mark, options = {}) {
+  // The two insertions place their block differently, so they must undo
+  // differently (record 54 §6.1 — one shared rule made the tables half
+  // non-idempotent by eating the source's own newline):
+  //
+  //   - registry: inserted as `anchor + '\n' + block`; the leading `\n` is OURS,
+  //     so stripping it is what restores the original.
+  //   - tables: inserted as `block + anchor`; the newline before the block
+  //     belongs to the SOURCE (it ends the previous statement). Eating it moved
+  //     `const pluginOptions` onto the previous line on the second pass, so
+  //     patch(patch(src)) differed from patch(src) by exactly one `\n`.
+  const lead = options.leadingNewline ? '\\n?' : '';
+  const re = new RegExp(`${lead}\\/\\/ ${mark}-BEGIN[\\s\\S]*?\\/\\/ ${mark}-END\\n?`);
   return src.replace(re, '');
 }
 
@@ -124,7 +133,7 @@ const __p28EmbeddedPluginIds = (() => {
  *   down every run on the shared engine.
  */
 export function patchIndexSource(src) {
-  let out = stripMarkedBlock(src, REGISTRY_MARK);
+  let out = stripMarkedBlock(src, REGISTRY_MARK, { leadingNewline: true });
 
   if (countOccurrences(out, indexAnchor) !== 1) {
     throw new Error(`promptfoo layout changed: expected exactly one "${indexAnchor}" in index.js, found ${countOccurrences(out, indexAnchor)}`);
@@ -158,13 +167,14 @@ import { pathToFileURL as __p28RegistryPathToFileURL } from "node:url";
 				if (!Array.isArray(__p28RegistryTests)) {
 					throw new Error(\`embedded plugin \${__p28RegistryId}: action must return an array of test cases\`);
 				}
-				for (const __p28RegistryTest of __p28RegistryTests) {
+				for (let __p28RegistryIndex = 0; __p28RegistryIndex < __p28RegistryTests.length; __p28RegistryIndex++) {
+					const __p28RegistryTest = __p28RegistryTests[__p28RegistryIndex];
 					const __p28RegistryVar = __p28RegistryTest?.vars?.[__p28RegistryParams.injectVar];
 					if (typeof __p28RegistryVar !== "string" || !__p28RegistryVar.trim()) {
-						throw new Error(\`embedded plugin \${__p28RegistryId}: every test case needs a non-empty vars[\${__p28RegistryParams.injectVar}] string\`);
+						throw new Error(\`embedded plugin \${__p28RegistryId}: case #\${__p28RegistryIndex + 1} needs a non-empty vars[\${__p28RegistryParams.injectVar}] string\`);
 					}
 					if (!Array.isArray(__p28RegistryTest.assert) || __p28RegistryTest.assert.length === 0) {
-						throw new Error(\`embedded plugin \${__p28RegistryId}: every test case needs a non-empty assert array (grading contract — a case without assertions always grades pass, which the reduction reads as attack failure)\`);
+						throw new Error(\`embedded plugin \${__p28RegistryId}: case #\${__p28RegistryIndex + 1} needs a non-empty assert array (grading contract — a case without assertions always grades pass, which the reduction reads as attack failure)\`);
 					}
 				}
 				return __p28RegistryTests;

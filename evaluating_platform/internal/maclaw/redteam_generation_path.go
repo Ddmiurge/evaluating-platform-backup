@@ -136,16 +136,32 @@ func RedteamGenerationPathCaption(metadata map[string]string) string {
 		return "生成路径：报告元数据中的生成路径字段非法，已忽略；请联系报告生成方核对。"
 	}
 	effective := ""
+	configured := 0
 	if raw := strings.TrimSpace(metadata[RedteamNumTestsEffectiveMetadataKey]); raw != "" {
 		if count, parseErr := parsePositiveInt(raw); parseErr == nil {
 			effective = fmt.Sprintf("·实际配置探针数 %d", count)
+			configured = count
+		}
+	}
+	// Record 54 §6.5: `num_tests_effective` is the CONFIGURED count (the built
+	// document times the strategies), while the 评估指标 section shows the
+	// measured `total_cases`. They are equal for built-in plugins, which always
+	// produce `numTests` cases, but an embedded package's action may legitimately
+	// return fewer (its `n` is advisory). Side by side the two numbers read as
+	// 「少跑了一条」, so when they differ the caption says which is which.
+	executed := ""
+	if configured > 0 {
+		if raw := strings.TrimSpace(metadata["total_cases"]); raw != "" {
+			if actual, parseErr := parsePositiveInt(raw); parseErr == nil && actual != configured {
+				executed = fmt.Sprintf("·实际执行 %d 条", actual)
+			}
 		}
 	}
 	switch path {
 	case GenerationPathPlanA:
-		return "生成路径：平台合成用例（plan_a）" + effective + "。"
+		return "生成路径：平台合成用例（plan_a）" + effective + executed + "。"
 	case GenerationPathPlanC:
-		return "生成路径：promptfoo 原生生成（plan_c）" + effective +
+		return "生成路径：promptfoo 原生生成（plan_c）" + effective + executed +
 			"·与平台合成用例（plan_a）的报告不可直接比较（探针数量与判定口径均不同）。"
 	default:
 		return "生成路径：未记录（本报告产生于记录生成路径之前，或由其它路径生成）。"

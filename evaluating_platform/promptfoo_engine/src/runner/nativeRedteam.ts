@@ -188,6 +188,26 @@ export const NATIVE_ERR_MODEL_REFUSED_HINT =
   '不要写评测意图或对抗措辞，然后重试。';
 
 /**
+ * A baked embedded package failed its runtime test-case contract (record 54
+ * §6.4).
+ *
+ * promptfoo invokes a plugin action inside `Promise.allSettled`, so a thrown
+ * contract violation (missing `vars[injectVar]`, missing `assert`) does not
+ * reach the caller as an error: it is logged as a warning, the plugin yields 0
+ * cases, and `strict: true` reports the generic
+ * 「Test case generation failed for 1 plugin(s): … (0/2 tests)」. That names the
+ * package but not the defect — the operator learns there was a 0/2, not which
+ * case lacks `assert`.
+ *
+ * The loader's message IS in promptfoo's log stream (our injected loader writes
+ * `embedded plugin <id>: case #N …`), so the collector can lift it out and map
+ * it to this code. Distinct from NATIVE_ERR_PROMPTFOO_FAILED because the fix is
+ * the package author's (correct the case shape and re-upload), not "retry the
+ * run" — the same distinction NATIVE_ERR_MODEL_REFUSED draws for refusals.
+ */
+export const NATIVE_ERR_EMBEDDED_PLUGIN_INVALID = 'native_generation_embedded_plugin_invalid';
+
+/**
  * Whether a generation failure looks like a content-policy refusal.
  *
  * Two signals, because promptfoo surfaces the refusal in two different places:
@@ -1021,6 +1041,13 @@ export function createDiagnosticLogCollector(options?: { limit?: number }): {
    * nothing from these lines is ever emitted.
    */
   hasRefusalSignal: () => boolean;
+  /**
+   * The last embedded-plugin contract violation promptfoo logged, as
+   * `<id>: <reason>`, or '' when none was seen. Used only to pick
+   * NATIVE_ERR_EMBEDDED_PLUGIN_INVALID and build its bounded reason — the raw
+   * line never leaves this process unchanged (record 54 §6.4).
+   */
+  embeddedPluginError: () => string;
 } {
   const limit = Math.max(1, options?.limit ?? 80);
   const lines: string[] = [];
@@ -1037,6 +1064,19 @@ export function createDiagnosticLogCollector(options?: { limit?: number }): {
           line,
         ),
       ),
+    embeddedPluginError: (): string => {
+      // promptfoo's warn line is
+      // `[Language Processing] Error generating tests for <id>: Error: embedded plugin <id>: case #N needs …`.
+      // Match from our own marker, not the wrapper, so the reason survives.
+      let match: RegExpExecArray | null = null;
+      for (const line of lines) {
+        match = /embedded plugin ([\w.-]+): (.*)$/.exec(line) ?? match;
+      }
+      if (!match) return '';
+      const detail = redactEngineErrorBrief(`${match[1]}: ${match[2]}`).trim();
+      if (detail === '' || detail.startsWith('[redacted')) return '';
+      return detail.length > 240 ? `${detail.slice(0, 237)}...` : detail;
+    },
     excerpt: (): string => {
       // Only generation-stage diagnostics: these are the lines that name the cause.
       // `reject` is in the list because that is how a provider's content policy
@@ -1516,6 +1556,16 @@ export async function executeNativeRedteamRun(
   } catch (err) {
     if (record.controller.signal.aborted) {
       throw new EngineRunError('canceled', 'native generation canceled');
+    }
+    // A baked package that broke its case contract is exact and actionable, so
+    // it is checked before the refusal heuristic: "reword the purpose" would be
+    // actively wrong advice for a malformed `assert` (record 54 §6.4).
+    const embeddedIssue = diagnostics.embeddedPluginError();
+    if (embeddedIssue !== '') {
+      throw new EngineRunError(
+        NATIVE_ERR_EMBEDDED_PLUGIN_INVALID,
+        `内嵌插件用例契约不满足：${embeddedIssue}`,
+      );
     }
     // A model refusal is the caller's to fix (reword the purpose); everything
     // else stays "the library failed". Checked before the generic wrap so the

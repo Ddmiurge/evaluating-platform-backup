@@ -45,8 +45,39 @@ func TestClassifyMaclawErrorUnknownFallsBackToUnavailable(t *testing.T) {
 	}
 }
 
-// The "capability is off in this deployment" answer must match the engine's.
-//
+// P28 (record 54 §6.2): an embedded package that fails the gates used to fall
+// through to the generic 503 「maclaw runtime is unavailable」 even though the
+// state row recorded `rejected` with an actionable reason. The package is the
+// submitter's input; only the probe codes are genuine runtime unavailability.
+func TestClassifyMaclawErrorEmbeddedValidation(t *testing.T) {
+	status, code, message := classifyMaclawError(&maclaw.EmbeddedPluginValidationError{
+		Code:    "embedded_entry_contract",
+		Message: "manifest.entry 必须默认导出 { action } 函数。",
+	})
+	if status != http.StatusBadRequest || code != "embedded_entry_contract" {
+		t.Errorf("status/code = %d/%q, want 400/embedded_entry_contract", status, code)
+	}
+	if message == "" {
+		t.Error("message is empty — the validator's actionable reason must survive")
+	}
+	// Wrapped (the store adds context) must classify the same way.
+	wrapped := fmt.Errorf("save resource: %w", &maclaw.EmbeddedPluginValidationError{
+		Code: "embedded_tests_failed", Message: "包内测试未通过。",
+	})
+	if status, _, _ := classifyMaclawError(wrapped); status != http.StatusBadRequest {
+		t.Errorf("wrapped status = %d, want 400", status)
+	}
+
+	// Runtime unavailability keeps its 503 — telling an expert to fix a package
+	// whose tests never ran would be the opposite mistake.
+	for _, code := range []string{"embedded_probe_unavailable", "embedded_probe_unreachable"} {
+		status, got, _ := classifyMaclawError(&maclaw.EmbeddedPluginValidationError{Code: code, Message: "引擎不可达"})
+		if status != http.StatusServiceUnavailable || got != code {
+			t.Errorf("%s: status/code = %d/%q, want 503/%s", code, status, got, code)
+		}
+	}
+}
+
 // Record 42 §4.3: the engine returned 409 `code_strategy_disabled` while the BFF
 // returned 400 for the same code. Same fact, two statuses — a submitter cannot
 // tell which one to act on.

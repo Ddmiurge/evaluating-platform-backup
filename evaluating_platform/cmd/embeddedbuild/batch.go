@@ -218,6 +218,27 @@ func stagingIndexPath(root string) string {
 	return filepath.Join(root, "promptfoo_engine", "embedded-plugins", "index.json")
 }
 
+// validatePlatformRoot rejects a -root that is not the platform directory
+// BEFORE any DB work or staging write.
+//
+// Record 54 §6.3: scripts/embedded-build.sh used to pass the repository root.
+// The run staged <repo>/promptfoo_engine/embedded-plugins/ (a stray tree) and
+// only then failed writing <repo>/internal/maclaw/testdata/embedded_plugins.json
+// — leaving debris and a confusing ENOENT. Both halves of the pipeline read
+// from the platform directory, so the shape is checkable in one place.
+func validatePlatformRoot(root string) error {
+	for _, rel := range []string{
+		filepath.Join("internal", "maclaw", "testdata"),
+		"promptfoo_engine",
+	} {
+		info, err := os.Stat(filepath.Join(root, rel))
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("-root %q is not the platform directory: %s/ is missing (pass evaluating_platform/, not the repository root)", root, rel)
+		}
+	}
+	return nil
+}
+
 // runStage: read the full state table → plan the union → decrypt every staged
 // row (fail-closed: an unreadable resource/key aborts the whole batch per D-6;
 // the escape hatch for a broken baked package is admin MarkRemove) → rewrite

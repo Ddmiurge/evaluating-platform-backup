@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { ENGINE_RUN_ERROR_MODEL_REFUSED, engineRunFailureDisplay, explainEngineRunErrorCode } from './engineEval'
+import {
+  ENGINE_RUN_ERROR_EMBEDDED_PLUGIN_INVALID,
+  ENGINE_RUN_ERROR_MODEL_REFUSED,
+  engineRunFailureDisplay,
+  explainEngineRunErrorCode,
+} from './engineEval'
 
 /**
  * The refusal code is the only generation failure the caller can act on, so it is
@@ -12,6 +17,16 @@ describe('explainEngineRunErrorCode', () => {
     expect(hint).toContain('被测系统用途')
     expect(hint).toContain('中性')
     expect(hint).toContain('重试')
+  })
+
+  it('explains an embedded package contract failure as the author\'s fix', () => {
+    // Record 54 §6.4: "0/2 tests" used to be indistinguishable from a runtime
+    // failure. The hint must say the package is wrong AND that retrying the run
+    // changes nothing.
+    const hint = explainEngineRunErrorCode(ENGINE_RUN_ERROR_EMBEDDED_PLUGIN_INVALID)
+    expect(hint).toContain('assert')
+    expect(hint).toContain('重新上传')
+    expect(hint).toContain('重试本次运行不会改变结果')
   })
 
   it('says nothing it does not know', () => {
