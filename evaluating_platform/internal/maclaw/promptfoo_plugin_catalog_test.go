@@ -3,7 +3,13 @@ package maclaw
 // promptfoo_plugin_catalog_test.go — L1 catalog expansion coverage:
 // plugin count, category metadata, and search hits for the new entries.
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+)
 
 func TestPromptfooPluginCatalogL1Expansion(t *testing.T) {
 	ids := PromptfooEngineSupportedPluginIDs()
@@ -259,6 +265,109 @@ func TestPromptfooEngineCatalogBuilder(t *testing.T) {
 	}
 	if got := PromptfooCategoryLabel("unmapped-category"); got != "unmapped-category" {
 		t.Fatalf("unmapped label = %q, want the key itself", got)
+	}
+}
+
+// TestEmbeddedPluginCapabilityCardsRespectState is the discovery half of P28:
+// before 2026-11-12 the agent-facing tools only searched the built-in
+// catalogue, so an expert-added plugin was selectable only if the user typed
+// its exact id. The cards keep the built-in ref shape (execution is identical
+// after baking) and carry plugin_source=embedded for provenance — but only the
+// states the submit gate would accept: approved for everyone, testing only for
+// the tester whitelist (design §10 criterion 6: 普通企业账号完全不可见).
+func TestEmbeddedPluginCapabilityCardsRespectState(t *testing.T) {
+	origCatalog := embeddedPluginCatalog
+	origVersion := embeddedPluginCatalogVersion
+	defer func() {
+		embeddedPluginCatalog = origCatalog
+		embeddedPluginCatalogVersion = origVersion
+	}()
+	embeddedPluginCatalog = []EmbeddedCatalogEntry{
+		{ID: "semantic-cache-collision", Name: "语义缓存碰撞检测", Category: "injection", Severity: "high", Fanout: 1},
+	}
+
+	makeStore := func(state string, tester bool) *gateEmbeddedStore {
+		store := &gateEmbeddedStore{fakeEmbeddedStore: newFakeEmbeddedStore(), tester: tester}
+		store.rows["semantic-cache-collision"] = &EmbeddedPluginStateRow{
+			PackageID: "semantic-cache-collision", State: state,
+		}
+		return store
+	}
+	user := uuid.New()
+
+	cards := EmbeddedPluginCapabilityCards(context.Background(), NewEmbeddedPluginLifecycle(makeStore(EmbeddedStateApproved, false)), user)
+	if len(cards) != 1 {
+		t.Fatalf("approved package produced %d cards, want 1", len(cards))
+	}
+	card := cards[0]
+	if card.SourceRef != "promptfoo_plugin:semantic-cache-collision" {
+		t.Fatalf("source_ref = %q — embedded ids execute exactly like built-ins", card.SourceRef)
+	}
+	if card.SourceType != CapabilitySourcePromptfooPlugin {
+		t.Fatalf("source_type = %q", card.SourceType)
+	}
+	if card.SafeMetadata["plugin_source"] != "embedded" {
+		t.Fatalf("plugin_source = %q, want embedded", card.SafeMetadata["plugin_source"])
+	}
+	if card.SafeMetadata["judge_source"] != "category:injection" {
+		t.Fatalf("judge_source = %q, want the category tier", card.SafeMetadata["judge_source"])
+	}
+	if !strings.Contains(strings.Join(card.Tags, " "), "embedded_plugin") {
+		t.Fatalf("tags = %v, want embedded_plugin", card.Tags)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		state  string
+		tester bool
+	}{
+		{"testing is tester-only", EmbeddedStateTesting, false},
+		{"disabled is invisible", EmbeddedStateDisabled, true},
+		{"pending is invisible", EmbeddedStatePendingInitialReview, true},
+		{"testing is visible to a tester", EmbeddedStateTesting, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EmbeddedPluginCapabilityCards(context.Background(), NewEmbeddedPluginLifecycle(makeStore(tc.state, tc.tester)), user)
+			want := 0
+			if tc.state == EmbeddedStateTesting && tc.tester {
+				want = 1
+			}
+			if len(got) != want {
+				t.Fatalf("state=%s tester=%v produced %d cards, want %d", tc.state, tc.tester, len(got), want)
+			}
+		})
+	}
+
+	// Built-in cards must NOT carry the marker: its absence is what makes the
+	// embedded flag decisive rather than decorative.
+	for _, card := range SearchPromptfooPluginCatalog("harmful", 10) {
+		if card.SourceRef == "promptfoo_plugin:harmful" && card.SafeMetadata["plugin_source"] != "" {
+			t.Fatalf("built-in card carries plugin_source=%q", card.SafeMetadata["plugin_source"])
+		}
+	}
+}
+
+// A stale bake is not offered to the planner: its ids were validated against
+// the previous promptfoo base, and the run gate would refuse the plan. Hiding
+// them in discovery is the same fact the wizard and selection gate enforce.
+func TestEmbeddedPluginCapabilityCardsHideStaleCatalog(t *testing.T) {
+	origCatalog := embeddedPluginCatalog
+	origVersion := embeddedPluginCatalogVersion
+	defer func() {
+		embeddedPluginCatalog = origCatalog
+		embeddedPluginCatalogVersion = origVersion
+	}()
+	embeddedPluginCatalog = []EmbeddedCatalogEntry{
+		{ID: "semantic-cache-collision", Name: "语义缓存碰撞检测", Category: "injection", Severity: "high", Fanout: 1},
+	}
+	embeddedPluginCatalogVersion = "0.0.0-stale"
+
+	store := &gateEmbeddedStore{fakeEmbeddedStore: newFakeEmbeddedStore()}
+	store.rows["semantic-cache-collision"] = &EmbeddedPluginStateRow{
+		PackageID: "semantic-cache-collision", State: EmbeddedStateApproved,
+	}
+	if cards := EmbeddedPluginCapabilityCards(context.Background(), NewEmbeddedPluginLifecycle(store), uuid.New()); len(cards) != 0 {
+		t.Fatalf("a stale baked catalog offered %d cards, want none", len(cards))
 	}
 }
 

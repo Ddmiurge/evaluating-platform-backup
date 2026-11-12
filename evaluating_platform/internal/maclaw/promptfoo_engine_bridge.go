@@ -192,8 +192,13 @@ func (b *RedteamToolBridge) promptfooEngineReady() error {
 
 // SearchRedteamPluginCatalog searches the built-in promptfoo plugin/strategy
 // catalog. Pure static data — safe metadata only.
-func (b *RedteamToolBridge) SearchRedteamPluginCatalog(in SearchRedteamPluginCatalogInput) (*SearchRedteamPluginCatalogOutput, error) {
-	cards := SearchPromptfooPluginCatalog(in.Query, in.Limit)
+func (b *RedteamToolBridge) SearchRedteamPluginCatalog(ctx context.Context, userID uuid.UUID, in SearchRedteamPluginCatalogInput) (*SearchRedteamPluginCatalogOutput, error) {
+	// Built-ins plus the embedded packages THIS caller may actually select. The
+	// limit applies to the combined set: appending after the search would let
+	// embedded cards push the result past the caller's requested window.
+	all := PromptfooPluginCatalogCards()
+	all = append(all, EmbeddedPluginCapabilityCards(ctx, b.embeddedLifecycle, userID)...)
+	cards := searchPromptfooCatalogCards(all, in.Query, in.Limit)
 	return &SearchRedteamPluginCatalogOutput{
 		Cards:       cards,
 		Total:       len(cards),

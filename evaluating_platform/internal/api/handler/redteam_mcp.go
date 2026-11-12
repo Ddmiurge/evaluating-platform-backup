@@ -106,7 +106,7 @@ func (h *RedteamMCPHandler) callTool(c *gin.Context, name string, raw json.RawMe
 		if err := decodeToolArgs(raw, &in); err != nil {
 			return nil, err
 		}
-		return h.bridge.SearchRedteamCapabilities(c.Request.Context(), in)
+		return h.bridge.SearchRedteamCapabilities(c.Request.Context(), redteamMCPPlatformUserID(c), in)
 	case "search_redteam_plugin_catalog":
 		if err := requireEnterpriseRedteamMCPRole(c); err != nil {
 			return nil, err
@@ -115,7 +115,7 @@ func (h *RedteamMCPHandler) callTool(c *gin.Context, name string, raw json.RawMe
 		if err := decodeToolArgs(raw, &in); err != nil {
 			return nil, err
 		}
-		return h.bridge.SearchRedteamPluginCatalog(in)
+		return h.bridge.SearchRedteamPluginCatalog(c.Request.Context(), redteamMCPPlatformUserID(c), in)
 	case "run_promptfoo_redteam_evaluation":
 		var in maclaw.PromptfooEngineRunInput
 		if err := decodeToolArgs(raw, &in); err != nil {
@@ -476,7 +476,7 @@ func toolExampleIDs(ids []string) string {
 
 func redteamMCPToolDefinitions() []gin.H {
 	return []gin.H{
-		toolDef("search_platform_redteam_capabilities", "Search safe platform security-evaluation capabilities. Results include expert data resources (source_refs sample:/template:/composed_attack:), expert MCP summaries, AND the built-in promptfoo engine cards for both axes: promptfoo_plugin:<id> generates attack cases, promptfoo_strategy:<id> wraps them. Use MaClaw native manage_skill for Skills. Relay selected cards into plan_confirm via selected_capability_refs using their source_ref unchanged.", []string{"query"}, gin.H{
+		toolDef("search_platform_redteam_capabilities", "Search safe platform security-evaluation capabilities. Results include expert data resources (source_refs sample:/template:/composed_attack:), expert MCP summaries, AND the built-in promptfoo engine cards for both axes: promptfoo_plugin:<id> generates attack cases, promptfoo_strategy:<id> wraps them. Cards marked safe_metadata.plugin_source=embedded are expert-added plugins (same promptfoo_plugin:<id> ref, same execution). Use MaClaw native manage_skill for Skills. Relay selected cards into plan_confirm via selected_capability_refs using their source_ref unchanged.", []string{"query"}, gin.H{
 			"query":        stringSchema("Natural-language search query, for example classical Chinese jailbreak."),
 			"risk_types":   stringArraySchema("Optional risk filters such as jailbreak or prompt_injection."),
 			"target_types": stringArraySchema("Optional target filters such as llm."),
@@ -490,7 +490,7 @@ func redteamMCPToolDefinitions() []gin.H {
 			"languages":    stringArraySchema("Optional language filters such as zh or classical_chinese."),
 			"limit":        integerSchema("Maximum results. Default 5, maximum 8."),
 		}),
-		toolDef("search_redteam_plugin_catalog", "Search the built-in promptfoo-engine catalog. Returns safe cards for BOTH axes: plugin cards (source_ref promptfoo_plugin:<id>, for example "+toolExampleIDs(redteamToolExamplePluginIDs)+") generate the attack cases, and strategy cards (source_ref promptfoo_strategy:<id>, for example "+toolExampleIDs(redteamToolExampleStrategyIDs)+") wrap them. When the user names a technique or wrapper, search for it here and select the matching strategy card rather than planning without one: a plan that omits a strategy the user asked for runs a different evaluation than the one approved. Carry every selected card into plan_confirm as a selected_capability_refs entry holding its source_ref unchanged, and into run_promptfoo_redteam_evaluation as a plugin id in plugins or a strategy id in strategies.", []string{"query"}, gin.H{
+		toolDef("search_redteam_plugin_catalog", "Search the promptfoo-engine catalog (built-in plugins/strategies plus expert-added embedded packages baked into the current engine image). Returns safe cards for BOTH axes: plugin cards (source_ref promptfoo_plugin:<id>, for example "+toolExampleIDs(redteamToolExamplePluginIDs)+") generate the attack cases, and strategy cards (source_ref promptfoo_strategy:<id>, for example "+toolExampleIDs(redteamToolExampleStrategyIDs)+") wrap them. When the user names a technique or wrapper, search for it here and select the matching strategy card rather than planning without one: a plan that omits a strategy the user asked for runs a different evaluation than the one approved. Carry every selected card into plan_confirm as a selected_capability_refs entry holding its source_ref unchanged, and into run_promptfoo_redteam_evaluation as a plugin id in plugins or a strategy id in strategies. A card whose safe_metadata.plugin_source is embedded is an expert-added plugin: it uses the same promptfoo_plugin:<id> ref and runs the same way, and its absence means built-in.", []string{"query"}, gin.H{
 			"query": stringSchema("Natural-language search query such as harmful content, privacy leak, prompt injection, jailbreak, or promptfoo."),
 			"limit": integerSchema("Maximum results. Default 5, maximum 8."),
 		}),

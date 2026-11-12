@@ -15,9 +15,13 @@ package maclaw
 // so catalog grouping and result grouping stay consistent.
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -588,8 +592,15 @@ var promptfooStrategyCatalog = []promptfooStrategyCatalogEntry{
 	s("singleTurnComposite", "单轮组合攻击", "在单轮内组合多种越狱手法。"),
 }
 
-// PromptfooPluginCatalogCards returns capability cards for every built-in
+// PromptfooPluginCatalogCards returns capability cards for every BUILT-IN
 // engine plugin and strategy entry.
+//
+// Embedded packages are NOT appended here: this function is also consumed
+// without user context (the generic capability catalogue), and a `testing`
+// package must be completely invisible to non-whitelist accounts (design §10
+// criterion 6). The agent-facing tools add embedded cards through
+// EmbeddedPluginCapabilityCards, which resolves each id against the caller's
+// state and the tester whitelist.
 func PromptfooPluginCatalogCards() []CapabilityCard {
 	strategies := allPromptfooStrategyEntries()
 	cards := make([]CapabilityCard, 0, len(promptfooPluginCatalog)+len(strategies))
@@ -600,6 +611,78 @@ func PromptfooPluginCatalogCards() []CapabilityCard {
 		cards = append(cards, promptfooStrategyCard(entry))
 	}
 	return cards
+}
+
+// EmbeddedPluginCapabilityCards returns the embedded-plugin cards THIS caller
+// may select, for the agent-facing discovery tools.
+//
+// The state decision is the same one the submit gate makes
+// (ResolveEmbeddedSelection): approved → visible to everyone; testing → only
+// the tester whitelist; disabled / not-yet-approved / removed → invisible.
+// A stale bake hides the whole set, matching the wizard endpoint and the run
+// gate. Discovery must not offer a card the run would then refuse, and it must
+// not leak a testing package to a non-whitelist account (design §10 criterion
+// 6: 普通企业账号完全不可见).
+func EmbeddedPluginCapabilityCards(ctx context.Context, lifecycle *EmbeddedPluginLifecycle, userID uuid.UUID) []CapabilityCard {
+	if lifecycle == nil || userID == uuid.Nil || EmbeddedCatalogBaseMismatch() {
+		return nil
+	}
+	cards := []CapabilityCard{}
+	for _, entry := range EmbeddedPluginCatalog() {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		decision, isEmbedded, err := lifecycle.ResolveEmbeddedSelection(ctx, userID, entry.ID)
+		if err != nil || !isEmbedded || !decision.Allowed {
+			continue
+		}
+		cards = append(cards, embeddedPluginCard(entry))
+	}
+	return cards
+}
+
+// embeddedPluginCard presents one baked expert package as a first-class plugin
+// card.
+//
+// Provenance is metadata, not a different execution path: the id is a normal
+// plugin id to promptfoo, so SourceRef must stay `promptfoo_plugin:<id>` and
+// SourceType must stay the built-in plugin type. `plugin_source=embedded` and
+// the `embedded_plugin` tag are what let an agent (and a human reading the
+// card) tell that this capability came from an expert upload rather than the
+// platform's own catalogue.
+func embeddedPluginCard(entry EmbeddedCatalogEntry) CapabilityCard {
+	categoryLabel := PromptfooCategoryLabel(entry.Category)
+	if strings.TrimSpace(categoryLabel) == "" {
+		categoryLabel = entry.Category
+	}
+	_, judgeSource, _ := PromptfooCategoryJudgeRubric(entry.Category)
+	card := CapabilityCard{
+		SourceType:     CapabilitySourcePromptfooPlugin,
+		SourceRef:      "promptfoo_plugin:" + entry.ID,
+		Name:           entry.Name,
+		Summary:        fmt.Sprintf("专家新增的内嵌插件「%s」（%s，默认严重度 %s）；已烘焙进当前评测引擎镜像，选中后与内置插件同样执行。", entry.Name, categoryLabel, entry.Severity),
+		RiskTypes:      []string{categoryLabel},
+		TargetTypes:    []string{"llm"},
+		Languages:      []string{"zh"},
+		UseWhen:        []string{"需要该专家插件覆盖的评测维度，且该包已通过审批、烘焙进当前镜像时使用"},
+		InputsRequired: []string{"purpose", "num_tests"},
+		Outputs:        []string{"engine_run", "safe_run_result"},
+		Tags:           []string{"promptfoo", "engine_plugin", "embedded_plugin", entry.ID},
+		Enabled:        true,
+		Status:         "published",
+		SafeMetadata: map[string]string{
+			"engine":           "promptfoo",
+			"plugin_id":        entry.ID,
+			"category":         entry.Category,
+			"default_severity": entry.Severity,
+			// The marker the agent uses to answer "is this one of the built-ins or
+			// something an expert added?". Kept on every card so its ABSENCE also
+			// means something (built-in).
+			"plugin_source": "embedded",
+			"judge_source":  judgeSource,
+		},
+	}
+	return card
 }
 
 func promptfooPluginCard(entry promptfooPluginCatalogEntry) CapabilityCard {
@@ -710,6 +793,13 @@ func promptfooStrategyCard(entry promptfooStrategyCatalogEntry) CapabilityCard {
 // SearchPromptfooPluginCatalog searches the static plugin/strategy catalog by
 // free-form query (Chinese or plugin ids). Returns matched cards, best first.
 func SearchPromptfooPluginCatalog(query string, limit int) []CapabilityCard {
+	return searchPromptfooCatalogCards(PromptfooPluginCatalogCards(), query, limit)
+}
+
+// searchPromptfooCatalogCards ranks an explicit card set. The bridge calls it
+// with built-ins + THIS caller's embedded cards, so the limit applies to the
+// combined result rather than letting embedded cards overflow it.
+func searchPromptfooCatalogCards(cards []CapabilityCard, query string, limit int) []CapabilityCard {
 	if limit <= 0 {
 		limit = DefaultCapabilityCatalogLimit
 	}
@@ -718,7 +808,7 @@ func SearchPromptfooPluginCatalog(query string, limit int) []CapabilityCard {
 	}
 	q := strings.ToLower(strings.TrimSpace(query))
 	matched := make([]CapabilityCard, 0)
-	for _, card := range PromptfooPluginCatalogCards() {
+	for _, card := range cards {
 		if q == "" || promptfooCatalogCardMatches(card, q) {
 			matched = append(matched, card)
 		}

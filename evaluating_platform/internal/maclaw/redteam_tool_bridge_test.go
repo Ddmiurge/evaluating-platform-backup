@@ -197,7 +197,7 @@ func TestRedteamToolBridgeSearchesPlatformResourceCapabilityCardsWithoutSkills(t
 	}}}
 	bridge := NewRedteamToolBridge(searcher, nil, nil)
 
-	cards, err := bridge.SearchRedteamCapabilities(context.Background(), SearchRedteamCapabilitiesInput{
+	cards, err := bridge.SearchRedteamCapabilities(context.Background(), uuid.Nil, SearchRedteamCapabilitiesInput{
 		Query:     "classical chinese jailbreak",
 		RiskTypes: []string{"jailbreak"},
 		Limit:     3,

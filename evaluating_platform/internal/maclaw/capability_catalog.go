@@ -48,6 +48,11 @@ type CapabilityCatalogQuery struct {
 	TargetTypes []string
 	Languages   []string
 	Limit       int
+	// ExtraCards are caller-filtered cards merged into the result before scoring.
+	// Used for embedded plugins: only the caller-aware layer can decide whether a
+	// `testing` package is visible to this account (tester whitelist), so the
+	// service must not derive them itself.
+	ExtraCards []CapabilityCard
 }
 
 type RuntimeCapabilityContext struct {
@@ -149,6 +154,9 @@ func (s *CapabilityCatalogService) Search(ctx context.Context, q CapabilityCatal
 	for _, card := range PromptfooPluginCatalogCards() {
 		cards = append(cards, card)
 	}
+	// Caller-filtered additions (embedded plugins). Appended here so they are
+	// scored and truncated with everything else.
+	cards = append(cards, q.ExtraCards...)
 	scored := make([]scoredCapabilityCard, 0, len(cards))
 	for _, card := range cards {
 		if !card.Enabled {

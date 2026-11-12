@@ -367,7 +367,7 @@ type skillPayloadDatasetItem struct {
 	Metadata         map[string]string
 }
 
-func (b *RedteamToolBridge) SearchRedteamCapabilities(ctx context.Context, in SearchRedteamCapabilitiesInput) ([]CapabilityCard, error) {
+func (b *RedteamToolBridge) SearchRedteamCapabilities(ctx context.Context, userID uuid.UUID, in SearchRedteamCapabilitiesInput) ([]CapabilityCard, error) {
 	if b == nil || b.catalog == nil {
 		return nil, ErrNotConfigured
 	}
@@ -377,6 +377,9 @@ func (b *RedteamToolBridge) SearchRedteamCapabilities(ctx context.Context, in Se
 		TargetTypes: append([]string(nil), in.TargetTypes...),
 		Languages:   append([]string(nil), in.Languages...),
 		Limit:       in.Limit,
+		// Embedded packages are state-filtered per caller (testing is tester-only);
+		// the service only merges and scores them.
+		ExtraCards: EmbeddedPluginCapabilityCards(ctx, b.embeddedLifecycle, userID),
 	})
 	if err != nil {
 		return nil, err

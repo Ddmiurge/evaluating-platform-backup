@@ -330,9 +330,37 @@ func TestGetPromptfooEvaluationResult(t *testing.T) {
 	_ = runner
 }
 
+// The agent-facing search tool must actually see an approved embedded package
+// (the card builder alone is not enough — the wiring is what was missing).
+func TestSearchRedteamPluginCatalogIncludesApprovedEmbedded(t *testing.T) {
+	origCatalog := embeddedPluginCatalog
+	origVersion := embeddedPluginCatalogVersion
+	defer func() {
+		embeddedPluginCatalog = origCatalog
+		embeddedPluginCatalogVersion = origVersion
+	}()
+	embeddedPluginCatalog = []EmbeddedCatalogEntry{
+		{ID: "semantic-cache-collision", Name: "语义缓存碰撞检测", Category: "injection", Severity: "high", Fanout: 1},
+	}
+	store := &gateEmbeddedStore{fakeEmbeddedStore: newFakeEmbeddedStore()}
+	store.rows["semantic-cache-collision"] = &EmbeddedPluginStateRow{
+		PackageID: "semantic-cache-collision", State: EmbeddedStateApproved,
+	}
+	bridge := NewRedteamToolBridge(nil, nil, nil)
+	bridge.SetEmbeddedLifecycle(NewEmbeddedPluginLifecycle(store))
+
+	out, err := bridge.SearchRedteamPluginCatalog(context.Background(), uuid.New(), SearchRedteamPluginCatalogInput{Query: "语义缓存", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(out.Cards) != 1 || out.Cards[0].SafeMetadata["plugin_source"] != "embedded" {
+		t.Fatalf("cards = %+v, want the approved embedded card with plugin_source=embedded", out.Cards)
+	}
+}
+
 func TestPromptfooEngineNotConfigured(t *testing.T) {
 	bridge := NewRedteamToolBridge(nil, nil, nil)
-	if _, err := bridge.SearchRedteamPluginCatalog(SearchRedteamPluginCatalogInput{Query: "x"}); err != nil {
+	if _, err := bridge.SearchRedteamPluginCatalog(context.Background(), uuid.Nil, SearchRedteamPluginCatalogInput{Query: "x"}); err != nil {
 		t.Fatalf("catalog search should not require engine wiring: %v", err)
 	}
 	if _, err := bridge.GetPromptfooEvaluationResult(context.Background(), uuid.New(), "er-1"); err == nil {
