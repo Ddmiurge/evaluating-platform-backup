@@ -423,3 +423,27 @@ expert-b@…                        ↑停用=提交闸即时409 / 移除=下次
 ```
 
 要点：顶栏四计数=状态机实时投影（批了没人建一眼可见）；行操作严格随状态；测试白名单管理在本页；源码抽屉是 R-5 窄例外的落点。
+
+## 13. 卷挂载演进：插件批次免镜像重建（2026-11-16，Step-0 本地全绿，待上机）
+
+原形态：暂存树靠 `Dockerfile` 的 `COPY` 烤进镜像、wizard 目录靠 backend `go:embed` 编译进二进制——每个插件批次都要重建双镜像（53 号公网依赖的脆弱性正来自这里）。卷挂载把两处都改成运行时文件，**放行门（三道门/标记制/状态机）一寸不动，动的是门后面的运费**：
+
+| 侧 | 原来 | 现在 |
+|---|---|---|
+| 引擎 | 镜像内 `COPY /app/embedded-plugins` | bind mount `./promptfoo_engine/embedded-plugins:ro`——`PROMPTFOO_EMBEDDED_PLUGINS_DIR` 本就指向该路径，接线零改动；卷内容遮蔽镜像内 COPY 树 |
+| backend | `go:embed testdata/embedded_plugins.json` | 挂载 `./internal/maclaw/testdata` + `EMBEDDED_CATALOG_FILE`；**未设置 = 回落 embed（逐字节等于旧行为）**；设置后读到缺失/畸形 → init panic，拒绝带未知目录启动（404/503 之外的第三种失败：拒绝启动） |
+
+**加载时机两侧同构**——Step-0 四探针实测（`promptfoo_engine/tests/embeddedPluginsVolume.step0.test.ts`，对补丁注入的原始字节切片执行，非重实现）：
+
+1. **boot 读一次、进程内不重读**：运行中改 `index.json` 已注册表不变，新进程才读到 → 更新必须重启（「写卷 + force-recreate」的语义依据）；
+2. **包体惰性 import**：注册时包体顶层代码不执行，被选中才 import → 卷里躺着的未选中文件不跑（「引擎 `:ro` + 唯一写入方 = 构建工具」论证的安全前提）；
+3. **默认路径**：无环境变量回落 `cwd/embedded-plugins`；
+4. **fail-closed 保持**：目录缺失 no-op、畸形 `index.json` 加载期抛错（健康检查红，坏烘焙不上线）。
+
+backend 同样在 init 读一次——**两侧都是「写文件 + force-recreate」生效，无一需要重建镜像**。
+
+**批次流程**：`scripts/embedded-build.sh --skip-build`——仅限引擎/后端**代码未变**的纯插件批次；代码变更仍走默认 build（recreate 只会把旧镜像再部署一遍）。stage 动作不变（同一次同时写暂存树与 testdata，一个事实一个源）。
+
+**卷成为目录唯一事实源**：挂载后镜像内 COPY 树只剩非 compose 场景的作用；56 §7「重建前必须先 stage，否则镜像丢 catalog」的失败模式在挂载后消失——catalog 恒来自宿主侧文件，重建不重建都不影响它。
+
+**上机判据（待 ai02）**：① `--skip-build` 跑一个纯插件批次：全程无 `docker build`，recreate 后新 id 在向导与 MCP 搜索可见、真跑出报告；② 卷内放畸形 `index.json` → 引擎健康检查转红、`-finalize -fail` 不落地；③ backend 摘除 `EMBEDDED_CATALOG_FILE` → 行为回 embed（回归等价）。Docker 卷挂载本身（:ro、容器内路径）本机无 Docker 不可测，与三判据一起归上机记录。

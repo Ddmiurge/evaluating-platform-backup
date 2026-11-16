@@ -11,13 +11,22 @@
 #             catalog) → recreate both → health check → -finalize -ok
 #   any failure between stage and the health check → -finalize -fail -reason=…
 #
+# P28 卷挂载 (--skip-build): with the compose volume mounts (engine reads
+# promptfoo_engine/embedded-plugins, backend reads internal/maclaw/testdata),
+# a PLUGIN-ONLY batch needs no image rebuild — stage writes the mounts' source
+# and force-recreate is enough (Step-0: both loaders read at boot only).
+# Use --skip-build ONLY when engine/backend CODE is unchanged; a code change
+# still needs the default build (recreating with an old image redeploys old
+# code). Skipping the build when code changed ships no fix, which is why the
+# default stays build-everything.
+#
 # NO_QUEUE from -stage means there was no batch (no packages and no removals):
 # deploy and finalize are both skipped — index.json exists ⟺ a batch awaits
 # finalize, so calling -finalize after NO_QUEUE would hard-fail by design.
 #
 # Usage:
 #   ./scripts/embedded-build.sh [--config configs/config.yaml] [--root <platform-dir>]
-#                               [--skip-backend] [--timeout 900] [--min-free-gb 10]
+#                               [--skip-backend] [--skip-build] [--timeout 900] [--min-free-gb 10]
 #
 # --root is the PLATFORM directory (the one containing internal/ and
 # promptfoo_engine/) — the same thing `go run ./cmd/embeddedbuild -root` takes.
@@ -37,6 +46,7 @@ ROOT="$PLATFORM_DIR"
 CONFIG="configs/config.yaml"
 TIMEOUT=900
 SKIP_BACKEND=0
+SKIP_BUILD=0
 MIN_FREE_GB=10
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --min-free-gb) MIN_FREE_GB="$2"; shift 2 ;;
     --skip-backend) SKIP_BACKEND=1; shift ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "embedded-build: unknown argument: $1" >&2; exit 64 ;;
   esac
@@ -110,10 +121,19 @@ trap 'code=$?; if [[ $code -ne 0 && -z "${FINALIZED:-}" ]]; then mark_failed "em
 # compile time. Rebuilding only one side shows a catalog whose ids the engine
 # cannot run (or vice versa) — the "two views of one fact" failure this batch
 # exists to prevent.
-log "build: promptfoo-engine and backend"
-if ! docker compose build promptfoo-engine || { [[ $SKIP_BACKEND -eq 0 ]] && ! docker compose build backend; }; then
-  mark_failed "镜像构建失败"
-  exit 2
+#
+# P28 卷挂载 flips this for plugin-only batches: both files are bind-mounted
+# (engine tree, backend testdata), so --skip-build skips the build and the
+# recreate picks the staged content up from the mounts. NOT for code changes —
+# recreate redeploys the same image.
+if [[ $SKIP_BUILD -eq 1 ]]; then
+  log "build: skipped (--skip-build — catalog/tree come from the compose mounts; only valid when engine/backend CODE is unchanged)"
+else
+  log "build: promptfoo-engine and backend"
+  if ! docker compose build promptfoo-engine || { [[ $SKIP_BACKEND -eq 0 ]] && ! docker compose build backend; }; then
+    mark_failed "镜像构建失败"
+    exit 2
+  fi
 fi
 
 # ── 3. deploy ───────────────────────────────────────────────────────────────

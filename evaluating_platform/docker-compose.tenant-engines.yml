@@ -14,7 +14,10 @@
 #     就是这个租户「Generated 0 tests」）；
 #   - 每实例独立 named volume（数据面隔离是 G-1 的本体）；
 #   - MACLAW_STRATEGY_CODE_PACKAGES 只开在专属实例上，共享实例保持 0；
-#   - 镜像与主引擎同版本，别拿旧镜像起新实例。
+#   - 镜像与主引擎同版本，别拿旧镜像起新实例；
+#   - P28 卷挂载：embedded-plugins 暂存树必须**同源挂载**（与主 compose 相同的
+#     ./promptfoo_engine/embedded-plugins）——所有引擎实例的目录必须一致，漏挂的
+#     实例会退回镜像内 COPY 的旧树（一个事实两个视图，56 §7 同族）。
 #
 # services:
 #   promptfoo-engine-acme:
@@ -45,6 +48,8 @@
 #       PROMPTFOO_ENGINE_DATA_ROOT: /data/runs
 #     volumes:
 #       - promptfoo_engine_data_acme:/data/runs
+#       # P28：与共享引擎同源的插件暂存树（同主 compose 的挂载；:ro）。
+#       - ./promptfoo_engine/embedded-plugins:/app/embedded-plugins:ro
 #
 # volumes:
 #   promptfoo_engine_data_acme:

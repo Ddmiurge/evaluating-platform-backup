@@ -129,6 +129,10 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("maclaw.engine_bearer_token", "PROMPTFOO_ENGINE_BEARER_TOKEN")
 	_ = v.BindEnv("maclaw.engine_timeout_seconds", "PROMPTFOO_ENGINE_TIMEOUT_SECONDS")
 	_ = v.BindEnv("maclaw.tenant_engines_enabled", "MACLAW_TENANT_ENGINES")
+	// P28 卷挂载：wizard 目录改运行时读文件（未设置 = 回落编译期 embed）。绑定本身
+	// 没有 cfg 消费点（读取在 maclaw 包 init，早于 config.Load），它的作用是让
+	// TestAllBindEnvKeysAppearInCompose 强制 compose 透传——46/47 那类漏透传由守卫兜。
+	_ = v.BindEnv("maclaw.embedded_catalog_file", "EMBEDDED_CATALOG_FILE")
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {

@@ -166,11 +166,19 @@ services:
       # landing — without it the flag could not be turned on from .env at all).
       # Default off: every run stays on the shared instance.
       MACLAW_TENANT_ENGINES: "${MACLAW_TENANT_ENGINES:-0}"
+      # P28 卷挂载：wizard 目录在 boot 时读这个文件（stage 直接写宿主侧的
+      # internal/maclaw/testdata/embedded_plugins.json）。未设置 = 回落编译期
+      # embed（逐字节等于挂载前行为）。读到畸形/缺失文件时 backend 拒绝启动——
+      # 带着未知目录启动会把已烘焙 id 从 wizard 藏掉而引擎还留着（一个事实两个视图）。
+      EMBEDDED_CATALOG_FILE: /app/embedded-catalog/embedded_plugins.json
     ports:
       - "8088:8080"
     volumes:
       - ./configs:/app/configs:ro
       - ./migrations:/app/migrations:ro
+      # P28 卷挂载：目录（而非单文件）bind，重写文件不动 inode、不受 docker
+      # 单文件挂载陈旧化影响；内容与引擎暂存树同一次 stage 产出（一个事实一个源）。
+      - ./internal/maclaw/testdata:/app/embedded-catalog:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
       interval: 15s
@@ -292,6 +300,12 @@ services:
       - "8090"
     volumes:
       - promptfoo_engine_data:/data/runs
+      # P28 卷挂载（Step-0: promptfoo_engine/tests/embeddedPluginsVolume.step0.test.ts）：
+      # stage 的暂存树 bind 直送引擎，插件批次 = 写暂存目录 + force-recreate，
+      # **免镜像重建**（boot 读 index.json；进程内不重读，所以更新必须重启，探针1）。
+      # :ro —— loader 只读；卷内容遮蔽镜像内 COPY 的树，catalog 唯一事实源从此
+      # 是宿主暂存目录（容器里那棵 COPY 树只剩非 compose 场景的作用）。
+      - ./promptfoo_engine/embedded-plugins:/app/embedded-plugins:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
       interval: 15s
@@ -340,6 +354,9 @@ services:
       - "8090"
     volumes:
       - promptfoo_engine_data_p8test:/data/runs
+      # P28 卷挂载：与共享引擎同源同一暂存树——所有引擎实例的目录必须同源，
+      # 否则共享引擎看得到的 id 在这台上看不到（一个事实两个视图）。
+      - ./promptfoo_engine/embedded-plugins:/app/embedded-plugins:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
       interval: 15s

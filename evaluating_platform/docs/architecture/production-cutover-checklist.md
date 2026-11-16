@@ -208,5 +208,13 @@ git diff --check
 - **重启引擎容器必须用 `docker compose up -d --force-recreate promptfoo-engine`**。
   `docker restart` 会让引擎进入重启循环：`/home/node/.promptfoo` 是 tmpfs，重启后 libsql
   打不开数据库（`SQLITE_CANTOPEN`），进程 fatal exit，健康检查一直 unhealthy。
+- **内嵌插件批次用 `scripts/embedded-build.sh --skip-build`（P28 卷挂载，2026-11-16 起）**：
+  引擎读 `./promptfoo_engine/embedded-plugins`、backend 读 `./internal/maclaw/testdata`（bind
+  mount，`EMBEDDED_CATALOG_FILE`），两侧都是 boot 读文件——插件批次 = `-stage` → `force-recreate`，
+  **不要 docker build**，recreate 即生效（Step-0: `promptfoo_engine/tests/embeddedPluginsVolume.step0.test.ts`）。
+  判据：recreate 后 `GET /maclaw/engine/embedded-catalog` 非空。**引擎/后端代码有变更时不得用
+  `--skip-build`**（recreate 只是把旧镜像再部署一遍）。挂载落地**之前**的旧形态仍要求「重建前必须
+  先 `-stage`」（`records/56` §7 实测：不 stage 重建会让镜像与目录双双为空而状态行正常）——两个
+  形态的分界就是本次 compose 挂载是否已部署。
 - 部署后确认引擎环境里有 `PROMPTFOO_CACHE_ENABLED=0` 与 `REQUEST_TIMEOUT_MS=180000`：
   前者是启动期 fail-closed 要求（缺失会拒绝启动），后者是所有外发调用的统一上限。

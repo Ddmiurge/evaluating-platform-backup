@@ -4,11 +4,14 @@
 //
 //  1. Catalog read side — the ONLY way a baked id becomes selectable. The
 //     build writes testdata/embedded_plugins.json after a successful bake;
-//     this file embeds it at compile time (same mechanism as the legality
-//     table) and the wizard endpoint filters by CURRENT state (approved →
-//     everyone; testing → testers only; anything else → invisible, because a
-//     selectable id that the submit gate will refuse is exactly the dead
-//     button this design refuses to ship).
+//     this file reads it at init — from `EMBEDDED_CATALOG_FILE` when that env
+//     points at the mounted staged file (P28 卷挂载: stage → recreate, no image
+//     rebuild), else from the compile-time embed (same mechanism as the
+//     legality table, byte-for-byte pre-volume behavior) — and the wizard
+//     endpoint filters by CURRENT state (approved → everyone; testing →
+//     testers only; anything else → invisible, because a selectable id that the
+//     submit gate will refuse is exactly the dead button this design refuses
+//     to ship).
 //  2. Staging — turns approved rows' stored zips into the
 //     promptfoo_engine/embedded-plugins/<id>/ tree + index.json that the
 //     Dockerfile COPYs. Re-validates every package through the SAME store-exit
@@ -43,6 +46,20 @@ func zipReader(raw []byte) (*zip.Reader, error) {
 //go:embed testdata/embedded_plugins.json
 var embeddedPluginsJSON []byte
 
+// EmbeddedCatalogFileEnv selects a runtime catalog file over the compiled-in
+// default (P28 卷挂载). compose mounts ./internal/maclaw/testdata and points
+// this at the staged file, so an embedded-plugin batch is stage →
+// force-recreate with NO image rebuild: the wizard catalog follows the file at
+// boot — symmetric with the engine loader's boot-time index.json read
+// (Step-0: promptfoo_engine/tests/embeddedPluginsVolume.step0.test.ts: the
+// engine does not re-read within a process, so both sides need the restart and
+// neither needs a rebuild).
+//
+// It is read at package init (before config.Load), hence os.Getenv directly;
+// pkg/config still binds the name so TestAllBindEnvKeysAppearInCompose forces
+// compose to pass it through. Unset = byte-for-byte pre-volume behavior.
+const EmbeddedCatalogFileEnv = "EMBEDDED_CATALOG_FILE"
+
 // EmbeddedCatalogEntry is one baked plugin as the wizard consumes it.
 type EmbeddedCatalogEntry struct {
 	ID       string `json:"id"`
@@ -65,17 +82,36 @@ type embeddedPluginsFile struct {
 	Plugins          []EmbeddedCatalogEntry `json:"plugins"`
 }
 
-var embeddedPluginFileData = mustParseEmbeddedPluginCatalog()
+var embeddedPluginFileData = embeddedCatalogFromEnv(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON)
 
 var (
 	embeddedPluginCatalog        = embeddedPluginFileData.Plugins
 	embeddedPluginCatalogVersion = embeddedPluginFileData.PromptfooVersion
 )
 
-func mustParseEmbeddedPluginCatalog() embeddedPluginsFile {
+// embeddedCatalogFromEnv resolves the wizard catalog source: a set path wins
+// (fail-closed — an unreadable or malformed file panics at init, refusing to
+// boot with an unknown catalog: silently emptying it hides baked ids from the
+// wizard while the engine still serves them, the two-views-of-one-fact failure
+// the batch tool exists to prevent); an empty path falls back to the embed,
+// byte-for-byte pre-volume behavior. A missing file under a set path panics
+// too: the mount is part of the deployment contract, and Docker materializes a
+// directory when a bind source is absent — both must be loud, not empty.
+func embeddedCatalogFromEnv(path string, fallback []byte) embeddedPluginsFile {
+	if strings.TrimSpace(path) == "" {
+		return mustParseEmbeddedCatalogDocument(fallback, "the compiled-in testdata catalog")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(fmt.Sprintf("maclaw: %s=%q is set but unreadable: %v — refusing to boot with an unknown embedded-plugin catalog", EmbeddedCatalogFileEnv, path, err))
+	}
+	return mustParseEmbeddedCatalogDocument(data, EmbeddedCatalogFileEnv+" ("+path+")")
+}
+
+func mustParseEmbeddedCatalogDocument(data []byte, source string) embeddedPluginsFile {
 	var file embeddedPluginsFile
-	if err := json.Unmarshal(embeddedPluginsJSON, &file); err != nil {
-		panic(fmt.Sprintf("maclaw: embedded embedded_plugins.json is malformed: %v", err))
+	if err := json.Unmarshal(data, &file); err != nil {
+		panic(fmt.Sprintf("maclaw: embedded-plugin catalog from %s is malformed: %v", source, err))
 	}
 	return file
 }
