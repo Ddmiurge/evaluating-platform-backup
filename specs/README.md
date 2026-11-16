@@ -14,3 +14,4 @@
 | `deploy-server-phase0.md` | 部署阶段 0 |
 | `execution-acceptance-checklist.md` | 执行验收清单 |
 | `ui-white-modern-redesign-and-bugfix-plan.md` | UI 重设计与修复 |
+| `2026-11-15-论文转能力Agent与创新路线.md` | 创新方向提案（待评审）：7 方向盘点 + 论文→能力转换 Agent 可行性/载体选择/分阶段路线 |
