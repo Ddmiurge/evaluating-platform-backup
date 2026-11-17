@@ -447,3 +447,108 @@ backend 同样在 init 读一次——**两侧都是「写文件 + force-recreat
 **卷成为目录唯一事实源**：挂载后镜像内 COPY 树只剩非 compose 场景的作用；56 §7「重建前必须先 stage，否则镜像丢 catalog」的失败模式在挂载后消失——catalog 恒来自宿主侧文件，重建不重建都不影响它。
 
 **上机判据（待 ai02）**：① `--skip-build` 跑一个纯插件批次：全程无 `docker build`，recreate 后新 id 在向导与 MCP 搜索可见、真跑出报告；② 卷内放畸形 `index.json` → 引擎健康检查转红、`-finalize -fail` 不落地；③ backend 摘除 `EMBEDDED_CATALOG_FILE` → 行为回 embed（回归等价）。Docker 卷挂载本身（:ro、容器内路径）本机无 Docker 不可测，与三判据一起归上机记录。
+
+> **57 号（2026-11-16）已上机验证三判据全过**，并暴露 §6：`-finalize` 删除 `index.json`（批次标记与持久目录共用一文件）→ finalize 后任何重启引擎目录归零而向导照常展示。§6 与 §4（坏 index 时 `build_failed` 记不上）由 E-4c 修复（见 §14），本节「免重建」主张不变。
+
+## 14. 热加载（E-4d，方案 B-v2 全链零重启）：Step-0 探测与实施计划
+
+> 状态（2026-11-17）：**Step-0 两轮探测完成（全部实测）、设计定稿、实施未开始**。
+> 决策链：57 §6 暴露重启形态的最后一个 bug → 卷挂载（§13）→ 热加载被定为**功能需求**（非「评估后拒绝」）→ 方案 B-v2 定案（backend 受控刷新 + 引擎重载 + finalize 前双侧回执对账，即「同步了再显示」）→ E-4c 前置修复 → Step-0 两轮探测 → 本节。
+> 关于「为什么不选热加载」的历史讨论与定性：**热加载从来不是做不到**，是当时的工程选择；现按功能需求立项实施，本节即其测量与计划。
+
+### 14.1 前置已完成：E-4c（batch.json 分离，提交 `6c688a8`）
+
+| 项 | 内容 |
+|---|---|
+| 拆分 | `index.json` = **持久引擎目录**（stage 写、tmp+rename 原子、**永不删**）；`batch.json` = **批次标记**（stage 写、finalize 消费并删除、NO_QUEUE 清陈旧 marker） |
+| 修复 | 57 §6（finalize 后重启丢目录——引擎 boot 读的文件不再被删）；57 §4（坏 index 不再阻断记录 `build_failed`——finalize 不读它） |
+| 附带 | 批脚本：**在跑的** p8test 专属引擎也 recreate（57 遗留 3）；停着的不拉起 |
+| 反证 | finalize 后 index 存活 / 坏 index 仍记失败 / 坏 marker 拒绝且零转移 / NO_QUEUE 不动 index——四条全绿；Go 全量 10 包 ok |
+
+### 14.2 Step-0 探测结果（两轮，全部实测；常驻测试 `promptfoo_engine/tests/hotLoadPluginOptions.step0.test.ts`，3 用例）
+
+**探针 A（2026-11-16，zod 4.6.5）—— 裸 id 路线判死：**
+
+| 测量 | 结果 |
+|---|---|
+| 运行时 `pluginOptions.push(新id)` → `safeParse` | ❌ **仍拒**——`z.enum` 构造时定格数组；深遍历（含 symbol 键、深度 10）**无可变容器**（值在闭包里） |
+| 运行时 `splice(已有id)` → `safeParse` | ✅ **有效**——`superRefine` 活读闭包 |
+| 含义 | 裸新 id 永远过不了 schema；「const→let schema 工厂重建手术」曾是备选，**被探针 B 取代并取消**；绊线继续双向钉住 push=拒 / splice=效 |
+
+**探针 B（2026-11-17）—— file:// 合成 key 通路成立：**
+
+① schema 实测（同一 scratch 手法）：
+
+| config plugins id | safeParse |
+|---|---|
+| `__p28_never_in_list__`（裸新 id） | false（= 探针 A 结论，一致） |
+| `file://p28-hot/p28-new-plugin`（合成 key） | **true** |
+| `file:///app/embedded-plugins/x/plugin.yaml` | true |
+| `harmful`（内置） | true |
+
+分支源码（tables chunk）：第二个 union 成员 = `z$1.string().superRefine(val => val.startsWith("file://"))`——**只要前缀，不查文件存在、不查扩展名**。
+
+② 解析顺序（index.js 静态读实，全文仅两处 `Plugins.find`）：
+
+```js
+// 别名展开之前先短路：
+if (Plugins.some((p) => p.key === plugin.id)) { expandedPlugins.push(plugin); return; }
+
+// 生成循环（~16933）：
+const { action } = Plugins.find((p) => p.key === plugin.id) || {};
+if (action) { /* 我们的注册表条目 → 我们的 action */ }
+else        { new CustomPlugin(..., plugin.id, ...); }   // file:// YAML 门（会去读盘）
+```
+
+**注册表精确命中优先，`CustomPlugin`（读盘门）在 else**；`validatePlugin` 对已注册条目直接放行（我们的条目无 `validate` 方法 → return true）。
+
+**结论：热加载以合成 key 注册即可——schema 手术不需要，zod 内部不碰。**
+
+### 14.3 设计（E-4d 本体）
+
+```
+stage 写文件（既有）
+  → 脚本发双 SIGHUP（引擎 + backend；docker kill -s HUP，无新端口/无新鉴权面）
+  → 引擎 reload 钩子：忙拒（单 worker 有 run 飞行即拒绝）→ 解析 index.json
+        （坏 = 零改动 + 回执失败）→ 注册表增/换/删：
+              热 id → 合成 key `file://p28-hot/<plainId>`（探针 B 通路）
+              烘焙 id → 裸 key 不动；烘焙 id 移除 → pluginOptions splice（探针 A 已证有效）
+        → 记录 `__p28LoadedBatch`
+  → backend 刷新：SIGHUP → 单点装载函数重读 EMBEDDED_CATALOG_FILE
+        （坏 = 不换指针、继续用旧快照 + 回执失败；好 = 原子换指针 + 回执版本哈希）
+  → 脚本轮询双回执：引擎 /health `embedded_batch == 批次X` ∧ backend /health 目录版本 == 预期
+  → finalize（揭示；状态闸语义不变）——「同步了再显示」的物理落点
+```
+
+- **config 改写点**（引擎自己构建 config）：选中的热 id → 合成 key；改写发生在 `withPluginJudgeRubrics`/`allocateNumTests` **之后**（它们用裸 id 查 fanout/rubric）；改写表来自 reload 维护的 `__p28HotKeys`；
+- **报告归一**：`metadata.pluginId`/`plugin_stats`/`judge_sources` 的合成 key → 公开 id——复用 `customPlugin.ts` 的 `reportPluginID` 同款映射机器（U10 已趟过）；合成 key 永不进浏览器/报告；
+- **兜底 fail-loud**：万一注册表未命中，else 分支去加载不存在的合成路径 → 响亮报错，非静默；
+- **代码变更批次**仍走 build + recreate（recreate 是热路径的兜底，不是被删除的路径）；
+- **治理不变**：三道门 / 标记制 / 状态机 / finalize 揭示一寸不动；本节只改「加载」的实现。
+
+### 14.4 交付拆分
+
+| 步 | 内容 | 守卫（先跑红） |
+|---|---|---|
+| E-4d-1 | 引擎：patch 注入 reload 钩子（注册表增/换/删 + 合成 key + busy 拒 + `__p28LoadedBatch`）+ SIGHUP 处理 + `/health` 报批次 | 忙拒、坏 index 零改动、增/换/删三态的注册表单测；解析顺序锚点（已有，Step-0 B） |
+| E-4d-2 | 引擎：config 热 id 改写 + 报告归一并入 `reportPluginID` | 改写前后 fanout/rubric 用裸 id 的顺序断言；报告无 `file://` 断言 |
+| E-4d-3 | backend：装载单点重构（启动 panic 保留）+ `RefreshEmbeddedCatalog` + SIGHUP + `/health` 版本哈希 | 换指针原子性、坏文件不换指针继续服务、回执失败（E-4c 的 Go 三测扩展） |
+| E-4d-4 | 脚本：部署步改双 HUP → 轮询双回执 → finalize；`--skip-build` 语义升级为「零停机批次」 | bash -n + 源级断言（HUP/轮询/finalize 顺序） |
+| E-4d-5 | e2e（引擎 vitest + 上机）：热插件 run 全程 | 见 §14.5 |
+
+### 14.5 验收判据
+
+1. **零停机**：纯新增批次全程无 `docker build`、**无 recreate**（容器 uptime 连续），新 id 向导 + MCP 可见、真跑出报告、**报告 id 为公开 id（无 `file://`、无路径）**；
+2. **坏数据零改动**：卷内坏 `index.json` → 重载回执失败、注册表/快照保持旧版、`-finalize -fail`、批次不落地；
+3. **忙拒**：run 飞行中发 HUP → 回执 busy、run 不受影响；run 结束后重试成功；
+4. **backend 刷新**：坏 testdata → 旧目录继续服务 + 回执失败；好 → 版本哈希对上；
+5. **同步了再显示**：finalize 前双回执不齐 → 不翻状态（揭示门）；
+6. **回归**：E-4c 四反证、57 三判据面、Step-0 三条绊线、Go 全量 + 引擎 vitest 全绿。
+
+### 14.6 边界与残留（如实登记）
+
+- 探针 A/B = schema 实测 + 静态顺序读实；**完整行为确认在 E-4d-5 的 e2e**（既有测试模式，非新增风险）；
+- 合成 key 只在引擎进程内有意义，浏览器/报告永不出现（归一化断言钉住）；
+- **旧镜像收到 SIGHUP = 默认杀进程**（未注册 handler）——部署顺序必须「先升级镜像、再用新脚本」，写入上线清单；
+- zod 快照绊线保留：若 push 语义翻转，裸 id 路线可简化（去掉改写点），测试红提示重估；
+- 原 B 的「schema const→let 工厂手术」**路线取消**，仅存档为备选（若探针 B 结论被升级推翻）。
