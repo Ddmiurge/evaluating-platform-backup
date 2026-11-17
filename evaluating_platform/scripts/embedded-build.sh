@@ -21,8 +21,10 @@
 # default stays build-everything.
 #
 # NO_QUEUE from -stage means there was no batch (no packages and no removals):
-# deploy and finalize are both skipped — index.json exists ⟺ a batch awaits
+# deploy and finalize are both skipped — batch.json exists ⟺ a batch awaits
 # finalize, so calling -finalize after NO_QUEUE would hard-fail by design.
+# (E-4c, records/57 §6: index.json is the PERSISTENT engine catalog — stage
+# rewrites it, finalize NEVER deletes it; only the batch marker moves.)
 #
 # Usage:
 #   ./scripts/embedded-build.sh [--config configs/config.yaml] [--root <platform-dir>]
@@ -137,8 +139,18 @@ else
 fi
 
 # ── 3. deploy ───────────────────────────────────────────────────────────────
+# Recreate reloads the persistent catalog from the volume mounts (E-4c: the
+# index is no longer deleted at finalize, so every restart keeps the full
+# catalog). Multi-engine (records/57 §6 附带): a RUNNING dedicated engine must
+# be recreated too or it keeps serving the previous catalog; a stopped one is
+# left stopped (the operator's state, and it serves nobody).
 log "deploy: recreating services"
 docker compose up -d --no-deps --force-recreate promptfoo-engine || { mark_failed "引擎容器重建失败"; exit 2; }
+P8_RECREATE=0
+if docker compose ps --status running --services 2>/dev/null | grep -qx 'promptfoo-engine-p8test'; then
+  docker compose up -d --no-deps --force-recreate promptfoo-engine-p8test || { mark_failed "专属引擎容器重建失败"; exit 2; }
+  P8_RECREATE=1
+fi
 if [[ $SKIP_BACKEND -eq 0 ]]; then
   docker compose up -d --no-deps --force-recreate backend || { mark_failed "后端容器重建失败"; exit 2; }
 fi
@@ -170,6 +182,13 @@ wait_healthy() {
 if ! wait_healthy promptfoo-engine ep_promptfoo_engine; then
   mark_failed "引擎健康检查超时（${TIMEOUT}s）"
   exit 3
+fi
+
+if [[ $P8_RECREATE -eq 1 ]]; then
+  if ! wait_healthy promptfoo-engine-p8test ep_promptfoo_engine_p8test; then
+    mark_failed "专属引擎健康检查超时（${TIMEOUT}s）"
+    exit 3
+  fi
 fi
 
 if [[ $SKIP_BACKEND -eq 0 ]]; then

@@ -211,8 +211,18 @@ func StageEmbeddedPackages(inputs []EmbeddedBuildInput, stagingRoot, batchID str
 	if err != nil {
 		return nil, fmt.Errorf("marshal build index: %w", err)
 	}
-	if err := os.WriteFile(path.Join(stagingRoot, "index.json"), data, 0o644); err != nil {
+	// Atomic (tmp + rename): index.json is the persistent catalog the engine
+	// boot-/reload-reads through the volume mount (E-4c) — a concurrent reader
+	// must see either the previous complete file or this one, never a
+	// half-written or missing document mid-stage.
+	indexPath := path.Join(stagingRoot, "index.json")
+	tmpPath := indexPath + ".tmp"
+	if err := os.WriteFile(tmpPath, append(data, '\n'), 0o644); err != nil {
 		return nil, fmt.Errorf("write build index: %w", err)
+	}
+	if err := os.Rename(tmpPath, indexPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, fmt.Errorf("publish build index: %w", err)
 	}
 	return index, nil
 }

@@ -13,25 +13,35 @@
 //	go run ./cmd/embeddedbuild -stage
 //	  plan the batch (union of build_requested ∪ testing ∪ approved ∪
 //	  disabled, minus removals — see batch.go) → decrypt → re-validate →
-//	  stage promptfoo_engine/embedded-plugins/<id>/ + index.json (with
-//	  removed_ids) → rewrite testdata/embedded_plugins.json (wizard catalog
-//	  source) → print the batch id on stdout. Rows keep their states: a crash
-//	  here is retryable, nothing is claimed as baked.
+//	  stage promptfoo_engine/embedded-plugins/<id>/ + index.json + batch.json
+//	  → rewrite testdata/embedded_plugins.json (wizard catalog source) →
+//	  print the batch id on stdout. Rows keep their states: a crash here is
+//	  retryable, nothing is claimed as baked.
 //	  Prints NO_QUEUE (exit 0) when nothing is staged and nothing is marked
 //	  for removal — the orchestrator then skips deploy AND finalize; any
-//	  stale index.json is deleted so "index exists ⟺ batch awaits finalize".
+//	  stale batch.json is deleted so "batch.json exists ⟺ batch awaits
+//	  finalize".
 //
 //	go run ./cmd/embeddedbuild -finalize -ok                 (after deploy succeeded)
 //	go run ./cmd/embeddedbuild -finalize -fail -reason=…     (any step failed)
-//	  consume THIS batch's index.json (never the live queue): batch packages
-//	  build_requested → testing | build_failed, removed_ids → removed
-//	  (removals process even when the batch has no packages). A row that
-//	  moved since stage is skipped with a warning (skip-on-conflict; the
-//	  deploy already happened, so aborting would strand the rest). On success
-//	  the index is cleared; a failed run keeps it so the orchestrator can
-//	  retry. Exactly one of -ok / -fail is required; -fail requires -reason.
-//	  All flag validation happens before any DB connection, so a rejected
-//	  invocation provably touches no rows.
+//	  consume THIS batch's batch.json (never index.json, never the live
+//	  queue): batch packages build_requested → testing | build_failed,
+//	  removed_ids → removed (removals process even when the batch has no
+//	  packages). A row that moved since stage is skipped with a warning
+//	  (skip-on-conflict; the deploy already happened, so aborting would strand
+//	  the rest). On completion the batch marker is cleared; an apply error
+//	  keeps it so the orchestrator can retry. Exactly one of -ok / -fail is
+//	  required; -fail requires -reason. All flag validation happens before any
+//	  DB connection, so a rejected invocation provably touches no rows.
+//
+// E-4c (records/57 §6): index.json and batch.marker were ONE file, but the
+// engine reads index.json AT BOOT (volume mount) — finalize deleting it meant
+// any later restart served an empty catalog while the wizard still listed the
+// ids. The two roles are now separate files: index.json is the PERSISTENT
+// engine catalog (written by stage, never deleted); batch.json is the pending
+// marker (written by stage, consumed+deleted by finalize, cleared by NO_QUEUE).
+// A corrupt index.json therefore no longer blocks recording build_failed —
+// finalize does not read it (records/57 §4's dead-end).
 package main
 
 import (

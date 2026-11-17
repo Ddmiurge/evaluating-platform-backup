@@ -368,7 +368,7 @@ func (f *fakeTransitions) MarkRemoved(_ context.Context, id string) error {
 	return nil
 }
 
-// No index.json → hard error naming the NO_QUEUE contract; no transitions
+// No batch marker → hard error naming the NO_QUEUE contract; no transitions
 // are attempted (finding 2: finalize must never fall back to the live queue).
 func TestRunFinalizeMissingIndexErrors(t *testing.T) {
 	rows := &fakeRows{states: map[string]string{"X": maclawpkg.EmbeddedStateBuildRequested}}
@@ -377,16 +377,18 @@ func TestRunFinalizeMissingIndexErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "index.json") && !strings.Contains(err.Error(), "batch index") {
-		t.Fatalf("error should name the missing index: %v", err)
+	if !strings.Contains(err.Error(), "batch.json") && !strings.Contains(err.Error(), "batch marker") {
+		t.Fatalf("error should name the missing batch marker: %v", err)
 	}
 	if len(trans.testing)+len(trans.failed)+len(trans.removed) != 0 {
 		t.Fatalf("no transitions may run: %+v", trans)
 	}
 }
 
-// End-to-end (no DB): a removal-only index marks the removal and never calls
-// MarkTesting — finding 3's full shell path.
+// End-to-end (no DB): a removal-only batch marks the removal and never calls
+// MarkTesting — finding 3's full shell path. E-4c (records/57 §6): completion
+// clears the MARKER and leaves index.json — the persistent engine catalog —
+// exactly where it was.
 func TestRunFinalizeRemovalOnlyBatch(t *testing.T) {
 	root := t.TempDir()
 	staging := filepath.Join(root, "promptfoo_engine", "embedded-plugins")
@@ -401,6 +403,9 @@ func TestRunFinalizeRemovalOnlyBatch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(staging, "index.json"), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(staging, "batch.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	rows := &fakeRows{states: map[string]string{"R": maclawpkg.EmbeddedStateRemoveRequested}}
 	trans := &fakeTransitions{}
@@ -413,9 +418,108 @@ func TestRunFinalizeRemovalOnlyBatch(t *testing.T) {
 	if len(trans.testing) != 0 || len(trans.failed) != 0 {
 		t.Fatalf("unexpected transitions: %+v", trans)
 	}
-	// Success clears the batch record (index exists ⟺ awaiting finalize).
-	if _, err := os.Stat(filepath.Join(staging, "index.json")); !os.IsNotExist(err) {
-		t.Fatalf("index.json should be cleared after a successful finalize: %v", err)
+	// The marker is consumed…
+	if _, err := os.Stat(filepath.Join(staging, "batch.json")); !os.IsNotExist(err) {
+		t.Fatalf("batch.json should be cleared after a completed finalize: %v", err)
+	}
+	// …and the persistent catalog SURVIVES (records/57 §6 regression: finalize
+	// used to delete index.json, so any later engine restart served an empty
+	// catalog while the wizard still listed the ids).
+	if _, err := os.Stat(filepath.Join(staging, "index.json")); err != nil {
+		t.Fatalf("index.json must survive finalize (it is the engine's boot catalog): %v", err)
+	}
+}
+
+// Records/57 §4: a CORRUPT index.json must not stop -finalize -fail from
+// recording build_failed — the batch identity lives in batch.json, which
+// finalize reads instead. (Pre-E-4c the corrupt shared file made finalize
+// exit 1 with nothing recorded: the batch was stuck at build_requested.)
+func TestRunFinalizeCorruptIndexStillRecordsFailure(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "promptfoo_engine", "embedded-plugins")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := json.Marshal(maclawpkg.EmbeddedBuildIndex{
+		BatchID:  "batch-corrupt-index",
+		Packages: []maclawpkg.EmbeddedCatalogEntry{{ID: "A"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "batch.json"), marker, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "index.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := &fakeRows{states: map[string]string{"A": maclawpkg.EmbeddedStateBuildRequested}}
+	trans := &fakeTransitions{}
+	if err := runFinalize(context.Background(), rows, trans, root, finalizeIntent{Ok: false, Reason: "engine unhealthy"}); err != nil {
+		t.Fatalf("corrupt index must not block recording the failure: %v", err)
+	}
+	if len(trans.failed) != 1 || trans.failed[0] != "A" {
+		t.Fatalf("failed = %v, want [A]", trans.failed)
+	}
+	if len(trans.testing) != 0 || len(trans.removed) != 0 {
+		t.Fatalf("unexpected transitions: %+v", trans)
+	}
+}
+
+// A corrupt batch marker means the batch identity is unknowable: finalize must
+// refuse (no live-queue fallback — finding 2) and leave rows untouched.
+func TestRunFinalizeCorruptBatchMarkerFails(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "promptfoo_engine", "embedded-plugins")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "batch.json"), []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows := &fakeRows{states: map[string]string{"A": maclawpkg.EmbeddedStateBuildRequested}}
+	trans := &fakeTransitions{}
+	err := runFinalize(context.Background(), rows, trans, root, finalizeIntent{Ok: true})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "batch marker") {
+		t.Fatalf("error should name the batch marker: %v", err)
+	}
+	if len(trans.testing)+len(trans.failed)+len(trans.removed) != 0 {
+		t.Fatalf("no transitions may run: %+v", trans)
+	}
+}
+
+// NO_QUEUE clears the stale MARKER and must not touch index.json — the
+// persistent catalog stays loadable across the empty batch (records/57 §6:
+// pre-E-4c this branch deleted index.json, so a restart after a NO_QUEUE
+// staging emptied the engine's catalog).
+func TestRunStageNoQueueClearsMarkerNotIndex(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "promptfoo_engine", "embedded-plugins")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "index.json"), []byte(`{"promptfoo_version":"x","packages":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "batch.json"), []byte(`{"batch_id":"stale"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only pending rows → plan is empty → NO_QUEUE; resourceRepo/keystore are
+	// never touched on this path, so nil is safe and proves that.
+	rows := &fakeRows{states: map[string]string{"P": maclawpkg.EmbeddedStatePendingInitialReview}}
+	if err := runStage(context.Background(), rows, nil, nil, root); err != nil {
+		t.Fatalf("runStage NO_QUEUE: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "batch.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale batch marker must be cleared: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "index.json")); err != nil {
+		t.Fatalf("index.json must survive NO_QUEUE: %v", err)
 	}
 }
 

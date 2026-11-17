@@ -1,18 +1,24 @@
 // Batch lifecycle for the embedded-plugin build pipeline (P28 / design §9
-// E-4; review findings 1–4 in audits/code-review-2026-11-10-p28-embeddedbuild.md).
+// E-4; review findings 1–4 in audits/code-review-2026-11-10-p28-embeddedbuild.md;
+// records/57 §6).
 //
-// index.json is the single source of truth for "who is in this batch":
+// Two files, two roles (E-4c split — they used to be one, and finalize
+// deleting the shared file bricked the engine's boot catalog):
 //
-//   - stage creates it: the union of live states (build_requested ∪ testing ∪
-//     approved ∪ disabled) plus the removals it excluded (finding 1 — a bake
-//     that staged only build_requested washed already-baked packages out of
-//     the catalog with no state-machine path back);
-//   - finalize consumes ONLY it: a package that enters build_requested after
-//     stage waits for the next batch (finding 2), and removals ride the same
-//     op list so a removal-only run is a legitimate batch instead of being
-//     swallowed by a NO_QUEUE early return (finding 3);
-//   - index.json exists ⟺ a batch awaits finalize: NO_QUEUE deletes any stale
-//     index, and a successful finalize clears it.
+//	index.json  PERSISTENT engine catalog — written by stage (union of live
+//	            states: build_requested ∪ testing ∪ approved ∪ disabled, minus
+//	            removals; finding 1), read by the engine at boot/volume-reload,
+//	            NEVER deleted by this tool.
+//	batch.json  pending marker — written by stage, consumed+deleted by a
+//	            completed finalize, cleared by NO_QUEUE. Exists ⟺ a batch
+//	            awaits finalize.
+//
+// Finalize consumes ONLY batch.json: a package that enters build_requested
+// after stage waits for the next batch (finding 2), removals ride the same op
+// list so a removal-only run is a legitimate batch instead of being swallowed
+// by a NO_QUEUE early return (finding 3), and a corrupt index.json cannot
+// block recording build_failed — the marker carries the batch identity
+// (records/57 §4).
 //
 // Decision logic (planStage / planFinalize / applyFinalizeOps /
 // buildCatalogFile) is pure so it is testable without a database; runStage /
@@ -213,9 +219,37 @@ type batchTransitions interface {
 	MarkRemoved(ctx context.Context, packageID string) error
 }
 
-// stagingIndexPath is where the batch record lives between stage and finalize.
+// stagingIndexPath is the PERSISTENT engine catalog (E-4c): stage rewrites it
+// atomically; nothing deletes it. The engine boot-reads it through the volume
+// mount, so deleting it (the pre-E-4c finalize behavior) emptied the live
+// catalog on the next restart (records/57 §6).
 func stagingIndexPath(root string) string {
 	return filepath.Join(root, "promptfoo_engine", "embedded-plugins", "index.json")
+}
+
+// stagingBatchPath is the pending marker: exists ⟺ a batch awaits finalize.
+// Separate from index.json since E-4c (records/57 §6 / §4).
+func stagingBatchPath(root string) string {
+	return filepath.Join(root, "promptfoo_engine", "embedded-plugins", "batch.json")
+}
+
+// writeJSONAtomic writes via a temp file + rename so a concurrent engine
+// boot/reload never observes a half-written marker (stage's catalog write is
+// atomic the same way, in maclaw.StageEmbeddedPackages).
+func writeJSONAtomic(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }
 
 // validatePlatformRoot rejects a -root that is not the platform directory
@@ -252,10 +286,12 @@ func runStage(ctx context.Context, embeddedRepo batchRows, resourceRepo *reposit
 	plan := planStage(rows)
 	staging := filepath.Join(root, "promptfoo_engine", "embedded-plugins")
 	if plan.noQueue() {
-		// Invariant: index.json exists ⟺ a batch awaits finalize. A stale
-		// index from a previous (possibly dead) batch must not be consumable.
-		if err := os.Remove(stagingIndexPath(root)); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("clear stale batch index: %w", err)
+		// Invariant: batch.json exists ⟺ a batch awaits finalize. A stale
+		// marker from a previous (possibly dead) batch must not be consumable.
+		// index.json is NOT touched — it is the persistent engine catalog
+		// (E-4c; clearing it here was the records/57 §6 failure family).
+		if err := os.Remove(stagingBatchPath(root)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear stale batch marker: %w", err)
 		}
 		fmt.Println("NO_QUEUE")
 		return nil
@@ -299,6 +335,13 @@ func runStage(ctx context.Context, embeddedRepo batchRows, resourceRepo *reposit
 		return fmt.Errorf("write catalog: %w", err)
 	}
 
+	// The pending marker (E-4c): same batch identity, separate file. Written
+	// AFTER the catalog so a crash in between leaves no marker → finalize
+	// refuses → the batch stays build_requested and a re-stage is the repair.
+	if err := writeJSONAtomic(stagingBatchPath(root), index); err != nil {
+		return fmt.Errorf("write batch marker: %w", err)
+	}
+
 	fmt.Printf("STAGED %s packages=%d removed=%d\n", batchID, len(index.Packages), len(index.RemovedIDs))
 	for _, pkg := range index.Packages {
 		fmt.Printf("  - %s (%s)\n", pkg.ID, pkg.Name)
@@ -311,19 +354,19 @@ func runStage(ctx context.Context, embeddedRepo batchRows, resourceRepo *reposit
 
 // runFinalize: the state-machine half. Only reached after the deploy step, so
 // `testing` means "baked AND live" — never "baked but not deployed". It
-// consumes this batch's index.json (never the live queue) and always processes
-// removals, including for a removal-only batch.
+// consumes this batch's batch.json (never index.json, never the live queue)
+// and always processes removals, including for a removal-only batch.
 func runFinalize(ctx context.Context, rows batchRows, transitions batchTransitions, root string, intent finalizeIntent) error {
-	raw, err := os.ReadFile(stagingIndexPath(root))
+	raw, err := os.ReadFile(stagingBatchPath(root))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("no batch index at %s — nothing to finalize (skip finalize after NO_QUEUE; index.json exists only while a batch awaits finalize)", stagingIndexPath(root))
+			return fmt.Errorf("no batch marker at %s — nothing to finalize (skip finalize after NO_QUEUE; batch.json exists only while a batch awaits finalize)", stagingBatchPath(root))
 		}
-		return fmt.Errorf("read batch index: %w", err)
+		return fmt.Errorf("read batch marker: %w", err)
 	}
 	var idx maclawpkg.EmbeddedBuildIndex
 	if err := json.Unmarshal(raw, &idx); err != nil {
-		return fmt.Errorf("parse batch index: %w", err)
+		return fmt.Errorf("parse batch marker: %w", err)
 	}
 
 	all, err := rows.ListAll(ctx, "", 500)
@@ -355,10 +398,12 @@ func runFinalize(ctx context.Context, rows batchRows, transitions batchTransitio
 		return err
 	}
 
-	// Success clears the batch record: index.json exists ⟺ a batch awaits
-	// finalize (a failed run keeps it so the orchestrator can retry).
-	if err := os.Remove(stagingIndexPath(root)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clear batch index: %w", err)
+	// Completion clears the batch MARKER (both outcomes — the batch is done,
+	// rows are testing or build_failed). An apply error above returned already
+	// and keeps it so the orchestrator can retry. index.json is untouched: it
+	// is the persistent engine catalog (E-4c; records/57 §6).
+	if err := os.Remove(stagingBatchPath(root)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clear batch marker: %w", err)
 	}
 	fmt.Printf("FINALIZED ok=%v applied=%d expected_skips=%d conflicts=%d\n",
 		intent.Ok, res.Applied, res.SkippedExpected, res.SkippedConflict)
