@@ -556,3 +556,48 @@ func TestValidatePlatformRoot(t *testing.T) {
 		t.Fatalf("half-shaped root should name promptfoo_engine, got: %v", err)
 	}
 }
+
+// Record 58 §3: RemoveAll+MkdirAll replaced the staging directory's INODE.
+// The compose bind mount binds that inode at container start, so a running
+// engine kept seeing the deleted directory (empty) and answered
+// missing_index on hot reload. Staging must clear CONTENTS only.
+func TestClearStagingContentsKeepsTheDirectoryInode(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "embedded-plugins")
+	if err := os.MkdirAll(filepath.Join(staging, "old-pkg", "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "old-pkg", "src", "plugin.ts"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "index.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.Stat(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clearStagingContents(staging); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	after, err := os.Stat(staging)
+	if err != nil {
+		t.Fatalf("directory must survive the clean: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("staging directory inode was replaced — a running bind mount would see an empty dir (record 58 §3)")
+	}
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("contents not cleared: %d entries left", len(entries))
+	}
+
+	// Missing directory is a no-op (StageEmbeddedPackages creates it).
+	if err := clearStagingContents(filepath.Join(dir, "never-created")); err != nil {
+		t.Fatalf("missing dir must be a no-op: %v", err)
+	}
+}

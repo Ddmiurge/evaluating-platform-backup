@@ -78,40 +78,54 @@ type EmbeddedCatalogEntry struct {
 
 // embeddedPluginsFile mirrors testdata/embedded_plugins.json. Unlike the
 // legality table, an EMPTY plugin list is a legitimate state (nobody has baked
-// anything yet) — so no init panic here; a malformed document still panics,
-// because that is a build-tool bug that would silently empty the catalog.
+// anything yet). A malformed document does NOT panic at init (record 58 §9):
+// the error is recorded and surfaced through EmbeddedCatalogBootError(), which
+// cmd/server treats as a startup refusal and the build tool as a warning —
+// the repair path must survive the thing it repairs.
 type embeddedPluginsFile struct {
 	PromptfooVersion string                 `json:"promptfoo_version"`
 	Plugins          []EmbeddedCatalogEntry `json:"plugins"`
 }
 
-var embeddedPluginFileData = embeddedCatalogFromEnv(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON)
-
-// embeddedCatalogMu guards the two package vars above + the content hash so a
-// hot refresh (E-4d-3, SIGHUP) swaps them as one unit: a reader must never
-// observe the new plugin list with the old base version (that combination is
-// exactly what plugin_base_mismatch exists to catch). Readers are the accessors
-// below; tests may assign the vars directly (single-goroutine).
+// embeddedCatalogMu guards the snapshot vars below so a hot refresh (E-4d-3,
+// SIGHUP) swaps them as one unit: a reader must never observe the new plugin
+// list with the old base version (that combination is exactly what
+// plugin_base_mismatch exists to catch). Readers are the accessors below;
+// tests may assign the vars directly (single-goroutine).
 var embeddedCatalogMu sync.RWMutex
 
 var (
-	embeddedPluginCatalog        = embeddedPluginFileData.Plugins
-	embeddedPluginCatalogVersion = embeddedPluginFileData.PromptfooVersion
-	// sha256 of the document the two vars above were loaded from. Declared
-	// after embeddedPluginFileData so init order guarantees the (panic-prone)
-	// load ran first. It is what /health reports so the deploy script can
-	// compare "the backend's snapshot" with "the file stage just wrote".
-	embeddedPluginCatalogHash = catalogSHA256(mustEmbeddedCatalogBytes(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON))
+	embeddedPluginFileData       embeddedPluginsFile
+	embeddedPluginCatalog        []EmbeddedCatalogEntry
+	embeddedPluginCatalogVersion string
+	// sha256 of the document the snapshot was loaded from — what /health
+	// reports so the deploy script can compare "the backend's snapshot" with
+	// "the file stage just wrote". Empty when the boot load failed.
+	embeddedPluginCatalogHash string
+	// Boot load failure, recorded instead of panicking (record 58 §9):
+	// cmd/embeddedbuild imports this package, and a corrupt testdata file must
+	// not stop the very tool that rewrites it. The refuse-to-boot contract
+	// moved to the consumers — cmd/server fatals on EmbeddedCatalogBootError()
+	// before serving anything — so a bad file still cannot run unnoticed.
+	embeddedCatalogInitErr error
 )
 
-// embeddedCatalogFromEnv resolves the wizard catalog source: a set path wins
-// (fail-closed — an unreadable or malformed file panics at init, refusing to
-// boot with an unknown catalog: silently emptying it hides baked ids from the
-// wizard while the engine still serves them, the two-views-of-one-fact failure
-// the batch tool exists to prevent); an empty path falls back to the embed,
-// byte-for-byte pre-volume behavior. A missing file under a set path panics
-// too: the mount is part of the deployment contract, and Docker materializes a
-// directory when a bind source is absent — both must be loud, not empty.
+func init() {
+	embeddedPluginFileData, embeddedCatalogInitErr = embeddedCatalogFromEnv(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON)
+	embeddedPluginCatalog = embeddedPluginFileData.Plugins
+	embeddedPluginCatalogVersion = embeddedPluginFileData.PromptfooVersion
+	if data, err := embeddedCatalogSourceBytes(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON); err == nil {
+		embeddedPluginCatalogHash = catalogSHA256(data)
+	}
+}
+
+// EmbeddedCatalogBootError is the recorded boot-load failure (nil when the
+// catalog parsed). cmd/server must refuse to start when it is set; the build
+// tool deliberately does not — it is the repair path.
+func EmbeddedCatalogBootError() error {
+	return embeddedCatalogInitErr
+}
+
 // catalogSHA256 is the receipt hash: full hex so the deploy host can compute
 // the same value with sha256sum over the staged file.
 func catalogSHA256(data []byte) string {
@@ -119,31 +133,43 @@ func catalogSHA256(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// mustEmbeddedCatalogBytes resolves the raw catalog document (env path wins
+// embeddedCatalogSourceBytes resolves the raw catalog document (env path wins
 // over the compiled-in embed) — the shared source for boot load and hot
 // refresh, so both can never disagree about which bytes they parsed.
-func mustEmbeddedCatalogBytes(path string, fallback []byte) []byte {
+func embeddedCatalogSourceBytes(path string, fallback []byte) ([]byte, error) {
 	if strings.TrimSpace(path) == "" {
-		return fallback
+		return fallback, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// Same fail-closed rule as the boot load: a set-but-unreadable catalog
-		// refuses to start rather than silently serving the embed.
-		panic(fmt.Sprintf("maclaw: %s=%q is set but unreadable: %v — refusing to continue with an unknown embedded-plugin catalog", EmbeddedCatalogFileEnv, path, err))
+		return nil, fmt.Errorf("%s=%q is set but unreadable: %w", EmbeddedCatalogFileEnv, path, err)
 	}
-	return data
+	return data, nil
 }
 
-func embeddedCatalogFromEnv(path string, fallback []byte) embeddedPluginsFile {
-	if strings.TrimSpace(path) == "" {
-		return mustParseEmbeddedCatalogDocument(fallback, "the compiled-in testdata catalog")
-	}
-	data, err := os.ReadFile(path)
+// embeddedCatalogFromEnv resolves the wizard catalog source: a set path wins,
+// an empty path falls back to the embed byte-for-byte (pre-volume behavior).
+//
+// Errors, not panics (record 58 §9): a corrupt or unreadable catalog used to
+// panic at package init, which killed `cmd/embeddedbuild` too — the tool that
+// is supposed to REWRITE the bad file could not start, leaving only manual
+// repair. Init records the error; cmd/server turns it into a startup refusal
+// (same fail-closed outcome for the service), while the build tool logs it and
+// proceeds to stage.
+func embeddedCatalogFromEnv(path string, fallback []byte) (embeddedPluginsFile, error) {
+	data, err := embeddedCatalogSourceBytes(path, fallback)
 	if err != nil {
-		panic(fmt.Sprintf("maclaw: %s=%q is set but unreadable: %v — refusing to boot with an unknown embedded-plugin catalog", EmbeddedCatalogFileEnv, path, err))
+		return embeddedPluginsFile{}, err
 	}
-	return mustParseEmbeddedCatalogDocument(data, EmbeddedCatalogFileEnv+" ("+path+")")
+	file, err := parseEmbeddedCatalogDocument(data)
+	if err != nil {
+		source := "the compiled-in testdata catalog"
+		if strings.TrimSpace(path) != "" {
+			source = EmbeddedCatalogFileEnv + " (" + path + ")"
+		}
+		return embeddedPluginsFile{}, fmt.Errorf("embedded-plugin catalog from %s: %w", source, err)
+	}
+	return file, nil
 }
 
 func parseEmbeddedCatalogDocument(data []byte) (embeddedPluginsFile, error) {
@@ -152,14 +178,6 @@ func parseEmbeddedCatalogDocument(data []byte) (embeddedPluginsFile, error) {
 		return embeddedPluginsFile{}, fmt.Errorf("embedded-plugin catalog is malformed: %w", err)
 	}
 	return file, nil
-}
-
-func mustParseEmbeddedCatalogDocument(data []byte, source string) embeddedPluginsFile {
-	file, err := parseEmbeddedCatalogDocument(data)
-	if err != nil {
-		panic(fmt.Sprintf("maclaw: embedded-plugin catalog from %s: %v", source, err))
-	}
-	return file
 }
 
 // EmbeddedPluginCatalog returns the baked-plugin entries (empty until the

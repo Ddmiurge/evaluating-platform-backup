@@ -55,6 +55,15 @@ func main() {
 		log.Fatalf("[FATAL] %v", err)
 	}
 
+	// P28 卷挂载 / E-4d (record 58 §9): a corrupt embedded-plugin catalog
+	// used to panic inside package init — which also killed cmd/embeddedbuild,
+	// the tool that REWRITES the file. The load now records its error; the
+	// service refuses to start here (same fail-closed outcome), while the
+	// build tool proceeds as the repair path.
+	if err := maclawpkg.EmbeddedCatalogBootError(); err != nil {
+		log.Fatalf("[FATAL] embedded-plugin catalog unusable — restore the file or point %s at a valid one: %v", maclawpkg.EmbeddedCatalogFileEnv, err)
+	}
+
 	logger.Info("config loaded", map[string]interface{}{
 		"mode":  cfg.Server.Mode,
 		"port":  cfg.Server.Port,

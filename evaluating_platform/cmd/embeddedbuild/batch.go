@@ -227,6 +227,26 @@ func stagingIndexPath(root string) string {
 	return filepath.Join(root, "promptfoo_engine", "embedded-plugins", "index.json")
 }
 
+// clearStagingContents deletes everything INSIDE dir but never the directory
+// itself — see the call site in runStage for why the inode matters to a bind
+// mount. A missing directory is fine (nothing to clean; StageEmbeddedPackages
+// creates it).
+func clearStagingContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read staging: %w", err)
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("clean staging entry %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
 // stagingBatchPath is the pending marker: exists ⟺ a batch awaits finalize.
 // Separate from index.json since E-4c (records/57 §6 / §4).
 func stagingBatchPath(root string) string {
@@ -314,10 +334,18 @@ func runStage(ctx context.Context, embeddedRepo batchRows, resourceRepo *reposit
 		inputs = append(inputs, maclawpkg.EmbeddedBuildInput{PackageID: row.PackageID, PayloadB64: string(plain)})
 	}
 
-	// Clean first: leftovers from a previous batch would otherwise be COPY'd
-	// into the image alongside the new index (and the old index.json would
-	// claim packages this batch never staged).
-	if err := os.RemoveAll(staging); err != nil {
+	// Clean first: leftovers from a previous batch would otherwise ship
+	// alongside the new index (and the old index.json would claim packages
+	// this batch never staged).
+	//
+	// The DIRECTORY ITSELF must survive (record 58 §3): compose bind-mounts
+	// promptfoo_engine/embedded-plugins to the container at START, binding the
+	// host directory's inode. RemoveAll+mkdir swaps that inode — a running
+	// engine keeps pointing at the deleted directory, sees it empty, and the
+	// hot reload answers missing_index. Only the hot path has no recreate to
+	// re-resolve the mount, which is exactly where this bit. Clear the
+	// contents; keep the mount point.
+	if err := clearStagingContents(staging); err != nil {
 		return fmt.Errorf("clean staging: %w", err)
 	}
 	batchID := "batch-" + time.Now().UTC().Format("20060102T150405Z")
@@ -342,6 +370,11 @@ func runStage(ctx context.Context, embeddedRepo batchRows, resourceRepo *reposit
 		return fmt.Errorf("write batch marker: %w", err)
 	}
 
+	if bootErr := maclawpkg.EmbeddedCatalogBootError(); bootErr != nil {
+		// The tool survives the broken file on purpose (58 §9) — say so, then
+		// overwrite it below with this batch's catalog.
+		fmt.Fprintf(os.Stderr, "embeddedbuild: WARNING: previous catalog was unusable and is being rewritten: %v\n", bootErr)
+	}
 	fmt.Printf("STAGED %s packages=%d removed=%d\n", batchID, len(index.Packages), len(index.RemovedIDs))
 	for _, pkg := range index.Packages {
 		fmt.Printf("  - %s (%s)\n", pkg.ID, pkg.Name)
