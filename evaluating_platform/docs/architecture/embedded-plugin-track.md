@@ -452,7 +452,7 @@ backend 同样在 init 读一次——**两侧都是「写文件 + force-recreat
 
 ## 14. 热加载（E-4d，方案 B-v2 全链零重启）：Step-0 探测与实施计划
 
-> 状态（2026-11-17）：Step-0 两轮探测完成（全部实测）、设计定稿；**E-4d-1~4 本地已实现（2026-11-17，本地反证全绿）**——引擎 reload 钩子（忙拒/坏数据零改动/增换删/合成 key/`__p28LoadedBatch`）+ schema `removePlainId`、config 热 id 改写与报告归一（`reportPluginID` 剥 `file://p28-hot/` 前缀，`remapCustomPluginIds` 无 materialized 也归一）、server SIGHUP 与 `/health` 双回执字段、backend `RefreshEmbeddedCatalog`（失败保留旧快照）+ `/health` 版本/内容哈希 + SIGHUP、批脚本 `--skip-build` 热路径（双 HUP → 轮询双回执 → finalize，源级顺序断言）；E-4d-5 本地半已完成：`hotLoadRun.e2e.test.ts`（真引擎 + 假靶机/假生成 LLM）实测 boot→SIGHUP→热插件按公开 id 真跑出结果（报告无 `file://p28-hot`、`plugin_stats` 为公开 id）、run 飞行中 SIGHUP 忙拒且批次不推进、run 结束后重试成功——引擎 37 文件 / 467 条全绿；**仅剩 §14.5 六判据的上机半**（含 `--skip-build` 真批次与 backend 回执）。
+> 状态（2026-11-17）：Step-0 两轮探测完成（全部实测）、设计定稿；**E-4d-1~4 本地已实现（2026-11-17，本地反证全绿）**——引擎 reload 钩子（忙拒/坏数据零改动/增换删/合成 key/`__p28LoadedBatch`）+ schema `removePlainId`、config 热 id 改写与报告归一（`reportPluginID` 剥 `file://p28-hot/` 前缀，`remapCustomPluginIds` 无 materialized 也归一）、server SIGHUP 与 `/health` 双回执字段、backend `RefreshEmbeddedCatalog`（失败保留旧快照）+ `/health` 版本/内容哈希 + SIGHUP、批脚本 `--skip-build` 热路径（双 HUP → 轮询双回执 → finalize，源级顺序断言）；E-4d-5 本地半已完成：`hotLoadRun.e2e.test.ts`（真引擎 + 假靶机/假生成 LLM）实测 boot→SIGHUP→热插件按公开 id 真跑出结果（报告无 `file://p28-hot`、`plugin_stats` 为公开 id）、run 飞行中 SIGHUP 忙拒且批次不推进、run 结束后重试成功——引擎 37 文件 / 467 条全绿；**§14.5 判据 1–5 已由 58/59 号上机全绿**（58：2/3/4/5；59：①零停机 inode+三容器 uptime 不变、双引擎+backend 三回执同批次、§9 工具修复复验）；判据 6 回归面随 58/59 静态门全绿。遗留：UI 点击、p8test 单独业务 run（`records/59` §8）。
 > 决策链：57 §6 暴露重启形态的最后一个 bug → 卷挂载（§13）→ 热加载被定为**功能需求**（非「评估后拒绝」）→ 方案 B-v2 定案（backend 受控刷新 + 引擎重载 + finalize 前双侧回执对账，即「同步了再显示」）→ E-4c 前置修复 → Step-0 两轮探测 → 本节。
 > 关于「为什么不选热加载」的历史讨论与定性：**热加载从来不是做不到**，是当时的工程选择；现按功能需求立项实施，本节即其测量与计划。
 
