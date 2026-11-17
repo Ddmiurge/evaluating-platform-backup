@@ -29,6 +29,11 @@
 # build-everything. NOTE (§14.6): SIGHUP kills an OLD image (no handler) —
 # upgrade images with a default (build) run BEFORE using the hot path.
 #
+# --skip-backend only skips the backend IMAGE build/recreate (build path). The
+# hot path ALWAYS HUPs and polls the backend: the wizard catalog is the other
+# half of the batch, and syncing only the engine would publish the "two views
+# of one fact" failure the design forbids (§14.5-5 双回执).
+#
 # NO_QUEUE from -stage means there was no batch (no packages and no removals):
 # deploy and finalize are both skipped — batch.json exists ⟺ a batch awaits
 # finalize, so calling -finalize after NO_QUEUE would hard-fail by design.
@@ -186,9 +191,9 @@ sync_hot_batch() {
     if p8_running; then
       docker kill -s HUP ep_promptfoo_engine_p8test >/dev/null 2>&1 || true
     fi
-    if [[ $SKIP_BACKEND -eq 0 ]]; then
-      docker kill -s HUP ep_backend >/dev/null 2>&1 || true
-    fi
+    # Backend ALWAYS (see header): a half-synced batch is the two-views
+    # failure; --skip-backend does not opt out of the receipt.
+    docker kill -s HUP ep_backend >/dev/null 2>&1 || true
     sleep 3
 
     local out e_batch e_reason e_ok
@@ -204,18 +209,27 @@ sync_hot_batch() {
           return 1 ;;
       esac
       local backend_ok=1
-      if [[ $SKIP_BACKEND -eq 0 ]]; then
-        local got_hash
-        got_hash="$(backend_hash)"
-        if [[ "$got_hash" != "$expect_hash" ]]; then
-          backend_ok=0
+      local got_hash
+      got_hash="$(backend_hash)"
+      if [[ "$got_hash" != "$expect_hash" ]]; then
+        backend_ok=0
+      fi
+      # A RUNNING dedicated engine is part of the batch too (57 §6 附带): its
+      # receipt must echo the same batch or it would keep serving the previous
+      # catalog while everything else moved on.
+      local p8_ok=1 p8_out=""
+      if p8_running; then
+        if p8_out="$(engine_receipt ep_promptfoo_engine_p8test)" && [[ "$(sed -n 1p <<<"$p8_out")" == "$BATCH_ID" ]]; then
+          p8_ok=1
+        else
+          p8_ok=0
         fi
       fi
-      if [[ "$e_batch" == "$BATCH_ID" && $backend_ok -eq 1 && "$e_ok" != "false" ]]; then
-        log "sync ok: engine batch=${e_batch}; backend hash=${expect_hash}"
+      if [[ "$e_batch" == "$BATCH_ID" && $backend_ok -eq 1 && $p8_ok -eq 1 && "$e_ok" != "false" ]]; then
+        log "sync ok: engine batch=${e_batch}; backend hash=${expect_hash}; p8test=${p8_ok}"
         return 0
       fi
-      last_reason="engine_batch=${e_batch:-none} backend_sync=${backend_ok} reason=${e_reason:-none}"
+      last_reason="engine_batch=${e_batch:-none} backend_sync=${backend_ok} p8test_sync=${p8_ok} reason=${e_reason:-none}"
     else
       last_reason="engine health unreadable"
     fi

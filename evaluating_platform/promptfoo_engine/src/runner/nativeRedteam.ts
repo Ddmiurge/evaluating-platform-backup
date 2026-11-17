@@ -106,7 +106,7 @@ import { assertResultFieldsAreKnown } from '../sanitize/redact.js';
 import {
   applyCustomPluginRefs,
   materializeCustomPlugins,
-  reportPluginID,
+  reportPluginID, stripHotPluginKey,
   type MaterializedCustomPlugin,
 } from './customPlugin.js';
 import { applyCustomStrategyRefs, isPromptfooCustomStrategyId, resolveCustomStrategies, type EngineCustomStrategy } from './customStrategy.js';
@@ -1678,9 +1678,15 @@ export async function executeNativeRedteamRun(
     result.code_strategy_count = materializedCodeStrategies.length;
     result.code_strategy_ids = materializedCodeStrategies.map((item) => item.publicId);
   }
+  // Hot-added ids are synthetic keys in the document, but the fanout table is
+  // keyed by PUBLIC ids — count on the public id so an embedded entry with a
+  // non-1 fanout (today always 1, but not by contract) cannot silently lose its
+  // weight after the rewrite (E-4d-2 order: rewrite last, count on bare ids).
   result.num_tests_effective =
-    configuredProbeCount(config.redteam.plugins, catalogFanout(request.catalog)) *
-    productiveStrategyCount(config.redteam.strategies);
+    configuredProbeCount(
+      config.redteam.plugins.map((plugin) => ({ ...plugin, id: stripHotPluginKey(plugin.id) })),
+      catalogFanout(request.catalog),
+    ) * productiveStrategyCount(config.redteam.strategies);
   // Every field the engine attaches has to be declared in the result whitelist
   // (`sanitize/redact.ts`), which is also the one place that records why each is
   // safe to leave the engine. Asserted here, on the finished object, so a field

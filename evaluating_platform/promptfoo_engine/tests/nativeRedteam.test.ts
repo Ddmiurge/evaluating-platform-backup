@@ -30,7 +30,7 @@ import {
   remapCustomPluginIds,
   rewriteHotPluginKeys,
 } from '../src/runner/nativeRedteam.js';
-import { HOT_PLUGIN_KEY_PREFIX, reportPluginID } from '../src/runner/customPlugin.js';
+import { HOT_PLUGIN_KEY_PREFIX, reportPluginID, stripHotPluginKey } from '../src/runner/customPlugin.js';
 import {
   assertNativeStrategyMapIsCurrent,
   knownNativeStrategyIds,
@@ -1124,5 +1124,25 @@ describe('E-4d report normalization (synthetic key never reaches a report)', () 
     // Without hot keys and without packages the fast path still applies.
     const same = remapCustomPluginIds(evalLike, []);
     expect(same).toBe(evalLike);
+  });
+});
+
+describe('E-4d num_tests_effective counts on the PUBLIC id', () => {
+  it('strips the hot synthetic key before the fanout lookup', () => {
+    expect(stripHotPluginKey(`${HOT_PLUGIN_KEY_PREFIX}p28-x`)).toBe('p28-x');
+    expect(stripHotPluginKey('harmful')).toBe('harmful');
+    // The count call composes: rewritten document + public-keyed fanout map.
+    const rewritten = rewriteHotPluginKeys([{ id: 'p28-x', numTests: 3 }], {
+      'p28-x': `${HOT_PLUGIN_KEY_PREFIX}p28-x`,
+    });
+    // Counted on the PUBLIC id (what the call site does after the rewrite).
+    const counted = configuredProbeCount(
+      rewritten.map((plugin) => ({ ...plugin, id: stripHotPluginKey(plugin.id) })),
+      new Map([['p28-x', 2]]),
+    );
+    expect(counted).toBe(6);
+    // The trap the call site exists to avoid: counting the rewritten document
+    // directly misses the public-keyed fanout table (weight falls back to 1).
+    expect(configuredProbeCount(rewritten, new Map([['p28-x', 2]]))).toBe(3);
   });
 });

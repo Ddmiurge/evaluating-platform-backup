@@ -293,10 +293,14 @@ export function applyCustomPluginRefs(
  */
 export const HOT_PLUGIN_KEY_PREFIX = 'file://p28-hot/';
 
+/** Public id for a plugin id that may carry the hot synthetic key. */
+export function stripHotPluginKey(pluginId: string): string {
+  return pluginId.startsWith(HOT_PLUGIN_KEY_PREFIX) ? pluginId.slice(HOT_PLUGIN_KEY_PREFIX.length) : pluginId;
+}
+
 export function reportPluginID(pluginId: string, materialized: MaterializedCustomPlugin[]): string {
-  if (pluginId.startsWith(HOT_PLUGIN_KEY_PREFIX)) {
-    return pluginId.slice(HOT_PLUGIN_KEY_PREFIX.length);
-  }
+  const publicId = stripHotPluginKey(pluginId);
+  if (publicId !== pluginId) return publicId;
   for (const item of materialized) {
     if (pluginId === item.fileRef || pluginId === item.filePath) return item.pluginId;
   }

@@ -74,4 +74,24 @@ func TestEmbeddedBuildScriptHotPathContract(t *testing.T) {
 	if !strings.Contains(hotSegment, "sync_hot_batch") {
 		t.Error("hot branch must drive the receipt poll")
 	}
+
+	// The sync function itself must cover BOTH receipts unconditionally:
+	// backend always (a half-synced batch is the two-views failure —
+	// --skip-backend must not opt out of the receipt), and a RUNNING p8test
+	// dedicated engine must echo the same batch (57 §6 附带 / 58 §11.4).
+	syncStart := strings.Index(src, "sync_hot_batch() {")
+	syncEnd := strings.Index(src, `REASON=""`)
+	if syncStart < 0 || syncEnd < 0 || syncEnd < syncStart {
+		t.Fatalf("sync function layout changed (start=%d end=%d)", syncStart, syncEnd)
+	}
+	sync := src[syncStart:syncEnd]
+	if !strings.Contains(sync, "docker kill -s HUP ep_backend") {
+		t.Error("sync must HUP the backend unconditionally")
+	}
+	if strings.Contains(sync, "SKIP_BACKEND") {
+		t.Error("sync must not gate the backend receipt on --skip-backend")
+	}
+	if !strings.Contains(sync, "engine_receipt ep_promptfoo_engine_p8test") {
+		t.Error("sync must poll a RUNNING p8test engine's receipt")
+	}
 }
