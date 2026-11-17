@@ -114,6 +114,19 @@ const __p28EmbeddedPluginIds = (() => {
 		return [];
 	}
 })();
+// E-4d hot reload: the schema half of the removal path. Probe A (Step-0)
+// measured that splicing the exported pluginOptions array IS effective —
+// superRefine reads the live binding — while pushing a new id is not (zod's
+// enum snapshots at construction). So a baked id leaving the catalog is
+// removed here; hot-ADDED ids never enter this list at all (they ride the
+// file:// synthetic-key door instead). The body touches pluginOptions only
+// when called, long after this module finished loading.
+globalThis.__p28SchemaApi = {
+	removePlainId(id) {
+		const i = pluginOptions.indexOf(id);
+		if (i >= 0) pluginOptions.splice(i, 1);
+	},
+};
 // ${SCHEMA_MARK}-END
 `;
 
@@ -145,42 +158,150 @@ import { join as __p28RegistryJoin } from "node:path";
 import { pathToFileURL as __p28RegistryPathToFileURL } from "node:url";
 {
 	const __p28RegistryDir = process.env.PROMPTFOO_EMBEDDED_PLUGINS_DIR || __p28RegistryJoin(process.cwd(), "embedded-plugins");
-	let __p28RegistryDoc = null;
-	try {
-		__p28RegistryDoc = JSON.parse(__p28RegistryReadFileSync(__p28RegistryJoin(__p28RegistryDir, "index.json"), "utf8"));
-	} catch (__p28RegistryErr) {
-		if (!(__p28RegistryErr && __p28RegistryErr.code === "ENOENT")) throw __p28RegistryErr;
-	}
-	for (const __p28RegistryPkg of (Array.isArray(__p28RegistryDoc?.packages) ? __p28RegistryDoc.packages : [])) {
-		if (!__p28RegistryPkg || typeof __p28RegistryPkg.id !== "string" || !__p28RegistryPkg.id || typeof __p28RegistryPkg.entry !== "string" || !__p28RegistryPkg.entry) continue;
-		const __p28RegistryId = __p28RegistryPkg.id;
-		const __p28RegistryEntryUrl = __p28RegistryPathToFileURL(__p28RegistryJoin(__p28RegistryDir, __p28RegistryId, __p28RegistryPkg.entry)).href;
-		Plugins.push({
-			key: __p28RegistryId,
-			action: async (__p28RegistryParams) => {
-				const __p28RegistryMod = await import(__p28RegistryEntryUrl);
-				const __p28RegistryDefault = __p28RegistryMod?.default;
-				if (!__p28RegistryDefault || typeof __p28RegistryDefault.action !== "function") {
-					throw new Error(\`embedded plugin \${__p28RegistryId}: entry must default-export { action }\`);
-				}
-				const __p28RegistryTests = await __p28RegistryDefault.action(__p28RegistryParams);
-				if (!Array.isArray(__p28RegistryTests)) {
-					throw new Error(\`embedded plugin \${__p28RegistryId}: action must return an array of test cases\`);
-				}
-				for (let __p28RegistryIndex = 0; __p28RegistryIndex < __p28RegistryTests.length; __p28RegistryIndex++) {
-					const __p28RegistryTest = __p28RegistryTests[__p28RegistryIndex];
-					const __p28RegistryVar = __p28RegistryTest?.vars?.[__p28RegistryParams.injectVar];
-					if (typeof __p28RegistryVar !== "string" || !__p28RegistryVar.trim()) {
-						throw new Error(\`embedded plugin \${__p28RegistryId}: case #\${__p28RegistryIndex + 1} needs a non-empty vars[\${__p28RegistryParams.injectVar}] string\`);
-					}
-					if (!Array.isArray(__p28RegistryTest.assert) || __p28RegistryTest.assert.length === 0) {
-						throw new Error(\`embedded plugin \${__p28RegistryId}: case #\${__p28RegistryIndex + 1} needs a non-empty assert array (grading contract — a case without assertions always grades pass, which the reduction reads as attack failure)\`);
-					}
-				}
-				return __p28RegistryTests;
+	// E-4d: hot-added ids ride the file:// synthetic-key door (Step-0 probe B:
+	// the schema accepts ANY file:// prefix and registry lookup wins before
+	// CustomPlugin's YAML loader). The map is plainId -> registry key; only
+	// entries whose key differs from the plain id appear in hotKeys().
+	const __p28HotKeyPrefix = "file://p28-hot/";
+	const __p28KeyById = new Map();
+	let __p28LoadedBatch = null;
+
+	const __p28ReadRaw = () => {
+		try {
+			return JSON.parse(__p28RegistryReadFileSync(__p28RegistryJoin(__p28RegistryDir, "index.json"), "utf8"));
+		} catch (err) {
+			if (err && err.code === "ENOENT") return null;
+			throw err; // malformed JSON: boot throws (D-6), reload fails closed
+		}
+	};
+
+	// Reload-side shape validation: read + validate BEFORE any mutation, so a
+	// bad marker leaves the registry and the schema exactly as they were
+	// (design §14.5-2). Boot keeps the historical lenient shape handling — a
+	// package entry missing id/entry is skipped there, not fatal.
+	const __p28ValidateDoc = (doc) => {
+		if (!doc || (doc.packages !== undefined && !Array.isArray(doc.packages))) {
+			throw new Error("index.json: packages must be an array");
+		}
+		for (const pkg of (Array.isArray(doc.packages) ? doc.packages : [])) {
+			if (!pkg || typeof pkg.id !== "string" || !pkg.id || typeof pkg.entry !== "string" || !pkg.entry) {
+				throw new Error("index.json: every package needs a string id and entry");
 			}
-		});
+		}
+		return doc;
+	};
+
+	const __p28MakeAction = (id, entryUrl) => async (params) => {
+		const mod = await import(entryUrl);
+		const def = mod && mod.default;
+		if (!def || typeof def.action !== "function") {
+			throw new Error("embedded plugin " + id + ": entry must default-export { action }");
+		}
+		const tests = await def.action(params);
+		if (!Array.isArray(tests)) {
+			throw new Error("embedded plugin " + id + ": action must return an array of test cases");
+		}
+		for (let i = 0; i < tests.length; i++) {
+			const t = tests[i];
+			const v = t && t.vars ? t.vars[params.injectVar] : undefined;
+			if (typeof v !== "string" || !v.trim()) {
+				throw new Error("embedded plugin " + id + ": case #" + (i + 1) + " needs a non-empty vars[" + params.injectVar + "] string");
+			}
+			if (!Array.isArray(t.assert) || t.assert.length === 0) {
+				throw new Error("embedded plugin " + id + ": case #" + (i + 1) + " needs a non-empty assert array (grading contract — a case without assertions always grades pass, which the reduction reads as attack failure)");
+			}
+		}
+		return tests;
+	};
+
+	// bust appends ?v=<batch> so a REPLACED package re-imports fresh: ESM
+	// caches by URL, and a hot batch must not serve the previous module body.
+	const __p28Register = (pkg, key, bust) => {
+		const url = __p28RegistryPathToFileURL(__p28RegistryJoin(__p28RegistryDir, pkg.id, pkg.entry)).href + (bust ? "?v=" + encodeURIComponent(bust) : "");
+		const idx = Plugins.findIndex((p) => p.key === key);
+		if (idx >= 0) Plugins.splice(idx, 1);
+		Plugins.push({ key: key, action: __p28MakeAction(pkg.id, url) });
+	};
+
+	// Boot: the historical Route B behavior (§11.1) — plain keys, lazy import,
+	// malformed JSON throws so a bad bake fails the healthcheck.
+	const __p28BootDoc = __p28ReadRaw();
+	for (const pkg of (Array.isArray(__p28BootDoc?.packages) ? __p28BootDoc.packages : [])) {
+		if (!pkg || typeof pkg.id !== "string" || !pkg.id || typeof pkg.entry !== "string" || !pkg.entry) continue;
+		__p28Register(pkg, pkg.id, null);
+		__p28KeyById.set(pkg.id, pkg.id);
 	}
+	__p28LoadedBatch = typeof __p28BootDoc?.batch_id === "string" ? __p28BootDoc.batch_id : null;
+
+	// E-4d reload hook. Called from the engine's SIGHUP handler with an isBusy
+	// predicate (single worker: a run in flight refuses the reload, design
+	// §14.5-3). Receipt is static strings only — no paths, no content — and is
+	// surfaced verbatim on /health for the deploy script's poll.
+	const __p28Reload = (opts) => {
+		const receipt = { ok: false, batch: __p28LoadedBatch, reason: "" };
+		try {
+			if (opts && typeof opts.isBusy === "function" && opts.isBusy()) {
+				receipt.reason = "busy";
+				return receipt;
+			}
+			const raw = __p28ReadRaw();
+			if (!raw) {
+				receipt.reason = "missing_index";
+				return receipt;
+			}
+			const doc = __p28ValidateDoc(raw);
+			const desired = new Map();
+			for (const pkg of doc.packages) desired.set(pkg.id, pkg);
+			const batch = typeof doc.batch_id === "string" ? doc.batch_id : null;
+
+			// Removals first: registry entry, then (for a baked plain id) the
+			// schema acceptance list. Hot ids were never in pluginOptions.
+			for (const pair of Array.from(__p28KeyById)) {
+				const id = pair[0];
+				const key = pair[1];
+				if (desired.has(id)) continue;
+				const idx = Plugins.findIndex((p) => p.key === key);
+				if (idx >= 0) Plugins.splice(idx, 1);
+				if (key === id && globalThis.__p28SchemaApi && typeof globalThis.__p28SchemaApi.removePlainId === "function") {
+					globalThis.__p28SchemaApi.removePlainId(id);
+				}
+				__p28KeyById.delete(id);
+			}
+			// Adds and replaces: an id that already has a key keeps it (config
+			// rewrites only the hot ones); every entry is re-registered with a
+			// batch-busted URL so a replaced package re-imports.
+			for (const pkg of desired.values()) {
+				let key = __p28KeyById.get(pkg.id);
+				if (!key) {
+					key = __p28HotKeyPrefix + pkg.id;
+					__p28KeyById.set(pkg.id, key);
+				}
+				__p28Register(pkg, key, batch || "hot");
+			}
+			__p28LoadedBatch = batch;
+			receipt.ok = true;
+			receipt.batch = batch;
+			return receipt;
+		} catch (err) {
+			// Fail closed: nothing above may have mutated (validation precedes
+			// mutation), and the receipt says only the static reason.
+			receipt.ok = false;
+			receipt.reason = "malformed_index";
+			return receipt;
+		}
+	};
+
+	globalThis.__p28Embedded = {
+		get loadedBatch() { return __p28LoadedBatch; },
+		hotKeys() {
+			const out = {};
+			for (const pair of __p28KeyById) {
+				if (pair[1] !== pair[0]) out[pair[0]] = pair[1];
+			}
+			return out;
+		},
+		reload: __p28Reload,
+	};
 }
 // ${REGISTRY_MARK}-END
 `;

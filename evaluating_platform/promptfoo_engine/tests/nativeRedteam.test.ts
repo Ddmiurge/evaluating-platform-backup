@@ -26,7 +26,11 @@ import {
   withPluginJudgeRubrics,
   loadEvalResults,
   nativeJudgeSourceOverrides,
+  hotPluginKeys,
+  remapCustomPluginIds,
+  rewriteHotPluginKeys,
 } from '../src/runner/nativeRedteam.js';
+import { HOT_PLUGIN_KEY_PREFIX, reportPluginID } from '../src/runner/customPlugin.js';
 import {
   assertNativeStrategyMapIsCurrent,
   knownNativeStrategyIds,
@@ -1024,5 +1028,101 @@ describe('engine error codes are specific (P2-5)', () => {
         ],
       }),
     ).rejects.toMatchObject({ code: NATIVE_ERR_WORKDIR_MISSING });
+  });
+});
+
+// ── E-4d · hot-key rewrite + report normalization ─────────────────────────────
+
+describe('E-4d hot-key rewrite (config side)', () => {
+  it('rewrites only ids present in the map, preserving every other field', () => {
+    const plugins = [
+      { id: 'p28-hot-add', numTests: 3, config: { graderGuidance: 'x' } },
+      { id: 'harmful', numTests: 2 },
+    ];
+    const keys = { 'p28-hot-add': `${HOT_PLUGIN_KEY_PREFIX}p28-hot-add` };
+    const out = rewriteHotPluginKeys(plugins, keys);
+    expect(out[0].id).toBe(`${HOT_PLUGIN_KEY_PREFIX}p28-hot-add`);
+    expect(out[0].numTests).toBe(3);
+    expect(out[0].config).toEqual({ graderGuidance: 'x' });
+    expect(out[1]).toBe(plugins[1]); // untouched identity
+    // No keys → same array reference (common case allocates nothing).
+    expect(rewriteHotPluginKeys(plugins, {})).toBe(plugins);
+  });
+
+  it('resolves fanout and rubric on the BARE id before the rewrite (§14.3 order)', () => {
+    const catalog: EngineCatalog = {
+      plugins: [
+        {
+          id: 'p28-x',
+          category: 'injection',
+          category_label: '提示注入',
+          severity: 'high',
+          fanout: 1,
+          judge_criteria: '判定标准文本',
+          judge_source: 'category:injection',
+        },
+      ],
+      strategies: [],
+    };
+    // Step 1+2 exactly as buildNativeRedteamConfig composes them: allocation
+    // and rubric attach see the bare id (both look the catalogue up by id)…
+    const allocated = allocateNumTests([{ id: 'p28-x' }], 4, new Map([['p28-x', 1]]));
+    const withRubrics = withPluginJudgeRubrics(
+      [{ id: 'p28-x', numTests: allocated.perPlugin.get('p28-x') }],
+      buildJudgeRubricMap(catalog),
+    );
+    expect(withRubrics[0].config?.judge_criteria ?? withRubrics[0].config?.graderGuidance).toBeTruthy();
+    // …then the rewrite swaps ONLY the id, so promptfoo resolves the registry
+    // entry while numTests/rubric keep the bare-id computation.
+    const rewritten = rewriteHotPluginKeys(withRubrics, { 'p28-x': `${HOT_PLUGIN_KEY_PREFIX}p28-x` });
+    expect(rewritten[0].id).toBe(`${HOT_PLUGIN_KEY_PREFIX}p28-x`);
+    expect(rewritten[0].numTests).toBe(withRubrics[0].numTests);
+    expect(rewritten[0].config).toEqual(withRubrics[0].config);
+  });
+
+  it('hotPluginKeys is empty outside a patched engine and reads globalThis inside one', () => {
+    expect(hotPluginKeys()).toEqual({});
+    const g = globalThis as { __p28Embedded?: unknown };
+    g.__p28Embedded = { hotKeys: () => ({ a: 'file://p28-hot/a', b: 42 }) };
+    try {
+      // Non-string values are dropped — the map is a contract, not a cache.
+      expect(hotPluginKeys()).toEqual({ a: 'file://p28-hot/a' });
+    } finally {
+      delete g.__p28Embedded;
+    }
+    g.__p28Embedded = { hotKeys: () => { throw new Error('boom'); } };
+    try {
+      expect(hotPluginKeys()).toEqual({});
+    } finally {
+      delete g.__p28Embedded;
+    }
+  });
+});
+
+describe('E-4d report normalization (synthetic key never reaches a report)', () => {
+  it('reportPluginID strips the hot prefix before consulting materialized packages', () => {
+    expect(reportPluginID(`${HOT_PLUGIN_KEY_PREFIX}p28-x`, [])).toBe('p28-x');
+    // Materialized translation still works for the U10 path.
+    expect(
+      reportPluginID('file:///tmp/pkg.js', [{ pluginId: 'custom-x', fileRef: 'file:///tmp/pkg.js', filePath: '' } as never]),
+    ).toBe('custom-x');
+    expect(reportPluginID('harmful', [])).toBe('harmful');
+  });
+
+  it('remapCustomPluginIds normalizes hot keys even with no materialized packages', () => {
+    const evalLike = {
+      results: [{ testCase: { metadata: { pluginId: `${HOT_PLUGIN_KEY_PREFIX}p28-x` } } }],
+    };
+    const g = globalThis as { __p28Embedded?: unknown };
+    g.__p28Embedded = { hotKeys: () => ({ 'p28-x': `${HOT_PLUGIN_KEY_PREFIX}p28-x` }) };
+    try {
+      const out = remapCustomPluginIds(evalLike, []);
+      expect(out.results?.[0].testCase?.metadata?.pluginId).toBe('p28-x');
+    } finally {
+      delete g.__p28Embedded;
+    }
+    // Without hot keys and without packages the fast path still applies.
+    const same = remapCustomPluginIds(evalLike, []);
+    expect(same).toBe(evalLike);
   });
 });

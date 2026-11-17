@@ -23,13 +23,16 @@ package maclaw
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -84,9 +87,21 @@ type embeddedPluginsFile struct {
 
 var embeddedPluginFileData = embeddedCatalogFromEnv(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON)
 
+// embeddedCatalogMu guards the two package vars above + the content hash so a
+// hot refresh (E-4d-3, SIGHUP) swaps them as one unit: a reader must never
+// observe the new plugin list with the old base version (that combination is
+// exactly what plugin_base_mismatch exists to catch). Readers are the accessors
+// below; tests may assign the vars directly (single-goroutine).
+var embeddedCatalogMu sync.RWMutex
+
 var (
 	embeddedPluginCatalog        = embeddedPluginFileData.Plugins
 	embeddedPluginCatalogVersion = embeddedPluginFileData.PromptfooVersion
+	// sha256 of the document the two vars above were loaded from. Declared
+	// after embeddedPluginFileData so init order guarantees the (panic-prone)
+	// load ran first. It is what /health reports so the deploy script can
+	// compare "the backend's snapshot" with "the file stage just wrote".
+	embeddedPluginCatalogHash = catalogSHA256(mustEmbeddedCatalogBytes(os.Getenv(EmbeddedCatalogFileEnv), embeddedPluginsJSON))
 )
 
 // embeddedCatalogFromEnv resolves the wizard catalog source: a set path wins
@@ -97,6 +112,29 @@ var (
 // byte-for-byte pre-volume behavior. A missing file under a set path panics
 // too: the mount is part of the deployment contract, and Docker materializes a
 // directory when a bind source is absent — both must be loud, not empty.
+// catalogSHA256 is the receipt hash: full hex so the deploy host can compute
+// the same value with sha256sum over the staged file.
+func catalogSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// mustEmbeddedCatalogBytes resolves the raw catalog document (env path wins
+// over the compiled-in embed) — the shared source for boot load and hot
+// refresh, so both can never disagree about which bytes they parsed.
+func mustEmbeddedCatalogBytes(path string, fallback []byte) []byte {
+	if strings.TrimSpace(path) == "" {
+		return fallback
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Same fail-closed rule as the boot load: a set-but-unreadable catalog
+		// refuses to start rather than silently serving the embed.
+		panic(fmt.Sprintf("maclaw: %s=%q is set but unreadable: %v — refusing to continue with an unknown embedded-plugin catalog", EmbeddedCatalogFileEnv, path, err))
+	}
+	return data
+}
+
 func embeddedCatalogFromEnv(path string, fallback []byte) embeddedPluginsFile {
 	if strings.TrimSpace(path) == "" {
 		return mustParseEmbeddedCatalogDocument(fallback, "the compiled-in testdata catalog")
@@ -108,10 +146,18 @@ func embeddedCatalogFromEnv(path string, fallback []byte) embeddedPluginsFile {
 	return mustParseEmbeddedCatalogDocument(data, EmbeddedCatalogFileEnv+" ("+path+")")
 }
 
-func mustParseEmbeddedCatalogDocument(data []byte, source string) embeddedPluginsFile {
+func parseEmbeddedCatalogDocument(data []byte) (embeddedPluginsFile, error) {
 	var file embeddedPluginsFile
 	if err := json.Unmarshal(data, &file); err != nil {
-		panic(fmt.Sprintf("maclaw: embedded-plugin catalog from %s is malformed: %v", source, err))
+		return embeddedPluginsFile{}, fmt.Errorf("embedded-plugin catalog is malformed: %w", err)
+	}
+	return file, nil
+}
+
+func mustParseEmbeddedCatalogDocument(data []byte, source string) embeddedPluginsFile {
+	file, err := parseEmbeddedCatalogDocument(data)
+	if err != nil {
+		panic(fmt.Sprintf("maclaw: embedded-plugin catalog from %s: %v", source, err))
 	}
 	return file
 }
@@ -119,7 +165,55 @@ func mustParseEmbeddedCatalogDocument(data []byte, source string) embeddedPlugin
 // EmbeddedPluginCatalog returns the baked-plugin entries (empty until the
 // first successful build writes the testdata file).
 func EmbeddedPluginCatalog() []EmbeddedCatalogEntry {
+	embeddedCatalogMu.RLock()
+	defer embeddedCatalogMu.RUnlock()
 	return embeddedPluginCatalog
+}
+
+// EmbeddedCatalogStatus reports (base version, content hash) of the CURRENT
+// snapshot — the receipt /health serves so the deploy script can verify the
+// backend actually reloaded the file stage just wrote (design §14.3).
+func EmbeddedCatalogStatus() (version, hash string) {
+	embeddedCatalogMu.RLock()
+	defer embeddedCatalogMu.RUnlock()
+	return embeddedPluginCatalogVersion, embeddedPluginCatalogHash
+}
+
+// RefreshEmbeddedCatalog re-reads the catalog source (EMBEDDED_CATALOG_FILE
+// when set, else the compiled-in embed) and swaps the snapshot atomically.
+//
+// E-4d-3: called from the SIGHUP handler. A read or parse failure returns an
+// error and leaves the PREVIOUS snapshot serving — a bad file must never blank
+// the wizard catalog (design §14.5-4: 旧目录继续服务 + 回执失败). The caller
+// decides how to log/expose the receipt; this function changes nothing on
+// error.
+func RefreshEmbeddedCatalog() error {
+	data, err := embeddedCatalogBytesForRefresh()
+	if err != nil {
+		return err
+	}
+	file, err := parseEmbeddedCatalogDocument(data)
+	if err != nil {
+		return err
+	}
+	embeddedCatalogMu.Lock()
+	embeddedPluginCatalog = file.Plugins
+	embeddedPluginCatalogVersion = file.PromptfooVersion
+	embeddedPluginCatalogHash = catalogSHA256(data)
+	embeddedCatalogMu.Unlock()
+	return nil
+}
+
+func embeddedCatalogBytesForRefresh() ([]byte, error) {
+	path := strings.TrimSpace(os.Getenv(EmbeddedCatalogFileEnv))
+	if path == "" {
+		return embeddedPluginsJSON, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded catalog file: %w", err)
+	}
+	return data, nil
 }
 
 // EmbeddedCatalogBaseMismatch reports whether the baked catalog was built
@@ -129,11 +223,15 @@ func EmbeddedPluginCatalog() []EmbeddedCatalogEntry {
 // the OLD base: the wizard must hide them and the submit gate must refuse
 // them at the request boundary, not mid-run on the engine (review finding 5).
 func EmbeddedCatalogBaseMismatch() bool {
+	embeddedCatalogMu.RLock()
+	defer embeddedCatalogMu.RUnlock()
 	return embeddedPluginCatalogVersion != pluginLegalityTableData.PromptfooVersion
 }
 
 // EmbeddedCatalogBaseVersions exposes (baked, current) for refusal messages.
 func EmbeddedCatalogBaseVersions() (baked, current string) {
+	embeddedCatalogMu.RLock()
+	defer embeddedCatalogMu.RUnlock()
 	return embeddedPluginCatalogVersion, pluginLegalityTableData.PromptfooVersion
 }
 

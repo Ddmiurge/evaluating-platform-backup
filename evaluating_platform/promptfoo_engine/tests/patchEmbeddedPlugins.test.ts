@@ -164,6 +164,54 @@ describe('schema acceptance (patched tables chunk, runtime read)', () => {
   });
 });
 
+  it('removePlainId splices the live pluginOptions (Step-0 probe A made effective)', async () => {
+    const dir = tempDir('p28-schema-remove-');
+    writeFileSync(
+      path.join(dir, 'index.json'),
+      JSON.stringify({ packages: [{ id: 'p28-probe-plugin', entry: 'src/plugin.mjs' }] }),
+    );
+
+    const tablesDir = path.join(PROMPTFOO_ROOT, 'dist', 'src');
+    const tablesFile = resolveTablesFile(readFileSync(INDEX_PATH, 'utf8')).find((file) =>
+      readFileSync(path.join(tablesDir, file), 'utf8').includes(tablesAnchor),
+    );
+    expect(tablesFile).toBeTruthy();
+
+    const scratchName = `__p28_tables_remove_${process.pid}_${Date.now()}.mjs`;
+    const scratchPath = path.join(tablesDir, scratchName);
+    const pristine = stripSchemaBlock(readFileSync(path.join(tablesDir, tablesFile as string), 'utf8'));
+    writeFileSync(scratchPath, `${patchTablesSource(pristine)}\nexport { pluginOptions };\n`, 'utf8');
+    try {
+      const script = `
+        import * as tables from ${JSON.stringify('./' + scratchName)};
+        const schema = tables.Y;
+        const base = { numTests: 1, strategies: [], purpose: 'probe', plugins: [] };
+        const victim = tables.pluginOptions.find((id) => id === 'harmful') ?? tables.pluginOptions[0];
+        const before = schema.safeParse({ ...base, plugins: [victim] }).success;
+        globalThis.__p28SchemaApi.removePlainId(victim);
+        const after = schema.safeParse({ ...base, plugins: [victim] }).success;
+        const hot = schema.safeParse({ ...base, plugins: ['file://p28-hot/x'] }).success;
+        const stillThere = schema.safeParse({ ...base, plugins: ['definitely-not-a-plugin'] }).success;
+        console.log(JSON.stringify({ before, after, hot, stillThere }));
+      `;
+      const scriptPath = path.join(tablesDir, scratchName.replace(/\.mjs$/, '.remove.mjs'));
+      writeFileSync(scriptPath, script, 'utf8');
+      temps.push(scriptPath);
+      const result = spawnSync(process.execPath, [scriptPath], {
+        env: { ...process.env, PROMPTFOO_EMBEDDED_PLUGINS_DIR: dir },
+        encoding: 'utf8',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const verdict = JSON.parse(result.stdout.trim().split('\n').pop() as string);
+      expect(verdict.before, 'a baked id must start accepted').toBe(true);
+      expect(verdict.after, 'splice must make the id unacceptable again').toBe(false);
+      expect(verdict.hot, 'the file:// door must stay open for hot ids').toBe(true);
+      expect(verdict.stillThere, 'unknown plain ids stay rejected').toBe(false);
+    } finally {
+      rmSync(scratchPath, { force: true });
+    }
+  });
+
 describe('registry loader behavior (the exact injected block)', () => {
   function buildHarness(): { scriptPath: string; embeddedDir: string } {
     const dir = tempDir('p28-registry-');

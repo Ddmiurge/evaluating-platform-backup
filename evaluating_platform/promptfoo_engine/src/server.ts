@@ -126,8 +126,17 @@ async function main(): Promise<void> {
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
 
+  // E-4d: receipt of the last SIGHUP-triggered embedded catalog reload. Static
+  // strings only (ok / reason / batch id) — the deploy script polls /health to
+  // decide whether the batch is synchronized before it finalizes (design §14.3:
+  // 「同步了再显示」). Null until the first SIGHUP; `embedded_batch` itself
+  // comes from the patched registry's loaded batch (boot value when no reload
+  // has happened yet).
+  let lastEmbeddedReload: { ok: boolean; reason: string; batch: string | null } | null = null;
+
   // Health endpoint: no auth, minimal info (compose healthcheck target).
   app.get('/health', (_req, res) => {
+    const p28 = (globalThis as { __p28Embedded?: { loadedBatch?: string | null } }).__p28Embedded;
     res.json({
       status: 'ok',
       version,
@@ -137,6 +146,10 @@ async function main(): Promise<void> {
       // P2-3：生效的 worker 数。串行化是 native 路径的行为保证，而 /health 是
       // 运维唯一无需进容器就能看到的窗口 —— 没有它就只能靠翻日志确认。
       workers: manager.workerCount,
+      // E-4d: which baked/hot batch this process has loaded, and the last
+      // reload receipt (busy / malformed_index / missing_index / ok).
+      embedded_batch: typeof p28?.loadedBatch === 'string' ? p28.loadedBatch : null,
+      embedded_reload: lastEmbeddedReload,
     });
   });
 
@@ -188,6 +201,40 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+  // E-4d: SIGHUP = "reload the embedded-plugin catalog from the volume" — no
+  // restart, no rebuild (design §14.3). The deploy script sends it after stage
+  // and then polls /health for `embedded_batch == <batch id>`. A run in flight
+  // refuses the reload (single worker: mutating the registry mid-generation is
+  // not safe) and the script retries on its next poll.
+  //
+  // NOTE (§14.6): an image WITHOUT this handler dies on SIGHUP (default
+  // disposition) — deploy the new image first, then use the new script.
+  process.on('SIGHUP', () => {
+    const api = (
+      globalThis as {
+        __p28Embedded?: {
+          reload?: (opts: { isBusy: () => boolean }) => { ok?: boolean; reason?: string; batch?: string | null };
+        };
+      }
+    ).__p28Embedded;
+    if (!api || typeof api.reload !== 'function') {
+      lastEmbeddedReload = { ok: false, reason: 'not_patched', batch: null };
+      console.log('[engine] SIGHUP: embedded reload unavailable (promptfoo not patched)');
+      return;
+    }
+    try {
+      const receipt = api.reload({ isBusy: () => manager.runningCount > 0 });
+      lastEmbeddedReload = {
+        ok: !!receipt?.ok,
+        reason: (receipt?.reason ?? '').slice(0, 40),
+        batch: receipt?.batch ?? null,
+      };
+    } catch {
+      lastEmbeddedReload = { ok: false, reason: 'reload_threw', batch: null };
+    }
+    // Receipt is static strings — safe for logs (no paths, no payloads).
+    console.log('[engine] SIGHUP embedded reload:', JSON.stringify(lastEmbeddedReload));
+  });
 }
 
 main().catch((err: unknown) => {

@@ -1254,13 +1254,57 @@ export async function buildNativeRedteamConfig(input: {
       // promptfoo's one-size rubric — the exact degradation U8 exists to remove,
       // and one that would only surface as "the numbers changed after the
       // upgrade".
-      plugins: withPluginJudgeRubrics(allocatedPlugins, buildJudgeRubricMap(input.catalog)),
+      // E-4d: hot-added embedded ids ride file://p28-hot/<id> (Step-0 probe B);
+      // the rewrite happens AFTER fanout/rubric resolution so both see the bare
+      // id the catalog is keyed by (design §14.3).
+      plugins: rewriteHotPluginKeys(withPluginJudgeRubrics(allocatedPlugins, buildJudgeRubricMap(input.catalog)), hotPluginKeys()),
       strategies: resolvedStrategies,
       injectVar: input.injectVar,
       provider,
       ...(instructions ? { testGenerationInstructions: instructions } : {}),
     },
   };
+}
+
+/**
+ * The hot-key map the patched promptfoo registry maintains (E-4d): plainId →
+ * registry key, only for ids whose key differs (hot-added packages). Read from
+ * globalThis because the registry lives inside the patched promptfoo bundle —
+ * there is no import path to it. Empty outside a patched engine (tests, dev).
+ */
+export function hotPluginKeys(): Record<string, string> {
+  const api = (globalThis as { __p28Embedded?: { hotKeys?: () => unknown } }).__p28Embedded;
+  if (!api || typeof api.hotKeys !== 'function') return {};
+  try {
+    const keys = api.hotKeys();
+    if (!keys || typeof keys !== 'object') return {};
+    const out: Record<string, string> = {};
+    for (const [id, key] of Object.entries(keys as Record<string, unknown>)) {
+      if (typeof key === 'string' && key) out[id] = key;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Rewrite selected plugin ids to their registry keys. Pure given the map, so
+ * the ordering contract (fanout/rubric resolve on the BARE id, rewrite after)
+ * is testable without a patched engine.
+ */
+export function rewriteHotPluginKeys<T extends { id: string }>(
+  plugins: T[],
+  keys: Record<string, string>,
+): T[] {
+  let changed = false;
+  const out = plugins.map((plugin) => {
+    const key = keys[plugin.id];
+    if (!key || key === plugin.id) return plugin;
+    changed = true;
+    return { ...plugin, id: key };
+  });
+  return changed ? out : plugins;
 }
 
 /**
@@ -1271,7 +1315,9 @@ export async function buildNativeRedteamConfig(input: {
  * allocates nothing.
  */
 export function remapCustomPluginIds(evalLike: EvalLike, materialized: MaterializedCustomPlugin[]): EvalLike {
-  if (materialized.length === 0) return evalLike;
+  // A hot-only run has no materialized packages but DOES carry synthetic keys
+  // in metadata.pluginId — the early return must not skip their normalization.
+  if (materialized.length === 0 && Object.keys(hotPluginKeys()).length === 0) return evalLike;
   const results = evalLike.results ?? [];
   if (results.length === 0) return evalLike;
   return {

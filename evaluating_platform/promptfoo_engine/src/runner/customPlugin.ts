@@ -284,7 +284,19 @@ export function applyCustomPluginRefs(
  * be translated in **both** directions. `reportPluginID` is applied to every row
  * before reduction.
  */
+/**
+ * Synthetic-key prefix E-4d assigns to a HOT-ADDED embedded plugin (the file://
+ * door Step-0 probe B measured: schema accepts any file:// prefix, registry
+ * lookup wins before CustomPlugin's YAML loader). The key exists only inside
+ * the engine process — it must never reach a report, so `reportPluginID`
+ * strips it the same way it translates a materialized package's file path.
+ */
+export const HOT_PLUGIN_KEY_PREFIX = 'file://p28-hot/';
+
 export function reportPluginID(pluginId: string, materialized: MaterializedCustomPlugin[]): string {
+  if (pluginId.startsWith(HOT_PLUGIN_KEY_PREFIX)) {
+    return pluginId.slice(HOT_PLUGIN_KEY_PREFIX.length);
+  }
   for (const item of materialized) {
     if (pluginId === item.fileRef || pluginId === item.filePath) return item.pluginId;
   }

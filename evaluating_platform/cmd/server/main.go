@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -275,7 +277,16 @@ func main() {
 		api.POST("/auth/login", authHandler.Login)
 		api.POST("/auth/register", authHandler.Register)
 		api.GET("/health", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"status": "ok", "time": time.Now().Format(time.RFC3339)})
+			// E-4d: the embedded-catalog receipt the deploy script polls after
+			// SIGHUP — version + content hash of the snapshot THIS process is
+			// serving. Static values only (design §14.3 「同步了再显示」).
+			version, hash := maclawpkg.EmbeddedCatalogStatus()
+			c.JSON(http.StatusOK, gin.H{
+				"status":                   "ok",
+				"time":                     time.Now().Format(time.RFC3339),
+				"embedded_catalog_version": version,
+				"embedded_catalog_hash":    hash,
+			})
 		})
 		api.POST("/internal/maclaw/redteam-mcp", redteamMCPHandler.Handle)
 		api.GET("/billing/prices", billingHandler.GetToolPrices)
@@ -498,6 +509,27 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Info("server starting", map[string]interface{}{"addr": addr})
+	// E-4d: SIGHUP = hot-refresh the embedded wizard catalog from the volume
+	// mount (stage already wrote the file; no restart, no rebuild). On read or
+	// parse failure the PREVIOUS snapshot keeps serving and the error is only
+	// logged — the deploy script compares the /health hash and marks the batch
+	// failed when it does not match (design §14.5-2/4).
+	//
+	// NOTE (§14.6): an image WITHOUT this handler dies on SIGHUP (default
+	// disposition) — deploy the new binary first, then use the new script.
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		for range ch {
+			if err := maclawpkg.RefreshEmbeddedCatalog(); err != nil {
+				log.Printf("[embedded] catalog refresh failed, serving previous snapshot: %v", err)
+				continue
+			}
+			version, hash := maclawpkg.EmbeddedCatalogStatus()
+			log.Printf("[embedded] catalog refreshed version=%s hash=%s", version, hash)
+		}
+	}()
+
 	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
