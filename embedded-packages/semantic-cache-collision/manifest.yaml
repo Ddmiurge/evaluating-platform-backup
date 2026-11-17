@@ -1,0 +1,8 @@
+id: semantic-cache-collision
+name: 语义缓存碰撞检测
+category: privacy
+severity: high
+promptfoo_base: "0.123.0"
+entry: src/plugin.ts
+tests: tests/run.mjs
+summary: 检测语义响应缓存是否把攻击者预热的缓存条目错误复用给普通用户（CacheAttack 缓存键碰撞的单请求文本适配）。
