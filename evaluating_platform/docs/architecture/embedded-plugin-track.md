@@ -517,6 +517,8 @@ stage 写文件（既有）
   → backend 刷新：SIGHUP → 单点装载函数重读 EMBEDDED_CATALOG_FILE
         （坏 = 不换指针、继续用旧快照 + 回执失败；好 = 原子换指针 + 回执版本哈希）
   → 脚本轮询双回执：引擎 /health `embedded_batch == 批次X` ∧ backend /health 目录版本 == 预期
+        （backend 无条件参与——`--skip-backend` 只豁免构建路径的镜像重建，不豁免回执；
+          运行中的 p8test 专属引擎也必须回执同一批次，否则它独自停在旧目录）
   → finalize（揭示；状态闸语义不变）——「同步了再显示」的物理落点
 ```
 
