@@ -40,6 +40,7 @@
 | `55.md` | P28 五条修复复验 | 54 §6 五条修复在 `eed6e8c` 上**全部复验成立**（幂等 448 绿、上传 400、`-root` 守卫、坏包专用错误码、配置数/实跑数措辞）；三包批次与主链路无回归。新观察三条（PDF 不含生成路径、批次重烤全部包、前台构建超时）与「宿主无 Go」均见 §6/§8，§10 记录修复，§11 三项本地加固（probe 环境隔离、磁盘预检、审批页标记/体积），§12 内嵌插件 agent 发现入口（`plugin_source=embedded`，按调用者状态过滤） |
 | `56.md` | P28 55 号加固复验 | **55 §10–§12 全部复验成立**：PDF 封面三行（plan_c/配置数/实跑数）、脚本 Go/磁盘双预检（exit 64/5）、包内测试读不到引擎环境（哨兵实测，`200 ok`）、审批页 who/when + 自动关卡体积、两个 MCP 搜索工具按调用者状态返回内嵌卡（非白名单只见 approved）；烤制插件真跑无回归。**新增运维纪律（§7）**：任何重建 engine/backend 的批次必须重新 `-stage`，否则镜像丢 catalog 而状态行仍显示正常（本轮踩中并恢复）；遗留：移除→下批剔除、停用即时 409、UI 点击未测 |
 | `57.md` | P28/E-4b 卷挂载上机验收 | **设计稿 §13 三判据全部成立**：`--skip-build` 纯插件批次全程无 `docker build`、新 id 向导+MCP 可见且真跑 1/1 出报告；卷内畸形 `index.json` → 引擎健康检查红、零包落地（`-finalize -fail` 坏 index 也拒绝执行）；摘 `EMBEDDED_CATALOG_FILE` → 回落 embed 等价。**但 §6 新缺陷（E-4b 形态待修）**：`-finalize` 删除 `index.json`（批次标记与持久目录共用一文件）→ finalize 后任何重启引擎目录归零、向导照常展示，提交 168ms 死 `Invalid plugin id`；临时措施=宿主 index 保留。附带：坏 index 时 `build_failed` 记不上、脚本只 recreate 共享引擎（p8test 手工重启）、宿主无 Go 用 test-builder 容器 shim |
+| `58.md` | P28/E-4c+E-4d 上机 | 判据 2/3/4/5 全过（坏数据零改动、忙拒、backend 哈希、同步了再显示）+ E-4c 回归（重启不丢目录）；**判据①零停机失败**——stage `RemoveAll` 换掉 bind mount 的目录 inode，运行中引擎见空目录；另发现坏 testdata 因 `go:embed` init panic 连构建工具一起杀。§12 记录两处本地修复（inode 保留 + boot 错误改为记录/服务拒绝/工具可修） |
 | `audit-2026-10-20-pull-latest-code-test-report.md` | — | 代码拉取 + 静态测试（非上机验收） |
 
 编号与 `audit-2026-10-09/` 里的文档编号是**两套**（那边是计划与决策），所以曾经都堆在仓库根目录。
